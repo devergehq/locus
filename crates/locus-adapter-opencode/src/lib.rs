@@ -122,11 +122,15 @@ mod tests {
     }
 
     #[test]
-    fn agents_md_contains_locus_pointer() {
+    fn agents_md_contains_locus_directive() {
         let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
         assert!(content.contains("# Locus"));
         assert!(content.contains("/home/test/.locus/algorithm/v1.0.md"));
         assert!(content.contains("/home/test/.locus/skills/"));
         assert!(content.contains("/home/test/.locus/agents/"));
+        assert!(content.contains("MANDATORY"));
+        assert!(content.contains("OBSERVE"));
+        assert!(content.contains("VERIFY"));
+        assert!(content.contains("LEARN"));
     }
 }

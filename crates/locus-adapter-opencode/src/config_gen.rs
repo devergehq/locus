@@ -1,7 +1,7 @@
 //! OpenCode configuration generation.
 //!
 //! Generates the minimal configuration needed for OpenCode to use Locus:
-//! - A thin `~/.config/opencode/AGENTS.md` that bootstraps Locus
+//! - A directive `~/.config/opencode/AGENTS.md` that commands Algorithm behaviour
 //! - An `instructions` entry in `~/.config/opencode/opencode.json` that loads
 //!   the Algorithm and protocols into context automatically
 //!
@@ -22,12 +22,13 @@ fn global_config_dir() -> Result<PathBuf, LocusError> {
         })
 }
 
-/// Generate the thin AGENTS.md bootstrap file.
+/// Generate the AGENTS.md bootstrap file.
 ///
 /// This is placed at `~/.config/opencode/AGENTS.md` and applies to all
-/// OpenCode sessions globally. It tells the AI that Locus exists and
-/// where to find it. The Algorithm itself is loaded via `instructions`.
+/// OpenCode sessions globally. It contains the core behavioural contract —
+/// telling the AI what Locus is and how it MUST behave.
 pub fn generate_agents_md(locus_home: &Path) -> String {
+    let home = locus_home.display();
     format!(
         r#"# Locus
 
@@ -43,12 +44,42 @@ When the Algorithm calls for agent delegation, read agent definitions from `{hom
 Protocols are at `{home}/protocols/`.
 
 User data (learnings, research, work artifacts) is persisted to `{home}/data/`.
+
+## Mode Classification (MANDATORY)
+
+Before responding to ANY user request, classify it:
+
+- **Trivial**: Single file, single action, one clear concept, no investigation needed → handle directly without the Algorithm
+- **Non-trivial**: Anything involving multiple steps, investigation, design decisions, or complex changes → ENTER THE ALGORITHM
+
+## Algorithm Execution (MANDATORY for non-trivial requests)
+
+The Algorithm specification has been loaded into your context via the instructions config.
+When entering the Algorithm, you MUST:
+
+1. Follow the 7-phase structure: OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN
+2. Start with OBSERVE: reverse-engineer the request, determine effort level, generate ISC criteria, select capabilities
+3. Produce structured output with phase markers at each transition
+4. Create a PRD at `{home}/data/memory/work/` to track criteria and progress
+5. Never skip phases — each phase feeds the next
+6. Persist learnings in the LEARN phase to `{home}/data/memory/learning/`
+
+The Algorithm document defines effort levels (Minimal, Standard, Extended, Comprehensive),
+the ISC criteria system, the Splitting Test, and the full phase specifications.
+Follow it exactly.
+
+## Skill Invocation
+
+Skills are NOT loaded automatically. When the Algorithm's capability selection identifies
+a skill, use the Read tool to load its SKILL.md from `{home}/skills/<skill-id>/SKILL.md`.
+Available skills: research, first-principles, iterative-depth, council, red-team,
+creative, science, extract-wisdom, documents, security, media, parser.
 "#,
-        home = locus_home.display()
+        home = home
     )
 }
 
-/// Write the thin AGENTS.md to the global OpenCode config directory.
+/// Write the AGENTS.md to the global OpenCode config directory.
 ///
 /// Backs up any existing AGENTS.md before overwriting.
 pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
@@ -84,6 +115,7 @@ pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
 /// Update the global `~/.config/opencode/opencode.json` with `instructions`
 /// pointing at the Locus algorithm and protocols.
 ///
+/// Uses `~` tilde paths for compatibility with OpenCode's path resolution.
 /// If the file doesn't exist, creates it. If it does, merges the
 /// `instructions` array without clobbering other settings.
 pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
@@ -108,16 +140,16 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
         })
     };
 
-    // Build the Locus instruction paths.
-    let home_str = locus_home.display().to_string();
+    // Build the Locus instruction paths using ~ for portability.
+    let home_relative = tilde_path(locus_home);
     let locus_instructions: Vec<String> = vec![
-        format!("{}/algorithm/v1.0.md", home_str),
-        format!("{}/protocols/degradation.md", home_str),
-        format!("{}/protocols/context-management.md", home_str),
-        format!("{}/protocols/memory-schema.md", home_str),
+        format!("{}/algorithm/v1.0.md", home_relative),
+        format!("{}/protocols/degradation.md", home_relative),
+        format!("{}/protocols/context-management.md", home_relative),
+        format!("{}/protocols/memory-schema.md", home_relative),
     ];
 
-    // Merge into existing instructions array, avoiding duplicates.
+    // Replace any existing Locus instructions, preserve non-Locus ones.
     let instructions = config
         .as_object_mut()
         .unwrap()
@@ -125,11 +157,16 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
         .or_insert_with(|| serde_json::json!([]));
 
     if let Some(arr) = instructions.as_array_mut() {
+        // Remove any existing Locus entries (contain ".locus/").
+        arr.retain(|v| {
+            v.as_str()
+                .map(|s| !s.contains(".locus/"))
+                .unwrap_or(true)
+        });
+
+        // Add the new Locus entries.
         for path in &locus_instructions {
-            let val = serde_json::Value::String(path.clone());
-            if !arr.contains(&val) {
-                arr.push(val);
-            }
+            arr.push(serde_json::Value::String(path.clone()));
         }
     }
 
@@ -146,4 +183,14 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     })?;
 
     Ok(config_path)
+}
+
+/// Convert an absolute path to a tilde path (e.g., /Users/foo/.locus -> ~/.locus).
+fn tilde_path(path: &Path) -> String {
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(relative) = path.strip_prefix(&home) {
+            return format!("~/{}", relative.display());
+        }
+    }
+    path.display().to_string()
 }
