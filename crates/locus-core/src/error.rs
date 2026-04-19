@@ -41,4 +41,8 @@ pub enum LocusError {
     /// Git sync error.
     #[error("Sync error: {message}")]
     Sync { message: String },
+
+    /// Upgrade/update error.
+    #[error("Upgrade error: {message}")]
+    Upgrade { message: String },
 }

@@ -63,6 +63,17 @@ enum Commands {
         #[arg(long = "init")]
         init_remote: Option<String>,
     },
+
+    /// Check for and install updates from GitHub releases.
+    ///
+    /// Downloads the latest release binary and replaces the current
+    /// installation. Use --check to see if an update is available
+    /// without installing.
+    Upgrade {
+        /// Check for updates without installing.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -112,6 +123,7 @@ fn main() {
             SkillCommands::Info { skill } => commands::skill::info(&skill),
         },
         Commands::Sync { init_remote } => commands::sync::run(init_remote),
+        Commands::Upgrade { check } => commands::upgrade::run(check),
     };
 
     if let Err(e) = result {
