@@ -44,30 +44,6 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
     output::print_header();
 
     let platform = parse_platform(platform_str)?;
-
-    output::section(&format!("Adding {} adapter", platform.display_name()));
-
-    // Check if the platform is actually installed.
-    let home = dirs::home_dir().ok_or_else(|| LocusError::Config {
-        message: "Could not determine home directory".into(),
-        path: None,
-    })?;
-
-    let config_dir = home.join(platform.config_dir_name());
-    if !config_dir.exists() {
-        output::warn(&format!(
-            "{} config directory not found at {}",
-            platform.display_name(),
-            config_dir.display()
-        ));
-        output::info(&format!(
-            "Install {} first, then run this command again.",
-            platform.display_name()
-        ));
-        return Ok(());
-    }
-
-    // Load Locus config.
     let locus_home = resolve_locus_home()?;
     let config_path = locus_home.join("locus.yaml");
 
@@ -79,14 +55,12 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
         });
     }
 
-    let mut config = locus_core::config::LocusConfig::from_file(&config_path)?;
+    output::section(&format!("Setting up {} with Locus", platform.display_name()));
 
-    // Add platform if not already present.
+    // Update locus.yaml with the platform.
+    let mut config = locus_core::config::LocusConfig::from_file(&config_path)?;
     if config.platforms.contains(&platform) {
-        output::info(&format!(
-            "{} is already configured.",
-            platform.display_name()
-        ));
+        output::info(&format!("{} is already in locus.yaml.", platform.display_name()));
     } else {
         config.platforms.push(platform);
         let yaml = config.to_yaml()?;
@@ -94,17 +68,48 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
             message: format!("Failed to write config: {}", e),
             path: config_path.clone(),
         })?;
-        output::success(&format!(
-            "Added {} to locus.yaml",
-            platform.display_name()
-        ));
+        output::success(&format!("Added {} to locus.yaml", platform.display_name()));
     }
 
-    // Generate platform-specific configuration files.
-    output::section("Generating configuration");
-    generate_platform_files(&config, platform, &home)?;
+    // Platform-specific setup.
+    match platform {
+        Platform::OpenCode => setup_opencode(&locus_home)?,
+        Platform::ClaudeCode => {
+            output::info("Claude Code adapter is not yet implemented.");
+        }
+        _ => {
+            output::info(&format!("No adapter available for {}.", platform.display_name()));
+        }
+    }
 
     println!();
+    Ok(())
+}
+
+/// Set up Locus for OpenCode.
+fn setup_opencode(locus_home: &std::path::Path) -> Result<(), LocusError> {
+    let adapter = locus_adapter_opencode::OpenCodeAdapter::new();
+    let result = adapter.setup(locus_home)?;
+
+    output::success(&format!("Wrote {}", result.agents_md_path.display()));
+    output::success(&format!("Updated {}", result.config_path.display()));
+
+    output::section("What was configured");
+    output::info(&format!(
+        "AGENTS.md  — thin Locus bootstrap at {}",
+        result.agents_md_path.display()
+    ));
+    output::info(&format!(
+        "opencode.json — instructions pointing at {}/algorithm/ and {}/protocols/",
+        locus_home.display(),
+        locus_home.display()
+    ));
+
+    output::section("How it works");
+    output::info("OpenCode loads the Locus Algorithm into every session via instructions.");
+    output::info("The Algorithm orchestrates skills and agents — reading them from ~/.locus/ as needed.");
+    output::info("Zero files were written to .opencode/. All content stays in Locus.");
+
     Ok(())
 }
 
@@ -137,84 +142,12 @@ pub fn remove(platform_str: &str) -> Result<(), LocusError> {
             message: format!("Failed to write config: {}", e),
             path: config_path.clone(),
         })?;
-        output::success(&format!(
-            "Removed {} from locus.yaml",
-            platform.display_name()
-        ));
+        output::success(&format!("Removed {} from locus.yaml", platform.display_name()));
     } else {
-        output::info(&format!(
-            "{} was not configured.",
-            platform.display_name()
-        ));
+        output::info(&format!("{} was not configured.", platform.display_name()));
     }
 
     println!();
-    Ok(())
-}
-
-/// Generate platform-specific configuration files.
-fn generate_platform_files(
-    config: &locus_core::config::LocusConfig,
-    platform: Platform,
-    home: &std::path::Path,
-) -> Result<(), LocusError> {
-    let files = match platform {
-        Platform::OpenCode => {
-            let adapter = locus_adapter_opencode::OpenCodeAdapter::new();
-            adapter.generate_config(config)?
-        }
-        Platform::ClaudeCode => {
-            output::info("Claude Code config generation is not yet implemented.");
-            return Ok(());
-        }
-        _ => {
-            output::info(&format!("No adapter available for {}.", platform.display_name()));
-            return Ok(());
-        }
-    };
-
-    let platform_config_dir = home.join(platform.config_dir_name());
-
-    for file in &files {
-        // Resolve the file path relative to either the platform config dir
-        // or the current working directory.
-        let target = if file.path.starts_with(".opencode") || file.path.starts_with(".claude") {
-            home.join(&file.path)
-        } else if file.path == std::path::Path::new("opencode.json")
-            || file.path == std::path::Path::new("AGENTS.md")
-        {
-            // These go to the platform config dir for global use.
-            platform_config_dir.join(&file.path)
-        } else {
-            platform_config_dir.join(&file.path)
-        };
-
-        // Don't overwrite if file exists and overwrite is false.
-        if target.exists() && !file.overwrite {
-            output::info(&format!(
-                "Skipping {} (already exists)",
-                target.display()
-            ));
-            continue;
-        }
-
-        // Create parent directories.
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| LocusError::Filesystem {
-                message: format!("Failed to create directory: {}", e),
-                path: parent.to_path_buf(),
-            })?;
-        }
-
-        std::fs::write(&target, &file.content).map_err(|e| LocusError::Filesystem {
-            message: format!("Failed to write file: {}", e),
-            path: target.clone(),
-        })?;
-
-        output::success(&format!("Generated {}", target.display()));
-    }
-
-    output::info(&format!("{} file(s) generated.", files.len()));
     Ok(())
 }
 

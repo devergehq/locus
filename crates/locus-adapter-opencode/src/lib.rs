@@ -1,27 +1,26 @@
 //! OpenCode platform adapter for Locus.
 //!
-//! Translates Locus's internal model to OpenCode's plugin system,
-//! configuration format, and event model.
+//! The OpenCode adapter takes a minimal approach: Locus content stays
+//! entirely in `~/.locus/`. The adapter only touches two files in
+//! OpenCode's global config directory (`~/.config/opencode/`):
 //!
-//! # Generated Files
+//! - `AGENTS.md` — thin bootstrap (~10 lines) telling the AI about Locus
+//! - `opencode.json` — `instructions` array pointing at Locus's algorithm and protocols
 //!
-//! When `generate_config` is called, this adapter produces:
-//!
-//! - `opencode.json` — OpenCode runtime config (model routing, permissions)
-//! - `AGENTS.md` — System prompt with Locus algorithm, skill listing, protocols
-//! - `.opencode/agents/*.md` — Individual agent definitions in PascalCase
+//! Zero files are written to `.opencode/`. The Algorithm is the sole
+//! orchestration layer — OpenCode's native skill/agent system is not used.
 
 pub mod capabilities;
 pub mod config_gen;
 pub mod events;
 
-use locus_core::adapter::{GeneratedFile, LocusPaths};
 use locus_core::capabilities::CapabilityManifest;
-use locus_core::config::LocusConfig;
 use locus_core::error::LocusError;
 use locus_core::platform::Platform;
 
-/// OpenCode adapter — generates platform-specific configuration from Locus config.
+use std::path::{Path, PathBuf};
+
+/// OpenCode adapter.
 pub struct OpenCodeAdapter {
     capabilities: CapabilityManifest,
 }
@@ -33,50 +32,27 @@ impl OpenCodeAdapter {
         }
     }
 
-    /// Get the platform this adapter targets.
     pub fn platform(&self) -> Platform {
         Platform::OpenCode
     }
 
-    /// Get the capability manifest.
     pub fn capabilities(&self) -> &CapabilityManifest {
         &self.capabilities
     }
 
-    /// Resolve Locus paths for the OpenCode platform.
-    pub fn resolve_paths(&self, config: &LocusConfig) -> Result<LocusPaths, LocusError> {
-        let home = config.resolve_home()?;
-        let data = config.resolve_data_dir()?;
-
-        let platform_config = dirs::home_dir()
-            .map(|h| h.join(".opencode"))
-            .ok_or_else(|| LocusError::Adapter {
-                platform: Platform::OpenCode,
-                message: "Could not determine home directory".into(),
-            })?;
-
-        Ok(LocusPaths {
-            config: home.join("locus.yaml"),
-            algorithm: home.join("algorithm"),
-            skills: home.join("skills"),
-            agents: home.join("agents"),
-            protocols: home.join("protocols"),
-            home,
-            data,
-            platform_config,
-        })
-    }
-
-    /// Generate OpenCode configuration files from Locus config.
+    /// Set up Locus for use with OpenCode.
     ///
-    /// Returns a list of files to write. The caller decides where to write them
-    /// (typically the current project directory or the OpenCode config directory).
-    pub fn generate_config(
-        &self,
-        config: &LocusConfig,
-    ) -> Result<Vec<GeneratedFile>, LocusError> {
-        let home = config.resolve_home()?;
-        config_gen::generate_opencode_config(config, &home)
+    /// Writes the thin AGENTS.md bootstrap and updates opencode.json
+    /// with `instructions` entries. Returns paths of files that were modified.
+    pub fn setup(&self, locus_home: &Path) -> Result<SetupResult, LocusError> {
+        let agents_md_path = config_gen::write_agents_md(locus_home)?;
+        let config_path = config_gen::update_opencode_json(locus_home)?;
+
+        Ok(SetupResult {
+            agents_md_path,
+            config_path,
+            backed_up_agents_md: false, // TODO: track this from write_agents_md
+        })
     }
 }
 
@@ -84,6 +60,18 @@ impl Default for OpenCodeAdapter {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Result of setting up Locus for OpenCode.
+pub struct SetupResult {
+    /// Path to the generated AGENTS.md.
+    pub agents_md_path: PathBuf,
+
+    /// Path to the updated opencode.json.
+    pub config_path: PathBuf,
+
+    /// Whether an existing AGENTS.md was backed up.
+    pub backed_up_agents_md: bool,
 }
 
 #[cfg(test)]
@@ -131,5 +119,14 @@ mod tests {
     fn capabilities_mcp_supported() {
         let adapter = OpenCodeAdapter::new();
         assert!(adapter.capabilities().mcp_support);
+    }
+
+    #[test]
+    fn agents_md_contains_locus_pointer() {
+        let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("# Locus"));
+        assert!(content.contains("/home/test/.locus/algorithm/v1.0.md"));
+        assert!(content.contains("/home/test/.locus/skills/"));
+        assert!(content.contains("/home/test/.locus/agents/"));
     }
 }
