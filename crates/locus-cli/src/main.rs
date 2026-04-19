@@ -47,6 +47,16 @@ enum Commands {
         #[command(subcommand)]
         command: SkillCommands,
     },
+
+    /// Synchronise user data between machines via git.
+    ///
+    /// Commits local changes and pushes/pulls from the remote.
+    /// Use --init to set up the data directory as a git repo.
+    Sync {
+        /// Initialise data dir as git repo with this remote URL.
+        #[arg(long = "init")]
+        init_remote: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -94,6 +104,7 @@ fn main() {
             SkillCommands::List => commands::skill::list(),
             SkillCommands::Info { skill } => commands::skill::info(&skill),
         },
+        Commands::Sync { init_remote } => commands::sync::run(init_remote),
     };
 
     if let Err(e) = result {
