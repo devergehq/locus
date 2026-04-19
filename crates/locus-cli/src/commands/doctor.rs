@@ -31,7 +31,14 @@ pub fn run() -> Result<(), LocusError> {
         .and_then(|c| c.resolve_data_dir().ok())
         .unwrap_or_else(|| home.join("data"));
 
-    for subdir in &["memory/work", "memory/learning", "memory/research", "memory/state", "projects", "context-packs"] {
+    for subdir in &[
+        "memory/work",
+        "memory/learning",
+        "memory/research",
+        "memory/state",
+        "projects",
+        "context-packs",
+    ] {
         let path = data_dir.join(subdir);
         if path.exists() {
             output::success(&format!("data/{}", subdir));
@@ -46,7 +53,9 @@ pub fn run() -> Result<(), LocusError> {
     if let Some(ref config) = config {
         if config.platforms.is_empty() {
             output::warn("No platforms configured");
-            warnings.push("No platform adapters configured. Run `locus platform add <platform>`.".into());
+            warnings.push(
+                "No platform adapters configured. Run `locus platform add <platform>`.".into(),
+            );
         } else {
             for platform in &config.platforms {
                 check_platform(platform, &mut issues, &mut warnings);
@@ -150,10 +159,7 @@ fn check_platform(platform: &Platform, issues: &mut Vec<String>, warnings: &mut 
             platform.display_name(),
             platform.cli_command()
         ));
-        warnings.push(format!(
-            "{} CLI not found on PATH",
-            platform.display_name()
-        ));
+        warnings.push(format!("{} CLI not found on PATH", platform.display_name()));
     } else {
         output::error(&format!(
             "{} — not installed (no {} directory)",

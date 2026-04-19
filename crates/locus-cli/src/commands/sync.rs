@@ -22,7 +22,9 @@ pub fn run(init_remote: Option<String>) -> Result<(), LocusError> {
     if !data_dir.join(".git").exists() {
         output::error("Data directory is not a git repository.");
         output::info("Initialize with: locus sync --init <remote-url>");
-        output::info(&format!("  e.g. locus sync --init git@github.com:you/locus-data.git"));
+        output::info(&format!(
+            "  e.g. locus sync --init git@github.com:you/locus-data.git"
+        ));
         return Ok(());
     }
 

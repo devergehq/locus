@@ -190,5 +190,6 @@ pub trait PlatformAdapter: Send + Sync {
     ///
     /// Takes the canonical Locus config and produces the files the platform
     /// needs (CLAUDE.md, settings.json, opencode.json, etc.).
-    async fn generate_config(&self, config: &LocusConfig) -> Result<Vec<GeneratedFile>, LocusError>;
+    async fn generate_config(&self, config: &LocusConfig)
+        -> Result<Vec<GeneratedFile>, LocusError>;
 }

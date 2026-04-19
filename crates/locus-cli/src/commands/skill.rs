@@ -16,15 +16,42 @@ pub fn list() -> Result<(), LocusError> {
     println!();
 
     let planned_skills = [
-        ("research", "Comprehensive research with quick/standard/extensive/deep modes"),
-        ("thinking", "Multi-mode analytical thinking — first principles, iterative depth"),
-        ("council", "Multi-agent debate with structured rounds and synthesis"),
-        ("red-team", "Adversarial analysis to find weaknesses and fatal flaws"),
-        ("security", "Security assessment — recon, web testing, prompt injection"),
-        ("browser", "Browser automation and visual verification via headless Chrome"),
-        ("documents", "Read, write, convert documents — PDF, DOCX, XLSX, PPTX"),
-        ("media", "Visual content creation — diagrams, illustrations, infographics"),
-        ("parsing", "Extract structured data from URLs, files, and transcripts"),
+        (
+            "research",
+            "Comprehensive research with quick/standard/extensive/deep modes",
+        ),
+        (
+            "thinking",
+            "Multi-mode analytical thinking — first principles, iterative depth",
+        ),
+        (
+            "council",
+            "Multi-agent debate with structured rounds and synthesis",
+        ),
+        (
+            "red-team",
+            "Adversarial analysis to find weaknesses and fatal flaws",
+        ),
+        (
+            "security",
+            "Security assessment — recon, web testing, prompt injection",
+        ),
+        (
+            "browser",
+            "Browser automation and visual verification via headless Chrome",
+        ),
+        (
+            "documents",
+            "Read, write, convert documents — PDF, DOCX, XLSX, PPTX",
+        ),
+        (
+            "media",
+            "Visual content creation — diagrams, illustrations, infographics",
+        ),
+        (
+            "parsing",
+            "Extract structured data from URLs, files, and transcripts",
+        ),
     ];
 
     for (id, description) in &planned_skills {

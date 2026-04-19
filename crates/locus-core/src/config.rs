@@ -334,7 +334,10 @@ paths:
         assert!(!config.algorithm.auto_checkpoint);
         assert_eq!(config.skills.pinned.len(), 2);
         assert!(config.notifications.enabled);
-        assert_eq!(config.inference.model, Some("claude-sonnet-4-20250514".into()));
+        assert_eq!(
+            config.inference.model,
+            Some("claude-sonnet-4-20250514".into())
+        );
     }
 
     #[test]

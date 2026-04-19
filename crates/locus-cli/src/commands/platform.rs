@@ -55,12 +55,18 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
         });
     }
 
-    output::section(&format!("Setting up {} with Locus", platform.display_name()));
+    output::section(&format!(
+        "Setting up {} with Locus",
+        platform.display_name()
+    ));
 
     // Update locus.yaml with the platform.
     let mut config = locus_core::config::LocusConfig::from_file(&config_path)?;
     if config.platforms.contains(&platform) {
-        output::info(&format!("{} is already in locus.yaml.", platform.display_name()));
+        output::info(&format!(
+            "{} is already in locus.yaml.",
+            platform.display_name()
+        ));
     } else {
         config.platforms.push(platform);
         let yaml = config.to_yaml()?;
@@ -78,7 +84,10 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
             output::info("Claude Code adapter is not yet implemented.");
         }
         _ => {
-            output::info(&format!("No adapter available for {}.", platform.display_name()));
+            output::info(&format!(
+                "No adapter available for {}.",
+                platform.display_name()
+            ));
         }
     }
 
@@ -107,7 +116,9 @@ fn setup_opencode(locus_home: &std::path::Path) -> Result<(), LocusError> {
 
     output::section("How it works");
     output::info("OpenCode loads the Locus Algorithm into every session via instructions.");
-    output::info("The Algorithm orchestrates skills and agents — reading them from ~/.locus/ as needed.");
+    output::info(
+        "The Algorithm orchestrates skills and agents — reading them from ~/.locus/ as needed.",
+    );
     output::info("Zero files were written to .opencode/. All content stays in Locus.");
 
     Ok(())
@@ -142,7 +153,10 @@ pub fn remove(platform_str: &str) -> Result<(), LocusError> {
             message: format!("Failed to write config: {}", e),
             path: config_path.clone(),
         })?;
-        output::success(&format!("Removed {} from locus.yaml", platform.display_name()));
+        output::success(&format!(
+            "Removed {} from locus.yaml",
+            platform.display_name()
+        ));
     } else {
         output::info(&format!("{} was not configured.", platform.display_name()));
     }

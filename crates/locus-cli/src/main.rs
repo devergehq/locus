@@ -36,6 +36,12 @@ enum Commands {
     /// and reports any issues.
     Doctor,
 
+    /// Show a dashboard of the current Locus installation.
+    ///
+    /// Prints version, active platform, installed skill count,
+    /// data directory size, last sync timestamp, and doctor findings.
+    Status,
+
     /// Manage platform adapters.
     Platform {
         #[command(subcommand)]
@@ -95,6 +101,7 @@ fn main() {
     let result = match cli.command {
         Commands::Init { bare } => commands::init::run(bare),
         Commands::Doctor => commands::doctor::run(),
+        Commands::Status => commands::status::run(),
         Commands::Platform { command } => match command {
             PlatformCommands::List => commands::platform::list(),
             PlatformCommands::Add { platform } => commands::platform::add(&platform),

@@ -143,10 +143,11 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
 
     // Load existing config or start fresh.
     let mut config: serde_json::Value = if config_path.exists() {
-        let content = std::fs::read_to_string(&config_path).map_err(|e| LocusError::Filesystem {
-            message: format!("Failed to read opencode.json: {}", e),
-            path: config_path.clone(),
-        })?;
+        let content =
+            std::fs::read_to_string(&config_path).map_err(|e| LocusError::Filesystem {
+                message: format!("Failed to read opencode.json: {}", e),
+                path: config_path.clone(),
+            })?;
         serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
     } else {
         serde_json::json!({
@@ -172,11 +173,7 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
 
     if let Some(arr) = instructions.as_array_mut() {
         // Remove any existing Locus entries (contain ".locus/").
-        arr.retain(|v| {
-            v.as_str()
-                .map(|s| !s.contains(".locus/"))
-                .unwrap_or(true)
-        });
+        arr.retain(|v| v.as_str().map(|s| !s.contains(".locus/")).unwrap_or(true));
 
         // Add the new Locus entries.
         for path in &locus_instructions {
@@ -185,11 +182,10 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     }
 
     // Write back.
-    let content =
-        serde_json::to_string_pretty(&config).map_err(|e| LocusError::Adapter {
-            platform: Platform::OpenCode,
-            message: format!("Failed to serialise opencode.json: {}", e),
-        })?;
+    let content = serde_json::to_string_pretty(&config).map_err(|e| LocusError::Adapter {
+        platform: Platform::OpenCode,
+        message: format!("Failed to serialise opencode.json: {}", e),
+    })?;
 
     std::fs::write(&config_path, &content).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to write opencode.json: {}", e),

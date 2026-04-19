@@ -126,11 +126,7 @@ impl CapabilityManifest {
             features.push(UnavailableFeature {
                 feature: "Agent delegation".into(),
                 reason: "Platform does not support sub-agent spawning".into(),
-                affected_skills: vec![
-                    "council".into(),
-                    "red-team".into(),
-                    "delegation".into(),
-                ],
+                affected_skills: vec!["council".into(), "red-team".into(), "delegation".into()],
             });
         }
 

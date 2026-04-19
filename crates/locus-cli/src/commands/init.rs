@@ -119,7 +119,10 @@ fn create_directories(home: &PathBuf) -> Result<(), LocusError> {
     // Install bundled content (algorithm, skills, agents, protocols).
     install_bundled_content(home)?;
 
-    output::success(&format!("Created directory structure at {}", home.display()));
+    output::success(&format!(
+        "Created directory structure at {}",
+        home.display()
+    ));
     Ok(())
 }
 
@@ -128,22 +131,62 @@ fn create_directories(home: &PathBuf) -> Result<(), LocusError> {
 /// Content is embedded at compile time from the repo source directories.
 fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
     // Algorithm
-    write_bundled(home, "algorithm/v1.0.md", include_str!("../../../../algorithm/v1.0.md"))?;
+    write_bundled(
+        home,
+        "algorithm/v1.0.md",
+        include_str!("../../../../algorithm/v1.0.md"),
+    )?;
 
     // Skills
     let skills: &[(&str, &str)] = &[
-        ("skills/research/SKILL.md", include_str!("../../../../skills/research/SKILL.md")),
-        ("skills/first-principles/SKILL.md", include_str!("../../../../skills/first-principles/SKILL.md")),
-        ("skills/iterative-depth/SKILL.md", include_str!("../../../../skills/iterative-depth/SKILL.md")),
-        ("skills/council/SKILL.md", include_str!("../../../../skills/council/SKILL.md")),
-        ("skills/red-team/SKILL.md", include_str!("../../../../skills/red-team/SKILL.md")),
-        ("skills/creative/SKILL.md", include_str!("../../../../skills/creative/SKILL.md")),
-        ("skills/science/SKILL.md", include_str!("../../../../skills/science/SKILL.md")),
-        ("skills/extract-wisdom/SKILL.md", include_str!("../../../../skills/extract-wisdom/SKILL.md")),
-        ("skills/documents/SKILL.md", include_str!("../../../../skills/documents/SKILL.md")),
-        ("skills/security/SKILL.md", include_str!("../../../../skills/security/SKILL.md")),
-        ("skills/media/SKILL.md", include_str!("../../../../skills/media/SKILL.md")),
-        ("skills/parser/SKILL.md", include_str!("../../../../skills/parser/SKILL.md")),
+        (
+            "skills/research/SKILL.md",
+            include_str!("../../../../skills/research/SKILL.md"),
+        ),
+        (
+            "skills/first-principles/SKILL.md",
+            include_str!("../../../../skills/first-principles/SKILL.md"),
+        ),
+        (
+            "skills/iterative-depth/SKILL.md",
+            include_str!("../../../../skills/iterative-depth/SKILL.md"),
+        ),
+        (
+            "skills/council/SKILL.md",
+            include_str!("../../../../skills/council/SKILL.md"),
+        ),
+        (
+            "skills/red-team/SKILL.md",
+            include_str!("../../../../skills/red-team/SKILL.md"),
+        ),
+        (
+            "skills/creative/SKILL.md",
+            include_str!("../../../../skills/creative/SKILL.md"),
+        ),
+        (
+            "skills/science/SKILL.md",
+            include_str!("../../../../skills/science/SKILL.md"),
+        ),
+        (
+            "skills/extract-wisdom/SKILL.md",
+            include_str!("../../../../skills/extract-wisdom/SKILL.md"),
+        ),
+        (
+            "skills/documents/SKILL.md",
+            include_str!("../../../../skills/documents/SKILL.md"),
+        ),
+        (
+            "skills/security/SKILL.md",
+            include_str!("../../../../skills/security/SKILL.md"),
+        ),
+        (
+            "skills/media/SKILL.md",
+            include_str!("../../../../skills/media/SKILL.md"),
+        ),
+        (
+            "skills/parser/SKILL.md",
+            include_str!("../../../../skills/parser/SKILL.md"),
+        ),
     ];
 
     for (path, content) in skills {
@@ -152,10 +195,22 @@ fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
 
     // Agents
     let agents: &[(&str, &str)] = &[
-        ("agents/architect.md", include_str!("../../../../agents/architect.md")),
-        ("agents/engineer.md", include_str!("../../../../agents/engineer.md")),
-        ("agents/researcher.md", include_str!("../../../../agents/researcher.md")),
-        ("agents/security.md", include_str!("../../../../agents/security.md")),
+        (
+            "agents/architect.md",
+            include_str!("../../../../agents/architect.md"),
+        ),
+        (
+            "agents/engineer.md",
+            include_str!("../../../../agents/engineer.md"),
+        ),
+        (
+            "agents/researcher.md",
+            include_str!("../../../../agents/researcher.md"),
+        ),
+        (
+            "agents/security.md",
+            include_str!("../../../../agents/security.md"),
+        ),
     ];
 
     for (path, content) in agents {
@@ -164,9 +219,18 @@ fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
 
     // Protocols
     let protocols: &[(&str, &str)] = &[
-        ("protocols/context-management.md", include_str!("../../../../protocols/context-management.md")),
-        ("protocols/degradation.md", include_str!("../../../../protocols/degradation.md")),
-        ("protocols/memory-schema.md", include_str!("../../../../protocols/memory-schema.md")),
+        (
+            "protocols/context-management.md",
+            include_str!("../../../../protocols/context-management.md"),
+        ),
+        (
+            "protocols/degradation.md",
+            include_str!("../../../../protocols/degradation.md"),
+        ),
+        (
+            "protocols/memory-schema.md",
+            include_str!("../../../../protocols/memory-schema.md"),
+        ),
     ];
 
     for (path, content) in protocols {
@@ -218,7 +282,9 @@ fn detect_environment() -> DetectedEnv {
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -230,7 +296,9 @@ fn detect_environment() -> DetectedEnv {
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
