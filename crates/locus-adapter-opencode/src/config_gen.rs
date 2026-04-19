@@ -22,13 +22,23 @@ fn global_config_dir() -> Result<PathBuf, LocusError> {
         })
 }
 
-/// Generate the AGENTS.md bootstrap file.
+/// Generate the AGENTS.md file with the Algorithm inlined.
 ///
 /// This is placed at `~/.config/opencode/AGENTS.md` and applies to all
-/// OpenCode sessions globally. It contains the core behavioural contract —
-/// telling the AI what Locus is and how it MUST behave.
+/// OpenCode sessions globally. The Algorithm is embedded directly so it's
+/// guaranteed to be in the AI's context — not dependent on `instructions`
+/// path resolution.
+///
+/// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.0.md`.
+/// Regenerate with `locus platform add opencode`.
 pub fn generate_agents_md(locus_home: &Path) -> String {
     let home = locus_home.display();
+
+    // Read the Algorithm from disk.
+    let algorithm_path = locus_home.join("algorithm").join("v1.0.md");
+    let algorithm_content = std::fs::read_to_string(&algorithm_path)
+        .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
+
     format!(
         r#"# Locus
 
@@ -54,8 +64,7 @@ Before responding to ANY user request, classify it:
 
 ## Algorithm Execution (MANDATORY for non-trivial requests)
 
-The Algorithm specification has been loaded into your context via the instructions config.
-When entering the Algorithm, you MUST:
+The Algorithm specification is inlined below. When entering the Algorithm, you MUST:
 
 1. Follow the 7-phase structure: OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN
 2. Start with OBSERVE: reverse-engineer the request, determine effort level, generate ISC criteria, select capabilities
@@ -74,8 +83,13 @@ Skills are NOT loaded automatically. When the Algorithm's capability selection i
 a skill, use the Read tool to load its SKILL.md from `{home}/skills/<skill-id>/SKILL.md`.
 Available skills: research, first-principles, iterative-depth, council, red-team,
 creative, science, extract-wisdom, documents, security, media, parser.
+
+---
+
+{algorithm}
 "#,
-        home = home
+        home = home,
+        algorithm = algorithm_content,
     )
 }
 
