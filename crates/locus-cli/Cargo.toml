@@ -1,0 +1,26 @@
+[package]
+name = "locus-cli"
+description = "CLI binary for the Locus agentic workflow framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "locus"
+path = "src/main.rs"
+
+[dependencies]
+locus-core = { workspace = true }
+locus-tools = { workspace = true }
+locus-index = { workspace = true }
+locus-adapter-opencode = { workspace = true }
+locus-adapter-claude = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+clap = { version = "4", features = ["derive"] }

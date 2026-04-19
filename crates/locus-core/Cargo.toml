@@ -1,0 +1,19 @@
+[package]
+name = "locus-core"
+description = "Core types, traits, and interfaces for the Locus agentic workflow framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+dirs = "6.0.0"
+
+[dev-dependencies]
+tokio = { workspace = true }

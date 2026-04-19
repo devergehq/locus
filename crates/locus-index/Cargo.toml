@@ -1,0 +1,15 @@
+[package]
+name = "locus-index"
+description = "Project indexing for Locus — tree-sitter AST, embeddings, vector search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+locus-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
