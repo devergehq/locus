@@ -1,2 +1,5 @@
 /target
 Cargo.lock
+session-*.md
+AGENTS.md
+AGENTS.old.md
