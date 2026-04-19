@@ -68,7 +68,7 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
     }
 
     // Load Locus config.
-    let locus_home = home.join(".locus");
+    let locus_home = resolve_locus_home()?;
     let config_path = locus_home.join("locus.yaml");
 
     if !config_path.exists() {
@@ -100,8 +100,9 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
         ));
     }
 
-    // TODO: Phase 4/5 — call adapter.generate_config() to produce platform files.
-    output::info("Platform config generation will be available after adapter implementation.");
+    // Generate platform-specific configuration files.
+    output::section("Generating configuration");
+    generate_platform_files(&config, platform, &home)?;
 
     println!();
     Ok(())
@@ -115,12 +116,7 @@ pub fn remove(platform_str: &str) -> Result<(), LocusError> {
 
     output::section(&format!("Removing {} adapter", platform.display_name()));
 
-    let home = dirs::home_dir().ok_or_else(|| LocusError::Config {
-        message: "Could not determine home directory".into(),
-        path: None,
-    })?;
-
-    let locus_home = home.join(".locus");
+    let locus_home = resolve_locus_home()?;
     let config_path = locus_home.join("locus.yaml");
 
     if !config_path.exists() {
@@ -154,6 +150,85 @@ pub fn remove(platform_str: &str) -> Result<(), LocusError> {
 
     println!();
     Ok(())
+}
+
+/// Generate platform-specific configuration files.
+fn generate_platform_files(
+    config: &locus_core::config::LocusConfig,
+    platform: Platform,
+    home: &std::path::Path,
+) -> Result<(), LocusError> {
+    let files = match platform {
+        Platform::OpenCode => {
+            let adapter = locus_adapter_opencode::OpenCodeAdapter::new();
+            adapter.generate_config(config)?
+        }
+        Platform::ClaudeCode => {
+            output::info("Claude Code config generation is not yet implemented.");
+            return Ok(());
+        }
+        _ => {
+            output::info(&format!("No adapter available for {}.", platform.display_name()));
+            return Ok(());
+        }
+    };
+
+    let platform_config_dir = home.join(platform.config_dir_name());
+
+    for file in &files {
+        // Resolve the file path relative to either the platform config dir
+        // or the current working directory.
+        let target = if file.path.starts_with(".opencode") || file.path.starts_with(".claude") {
+            home.join(&file.path)
+        } else if file.path == std::path::Path::new("opencode.json")
+            || file.path == std::path::Path::new("AGENTS.md")
+        {
+            // These go to the platform config dir for global use.
+            platform_config_dir.join(&file.path)
+        } else {
+            platform_config_dir.join(&file.path)
+        };
+
+        // Don't overwrite if file exists and overwrite is false.
+        if target.exists() && !file.overwrite {
+            output::info(&format!(
+                "Skipping {} (already exists)",
+                target.display()
+            ));
+            continue;
+        }
+
+        // Create parent directories.
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| LocusError::Filesystem {
+                message: format!("Failed to create directory: {}", e),
+                path: parent.to_path_buf(),
+            })?;
+        }
+
+        std::fs::write(&target, &file.content).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to write file: {}", e),
+            path: target.clone(),
+        })?;
+
+        output::success(&format!("Generated {}", target.display()));
+    }
+
+    output::info(&format!("{} file(s) generated.", files.len()));
+    Ok(())
+}
+
+/// Resolve the Locus home directory, respecting LOCUS_HOME env var.
+fn resolve_locus_home() -> Result<std::path::PathBuf, LocusError> {
+    if let Ok(env_home) = std::env::var("LOCUS_HOME") {
+        return Ok(std::path::PathBuf::from(env_home));
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".locus"))
+        .ok_or_else(|| LocusError::Config {
+            message: "Could not determine home directory".into(),
+            path: None,
+        })
 }
 
 /// Parse a platform string into a Platform enum.
