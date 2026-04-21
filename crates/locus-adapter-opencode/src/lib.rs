@@ -43,15 +43,16 @@ impl OpenCodeAdapter {
     /// Set up Locus for use with OpenCode.
     ///
     /// Writes the thin AGENTS.md bootstrap and updates opencode.json
-    /// with `instructions` entries. Returns paths of files that were modified.
+    /// with `instructions` entries. Returns paths of files that were modified
+    /// along with whether any pre-existing file was backed up.
     pub fn setup(&self, locus_home: &Path) -> Result<SetupResult, LocusError> {
-        let agents_md_path = config_gen::write_agents_md(locus_home)?;
+        let write_result = config_gen::write_agents_md(locus_home)?;
         let config_path = config_gen::update_opencode_json(locus_home)?;
 
         Ok(SetupResult {
-            agents_md_path,
+            agents_md_path: write_result.path,
             config_path,
-            backed_up_agents_md: false, // TODO: track this from write_agents_md
+            backed_up_agents_md: write_result.backed_up,
         })
     }
 }
@@ -125,7 +126,7 @@ mod tests {
     fn agents_md_contains_locus_directive() {
         let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
         assert!(content.contains("# Locus"));
-        assert!(content.contains("/home/test/.locus/algorithm/v1.0.md"));
+        assert!(content.contains("/home/test/.locus/algorithm/v1.1.md"));
         assert!(content.contains("/home/test/.locus/skills/"));
         assert!(content.contains("/home/test/.locus/agents/"));
         assert!(content.contains("MANDATORY"));

@@ -171,6 +171,62 @@ fn check_platform(platform: &Platform, issues: &mut Vec<String>, warnings: &mut 
             platform.display_name()
         ));
     }
+
+    // Platform-specific integration checks.
+    if *platform == Platform::ClaudeCode && config_dir.exists() {
+        check_claude_integration(&config_dir, issues, warnings);
+    }
+}
+
+fn check_claude_integration(
+    config_dir: &std::path::Path,
+    issues: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let claude_md = config_dir.join("CLAUDE.md");
+    match std::fs::read_to_string(&claude_md) {
+        Ok(content) if content.contains("# Locus") => {
+            output::success("Claude Code CLAUDE.md — Locus bootstrap detected");
+        }
+        Ok(_) => {
+            output::warn("Claude Code CLAUDE.md exists but is not a Locus bootstrap");
+            warnings.push(
+                "CLAUDE.md does not contain '# Locus'. Run `locus platform add claude-code`."
+                    .into(),
+            );
+        }
+        Err(_) => {
+            output::error("Claude Code CLAUDE.md not found");
+            issues.push(
+                "CLAUDE.md missing. Run `locus platform add claude-code` to generate it.".into(),
+            );
+        }
+    }
+
+    let settings = config_dir.join("settings.json");
+    if let Ok(content) = std::fs::read_to_string(&settings) {
+        if content.contains("locus hook ") {
+            output::success("Claude Code settings.json — Locus hooks detected");
+        } else {
+            output::warn("Claude Code settings.json has no Locus hooks");
+            warnings
+                .push("settings.json missing Locus hooks. Re-run `locus platform add claude-code`.".into());
+        }
+    } else {
+        output::warn("Claude Code settings.json not found");
+        warnings.push("settings.json missing. Re-run `locus platform add claude-code`.".into());
+    }
+
+    // Check `locus` itself is on PATH (hooks rely on this).
+    let locus_on_path = std::process::Command::new("which")
+        .arg("locus")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !locus_on_path {
+        output::error("`locus` binary not on PATH — hooks will fail to execute");
+        issues.push("locus must be on PATH for Claude Code hooks to fire. Add it.".into());
+    }
 }
 
 fn check_binary(name: &str, label: &str, issues: &mut Vec<String>) {

@@ -80,9 +80,7 @@ pub fn add(platform_str: &str) -> Result<(), LocusError> {
     // Platform-specific setup.
     match platform {
         Platform::OpenCode => setup_opencode(&locus_home)?,
-        Platform::ClaudeCode => {
-            output::info("Claude Code adapter is not yet implemented.");
-        }
+        Platform::ClaudeCode => setup_claude(&locus_home)?,
         _ => {
             output::info(&format!(
                 "No adapter available for {}.",
@@ -120,6 +118,43 @@ fn setup_opencode(locus_home: &std::path::Path) -> Result<(), LocusError> {
         "The Algorithm orchestrates skills and agents — reading them from ~/.locus/ as needed.",
     );
     output::info("Zero files were written to .opencode/. All content stays in Locus.");
+
+    Ok(())
+}
+
+/// Set up Locus for Claude Code.
+fn setup_claude(locus_home: &std::path::Path) -> Result<(), LocusError> {
+    let adapter = locus_adapter_claude::ClaudeAdapter::new();
+    let result = adapter.setup(locus_home)?;
+
+    output::success(&format!("Wrote {}", result.claude_md_path.display()));
+    if result.backed_up_claude_md {
+        output::info(&format!(
+            "Backed up previous CLAUDE.md to {}",
+            result
+                .claude_md_path
+                .with_file_name("CLAUDE.md.pre-locus")
+                .display()
+        ));
+    }
+    output::success(&format!("Updated {}", result.settings_path.display()));
+
+    output::section("What was configured");
+    output::info(&format!(
+        "CLAUDE.md     — Locus bootstrap at {}",
+        result.claude_md_path.display()
+    ));
+    output::info(
+        "settings.json — hook entries for SessionStart, PreCompact, Stop, PreToolUse, PostToolUse, UserPromptSubmit, Notification"
+    );
+
+    output::section("How it works");
+    output::info("Claude Code loads the Locus Algorithm into every session via CLAUDE.md.");
+    output::info(
+        "The Algorithm orchestrates skills and agents — reading them from ~/.locus/ via the Read tool.",
+    );
+    output::info("Hooks call `locus hook <event>` — ensure `locus` is on your PATH.");
+    output::info("Zero files written to ~/.claude/skills or ~/.claude/agents. All content stays in Locus.");
 
     Ok(())
 }
