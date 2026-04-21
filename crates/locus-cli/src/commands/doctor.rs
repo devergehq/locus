@@ -48,7 +48,11 @@ pub fn run() -> Result<(), LocusError> {
         }
     }
 
-    // 4. Check platforms.
+    // 4. Check traits.yaml and agent composition.
+    output::section("Agent Composition");
+    check_traits(&home, &mut issues, &mut warnings);
+
+    // 5. Check platforms.
     output::section("Platforms");
     if let Some(ref config) = config {
         if config.platforms.is_empty() {
@@ -131,6 +135,61 @@ fn check_config(path: &PathBuf, issues: &mut Vec<String>) -> Option<LocusConfig>
             output::error(&format!("Config — invalid: {}", e));
             issues.push(format!("Invalid config: {}", e));
             None
+        }
+    }
+}
+
+fn check_traits(home: &PathBuf, issues: &mut Vec<String>, warnings: &mut Vec<String>) {
+    let traits_path = home.join("agents").join("traits.yaml");
+    match locus_core::Traits::from_file(&traits_path) {
+        Ok(traits) => {
+            let total = traits.expertise.len() + traits.stance.len() + traits.approach.len();
+            if total == 0 {
+                output::error("traits.yaml parses but contains no traits");
+                issues.push("traits.yaml has zero traits across all axes".into());
+                return;
+            }
+            output::success(&format!(
+                "traits.yaml — {} expertise, {} stance, {} approach ({} total)",
+                traits.expertise.len(),
+                traits.stance.len(),
+                traits.approach.len(),
+                total,
+            ));
+
+            // Smoke-test composition with the first trait from each axis.
+            let mut sample: Vec<&str> = Vec::new();
+            if let Some((id, _)) = traits.expertise.iter().next() {
+                sample.push(id.as_str());
+            }
+            if let Some((id, _)) = traits.stance.iter().next() {
+                sample.push(id.as_str());
+            }
+            if let Some((id, _)) = traits.approach.iter().next() {
+                sample.push(id.as_str());
+            }
+            match traits.compose(&sample, Some("doctor-smoke-test"), None) {
+                Ok(composed) if !composed.prompt.is_empty() => {
+                    output::success("agent composition smoke-test passed");
+                }
+                Ok(_) => {
+                    output::warn("agent composition produced an empty prompt");
+                    warnings.push("agent compose smoke-test returned empty prompt".into());
+                }
+                Err(e) => {
+                    output::error(&format!("agent composition failed: {}", e));
+                    issues.push(format!("agent compose smoke-test error: {}", e));
+                }
+            }
+        }
+        Err(e) => {
+            if traits_path.exists() {
+                output::error(&format!("traits.yaml — invalid: {}", e));
+                issues.push(format!("Invalid agents/traits.yaml: {}", e));
+            } else {
+                output::warn("traits.yaml — not found (run `locus init`)");
+                warnings.push("agents/traits.yaml missing".into());
+            }
         }
     }
 }

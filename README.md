@@ -114,11 +114,39 @@ mv ~/.claude/CLAUDE.md.pre-locus ~/.claude/CLAUDE.md
 | `locus platform remove <name>`  | Remove the adapter from `locus.yaml`                   |
 | `locus skill list`              | List available skills                                  |
 | `locus skill info <id>`         | Show detail for a specific skill                       |
+| `locus agent compose --traits <csv>` | Compose an agent prompt from trait IDs            |
+| `locus agent list-traits`       | Enumerate all available traits                         |
 | `locus doctor`                  | Validate the installation                              |
 | `locus status`                  | One-shot installation and session summary              |
 | `locus sync`                    | Sync user data via git                                 |
 | `locus upgrade`                 | Update Locus itself from GitHub releases               |
 | `locus hook <event>`            | Platform hook handler — invoked by Claude Code etc.    |
+
+## Agents and trait composition
+
+Locus agents are **trait-composed**, not character-based. Research evidence (Zheng EMNLP 2024, Gupta ICLR 2024, Deshpande EMNLP Findings 2023, Liang MAD, Adaptive Heterogeneous Multi-Agent Debate) shows that named personalities either do not help reasoning or actively harm it — while functional trait stances produce measurable improvements in debate quality and reasoning diversity.
+
+Traits are defined in `~/.locus/agents/traits.yaml` across three axes:
+
+- **Expertise** — domain knowledge (architecture, implementation, testing, security, research, design, product, data, infrastructure)
+- **Stance** — how the agent reasons (skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge)
+- **Approach** — how the agent works (thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative)
+
+Compose an agent prompt with any combination:
+
+```
+locus agent compose --traits "security,skeptical,thorough" \
+                    --role "Auth reviewer" \
+                    --task "Review the login flow for injection risks"
+```
+
+Use `--output json` for a structured object (traits, trait_names, keywords, prompt) instead of the plain prompt string.
+
+Skills like Council, RedTeam, and IterativeDepth invoke `locus agent compose` internally to assemble trait-diverse agents for debate, attack, and multi-lens analysis — rather than using named characters with backstories.
+
+## Future gaps
+
+See `FUTURE_GAPS.md` for a registry of capabilities intentionally deferred (with design intent preserved), including Rust-native project indexing (`locus-index`), eval framework, meta-prompting skill, and internal scaffolding tools (`create-skill`, `create-cli`).
 
 ---
 

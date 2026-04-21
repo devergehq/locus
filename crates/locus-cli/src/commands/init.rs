@@ -160,6 +160,38 @@ fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
             include_str!("../../../../skills/research/Workflows/ExtractAlpha.md"),
         ),
         (
+            "skills/research/Workflows/Quick.md",
+            include_str!("../../../../skills/research/Workflows/Quick.md"),
+        ),
+        (
+            "skills/research/Workflows/Extensive.md",
+            include_str!("../../../../skills/research/Workflows/Extensive.md"),
+        ),
+        (
+            "skills/research/Workflows/Deep.md",
+            include_str!("../../../../skills/research/Workflows/Deep.md"),
+        ),
+        (
+            "skills/research/Workflows/ExtractKnowledge.md",
+            include_str!("../../../../skills/research/Workflows/ExtractKnowledge.md"),
+        ),
+        (
+            "skills/research/Workflows/YoutubeExtraction.md",
+            include_str!("../../../../skills/research/Workflows/YoutubeExtraction.md"),
+        ),
+        (
+            "skills/research/Workflows/WebScraping.md",
+            include_str!("../../../../skills/research/Workflows/WebScraping.md"),
+        ),
+        (
+            "skills/research/Workflows/Enhance.md",
+            include_str!("../../../../skills/research/Workflows/Enhance.md"),
+        ),
+        (
+            "skills/research/Workflows/Retrieve.md",
+            include_str!("../../../../skills/research/Workflows/Retrieve.md"),
+        ),
+        (
             "skills/first-principles/SKILL.md",
             include_str!("../../../../skills/first-principles/SKILL.md"),
         ),
