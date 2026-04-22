@@ -271,6 +271,14 @@ fn check_claude_integration(
             warnings
                 .push("settings.json missing Locus hooks. Re-run `locus platform add claude-code`.".into());
         }
+        if content.contains("scripts/statusline.sh") {
+            output::success("Claude Code statusLine — Locus script wired");
+        } else {
+            output::warn("Claude Code statusLine — Locus script not configured");
+            warnings.push(
+                "settings.json statusLine not set to Locus. Re-run `locus platform add claude-code`.".into(),
+            );
+        }
     } else {
         output::warn("Claude Code settings.json not found");
         warnings.push("settings.json missing. Re-run `locus platform add claude-code`.".into());

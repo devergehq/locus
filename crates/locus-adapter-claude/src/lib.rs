@@ -205,6 +205,39 @@ mod tests {
     }
 
     #[test]
+    fn statusline_merge_sets_locus_script_when_absent() {
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_statusline(&mut settings, std::path::Path::new("/fake/.locus"));
+        let sl = settings.get("statusLine").expect("statusLine set");
+        assert_eq!(sl["type"], "command");
+        assert!(sl["command"].as_str().unwrap().ends_with("scripts/statusline.sh"));
+    }
+
+    #[test]
+    fn statusline_merge_preserves_non_locus_statusline() {
+        let mut settings = serde_json::json!({
+            "statusLine": { "type": "command", "command": "/opt/custom/statusline.sh" }
+        });
+        config_gen::merge_locus_statusline(&mut settings, std::path::Path::new("/fake/.locus"));
+        assert_eq!(
+            settings["statusLine"]["command"].as_str().unwrap(),
+            "/opt/custom/statusline.sh"
+        );
+    }
+
+    #[test]
+    fn statusline_merge_replaces_existing_locus_entry() {
+        let mut settings = serde_json::json!({
+            "statusLine": { "type": "command", "command": "/old/.locus/scripts/statusline.sh" }
+        });
+        config_gen::merge_locus_statusline(&mut settings, std::path::Path::new("/new/.locus"));
+        assert!(settings["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .starts_with("/new/.locus/scripts/statusline.sh"));
+    }
+
+    #[test]
     fn event_mapping_round_trip() {
         let ss = events::map_lifecycle_event(&LifecycleEvent::SessionStart).unwrap();
         assert_eq!(ss.hook_name, "SessionStart");

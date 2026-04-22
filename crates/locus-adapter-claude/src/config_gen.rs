@@ -154,7 +154,7 @@ pub fn write_claude_md(locus_home: &Path) -> Result<ClaudeMdWrite, LocusError> {
 /// Writes hook entries for SessionStart, PreCompact, Stop, PreToolUse,
 /// PostToolUse, UserPromptSubmit, and Notification. `locus` is assumed to be
 /// on the user's PATH (documented in the README).
-pub fn update_settings_json(_locus_home: &Path) -> Result<PathBuf, LocusError> {
+pub fn update_settings_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     let config_dir = global_config_dir()?;
     std::fs::create_dir_all(&config_dir).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to create config dir: {}", e),
@@ -175,6 +175,7 @@ pub fn update_settings_json(_locus_home: &Path) -> Result<PathBuf, LocusError> {
     };
 
     merge_locus_hooks(&mut settings);
+    merge_locus_statusline(&mut settings, locus_home);
 
     let content = serde_json::to_string_pretty(&settings).map_err(|e| LocusError::Adapter {
         platform: Platform::ClaudeCode,
@@ -229,6 +230,40 @@ pub fn merge_locus_hooks(settings: &mut serde_json::Value) {
 
     for (hook_name, matcher, command) in locus_hook_entries() {
         upsert_hook(hooks, hook_name, *matcher, command);
+    }
+}
+
+/// Set the `statusLine` entry in settings.json to point at the Locus
+/// statusline script. Only overwrites if the current entry is missing or
+/// already a Locus statusline (identified by the `locus/scripts/statusline`
+/// path fragment). Non-Locus statuslines are preserved so users who have
+/// customised their own statusline don't lose it.
+pub fn merge_locus_statusline(settings: &mut serde_json::Value, locus_home: &Path) {
+    if !settings.is_object() {
+        return;
+    }
+    let script = locus_home
+        .join("scripts")
+        .join("statusline.sh")
+        .display()
+        .to_string();
+
+    let existing = settings.get("statusLine").cloned();
+    let is_locus_owned = existing
+        .as_ref()
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.contains("locus/scripts/statusline") || s.contains(".locus/scripts/statusline"))
+        .unwrap_or(false);
+
+    if existing.is_none() || is_locus_owned {
+        settings.as_object_mut().unwrap().insert(
+            "statusLine".to_string(),
+            serde_json::json!({
+                "type": "command",
+                "command": script
+            }),
+        );
     }
 }
 

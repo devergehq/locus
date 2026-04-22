@@ -441,6 +441,13 @@ fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
         write_bundled(home, path, content)?;
     }
 
+    // Scripts — statusline, etc. Installed executable.
+    write_bundled_executable(
+        home,
+        "scripts/statusline.sh",
+        include_str!("../../../../scripts/statusline.sh"),
+    )?;
+
     Ok(())
 }
 
@@ -457,6 +464,26 @@ fn write_bundled(home: &PathBuf, relative_path: &str, content: &str) -> Result<(
         message: format!("Failed to write file: {}", e),
         path: target,
     })
+}
+
+/// Write a bundled file and chmod +x it (Unix only).
+fn write_bundled_executable(
+    home: &PathBuf,
+    relative_path: &str,
+    content: &str,
+) -> Result<(), LocusError> {
+    write_bundled(home, relative_path, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let target = home.join(relative_path);
+        if let Ok(meta) = fs::metadata(&target) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&target, perms);
+        }
+    }
+    Ok(())
 }
 
 /// Detected environment information.
