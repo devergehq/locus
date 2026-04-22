@@ -74,6 +74,26 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Platform hook event handler.
+    ///
+    /// Invoked by Claude Code (via settings.json hooks) and other platforms.
+    /// Reads a JSON event envelope from stdin, dispatches to the relevant
+    /// handler, and emits JSON on stdout per the platform's hook protocol.
+    Hook {
+        #[command(subcommand)]
+        command: HookCommands,
+    },
+
+    /// Trait-based agent composition.
+    ///
+    /// Composes agent prompts from trait IDs defined in
+    /// `~/.locus/agents/traits.yaml`. Used by skills (Council, RedTeam,
+    /// IterativeDepth, Research) that spawn multiple trait-diverse agents.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -106,6 +126,56 @@ enum SkillCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum AgentCommands {
+    /// Compose an agent prompt from trait IDs.
+    ///
+    /// Example:
+    ///   locus agent compose --traits "security,skeptical,thorough" \
+    ///                       --role "Auth reviewer" \
+    ///                       --task "Review the login flow"
+    Compose {
+        /// Comma-separated trait IDs (e.g., "security,skeptical,thorough").
+        #[arg(long)]
+        traits: String,
+
+        /// Optional role statement ("You are <role>.").
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Optional task statement ("Your task: <task>").
+        #[arg(long)]
+        task: Option<String>,
+
+        /// Output mode: prompt (default, plain text) or json (structured).
+        #[arg(long, value_enum, default_value_t = commands::agent::ComposeOutput::Prompt)]
+        output: commands::agent::ComposeOutput,
+    },
+
+    /// List all available traits across expertise / stance / approach axes.
+    ListTraits,
+}
+
+#[derive(Subcommand)]
+enum HookCommands {
+    /// Fired when a new session starts.
+    SessionStart,
+    /// Fired when a session ends.
+    SessionEnd,
+    /// Fired before the context window is compacted.
+    PreCompact,
+    /// Fired when the user submits a new prompt.
+    UserPromptSubmit,
+    /// Fired before a tool is invoked.
+    PreToolUse,
+    /// Fired after a tool completes.
+    PostToolUse,
+    /// Fired when the AI produces a response (platform "Stop" event).
+    Stop,
+    /// Platform notification event (e.g., status updates).
+    Notification,
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -124,6 +194,28 @@ fn main() {
         },
         Commands::Sync { init_remote } => commands::sync::run(init_remote),
         Commands::Upgrade { check } => commands::upgrade::run(check),
+        Commands::Hook { command } => {
+            let kind = match command {
+                HookCommands::SessionStart => commands::hook::HookEventKind::SessionStart,
+                HookCommands::SessionEnd => commands::hook::HookEventKind::SessionEnd,
+                HookCommands::PreCompact => commands::hook::HookEventKind::PreCompact,
+                HookCommands::UserPromptSubmit => commands::hook::HookEventKind::UserPromptSubmit,
+                HookCommands::PreToolUse => commands::hook::HookEventKind::PreToolUse,
+                HookCommands::PostToolUse => commands::hook::HookEventKind::PostToolUse,
+                HookCommands::Stop => commands::hook::HookEventKind::Stop,
+                HookCommands::Notification => commands::hook::HookEventKind::Notification,
+            };
+            commands::hook::run(kind)
+        }
+        Commands::Agent { command } => match command {
+            AgentCommands::Compose {
+                traits,
+                role,
+                task,
+                output,
+            } => commands::agent::compose(&traits, role, task, output),
+            AgentCommands::ListTraits => commands::agent::list_traits(),
+        },
     };
 
     if let Err(e) = result {

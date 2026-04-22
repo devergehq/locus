@@ -29,13 +29,13 @@ fn global_config_dir() -> Result<PathBuf, LocusError> {
 /// guaranteed to be in the AI's context — not dependent on `instructions`
 /// path resolution.
 ///
-/// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.0.md`.
+/// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
 /// Regenerate with `locus platform add opencode`.
 pub fn generate_agents_md(locus_home: &Path) -> String {
     let home = locus_home.display();
 
     // Read the Algorithm from disk.
-    let algorithm_path = locus_home.join("algorithm").join("v1.0.md");
+    let algorithm_path = locus_home.join("algorithm").join("v1.1.md");
     let algorithm_content = std::fs::read_to_string(&algorithm_path)
         .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
 
@@ -46,7 +46,7 @@ This system uses the Locus agentic workflow framework.
 
 Locus home: {home}
 
-Read and follow the Algorithm at `{home}/algorithm/v1.0.md` for all non-trivial requests.
+Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial requests.
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md`.
@@ -93,10 +93,19 @@ creative, science, extract-wisdom, documents, security, media, parser.
     )
 }
 
+/// The result of writing AGENTS.md.
+pub struct AgentsMdWrite {
+    /// Path to the AGENTS.md file that was written.
+    pub path: PathBuf,
+    /// Whether a pre-existing non-Locus AGENTS.md was backed up to `.pre-locus`.
+    pub backed_up: bool,
+}
+
 /// Write the AGENTS.md to the global OpenCode config directory.
 ///
-/// Backs up any existing AGENTS.md before overwriting.
-pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
+/// Backs up any existing non-Locus AGENTS.md to `AGENTS.md.pre-locus` before
+/// overwriting. Returns both the path written and whether a backup occurred.
+pub fn write_agents_md(locus_home: &Path) -> Result<AgentsMdWrite, LocusError> {
     let config_dir = global_config_dir()?;
     std::fs::create_dir_all(&config_dir).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to create config dir: {}", e),
@@ -106,6 +115,7 @@ pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
     let agents_path = config_dir.join("AGENTS.md");
 
     // Back up existing AGENTS.md if it exists and wasn't created by Locus.
+    let mut backed_up = false;
     if agents_path.exists() {
         let existing = std::fs::read_to_string(&agents_path).unwrap_or_default();
         if !existing.contains("# Locus") {
@@ -114,6 +124,7 @@ pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
                 message: format!("Failed to backup AGENTS.md: {}", e),
                 path: backup_path,
             })?;
+            backed_up = true;
         }
     }
 
@@ -123,7 +134,10 @@ pub fn write_agents_md(locus_home: &Path) -> Result<PathBuf, LocusError> {
         path: agents_path.clone(),
     })?;
 
-    Ok(agents_path)
+    Ok(AgentsMdWrite {
+        path: agents_path,
+        backed_up,
+    })
 }
 
 /// Update the global `~/.config/opencode/opencode.json` with `instructions`
@@ -158,7 +172,7 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     // Build the Locus instruction paths using ~ for portability.
     let home_relative = tilde_path(locus_home);
     let locus_instructions: Vec<String> = vec![
-        format!("{}/algorithm/v1.0.md", home_relative),
+        format!("{}/algorithm/v1.1.md", home_relative),
         format!("{}/protocols/degradation.md", home_relative),
         format!("{}/protocols/context-management.md", home_relative),
         format!("{}/protocols/memory-schema.md", home_relative),

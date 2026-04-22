@@ -24,6 +24,7 @@
 //!   explicitly marked unavailable via `CapabilityManifest`, never silently degraded.
 
 pub mod adapter;
+pub mod agents;
 pub mod capabilities;
 pub mod config;
 pub mod error;
@@ -34,6 +35,7 @@ pub mod skill;
 
 // Re-export primary types at crate root for convenience.
 pub use adapter::PlatformAdapter;
+pub use agents::{ComposedAgent, Trait, Traits};
 pub use capabilities::CapabilityManifest;
 pub use config::LocusConfig;
 pub use error::LocusError;
