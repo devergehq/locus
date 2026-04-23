@@ -59,8 +59,10 @@ User data (learnings, research, work artifacts) is persisted to `{home}/data/`.
 
 Before responding to ANY user request, classify it:
 
-- **Trivial**: Single file, single action, one clear concept, no investigation needed → handle directly without the Algorithm
-- **Non-trivial**: Anything involving multiple steps, investigation, design decisions, or complex changes → ENTER THE ALGORITHM
+- **Trivial**: Single file, single action, one clear concept, no investigation needed → handle directly without the Algorithm. **Open every trivial response with `**Classification: Trivial**` — one line, before any other content.**
+- **Non-trivial**: Anything involving multiple steps, investigation, design decisions, or complex changes → ENTER THE ALGORITHM. **Open with `**Classification: Non-trivial**` before the OBSERVE phase output.**
+
+A response without a classification line is a compliance failure — the user cannot tell Locus ran.
 
 ## Algorithm Execution (MANDATORY for non-trivial requests)
 

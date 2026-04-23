@@ -72,8 +72,10 @@ User data (learnings, research, work artifacts, checkpoints) is persisted to `{h
 
 Before responding to ANY user request, classify it:
 
-- **Trivial** — single file, single action, one clear concept, no investigation required → handle directly without the Algorithm. Answer questions, rename variables, small edits.
-- **Non-trivial** — multiple steps, investigation, design decisions, complex changes, or anything that would benefit from ISC-tracked execution → ENTER THE ALGORITHM.
+- **Trivial** — single file, single action, one clear concept, no investigation required → handle directly without the Algorithm. Answer questions, rename variables, small edits. **Open every trivial response with `**Classification: Trivial**` — one line, before any other content.**
+- **Non-trivial** — multiple steps, investigation, design decisions, complex changes, or anything that would benefit from ISC-tracked execution → ENTER THE ALGORITHM. **Open with `**Classification: Non-trivial**` before the OBSERVE phase output.**
+
+A response without a classification line is a compliance failure — the user cannot tell Locus ran.
 
 ## Algorithm Execution (MANDATORY for non-trivial requests)
 
