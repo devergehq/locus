@@ -68,6 +68,16 @@ Protocols are at `{home}/protocols/`.
 
 User data (learnings, research, work artifacts, checkpoints) is persisted to `{home}/data/`.
 
+## Project Identity
+
+When working in a project directory, Locus resolves the canonical project slug using:
+1. `.locus-project` marker file (searched from `$PWD` up to `$HOME`)
+2. `_registry.json` exact path match
+3. `_registry.json` pattern match
+4. Legacy fallback (unregistered project)
+
+See `{home}/protocols/memory-schema.md` for full details.
+
 ## Mode Classification (MANDATORY)
 
 Before responding to ANY user request, classify it:
