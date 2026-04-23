@@ -238,6 +238,68 @@ mod tests {
     }
 
     #[test]
+    fn permissions_merge_sets_allow_entries() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let locus_path = locus_home.display().to_string();
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+        for entry in config_gen::locus_permission_entries(&locus_path) {
+            assert!(
+                allow.iter().any(|v| v.as_str() == Some(&entry)),
+                "missing allow entry: {}",
+                entry
+            );
+        }
+    }
+
+    #[test]
+    fn permissions_merge_preserves_non_locus_allows() {
+        let mut settings = serde_json::json!({
+            "permissions": {
+                "allow": ["Bash(npm run *)", "Read(/some/other/path/*)"]
+            }
+        });
+        config_gen::merge_locus_permissions(
+            &mut settings,
+            std::path::Path::new("/home/test/.locus"),
+        );
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+        assert!(
+            allow.iter().any(|v| v.as_str() == Some("Bash(npm run *)")),
+            "user-owned allow entry must survive the merge"
+        );
+        assert!(
+            allow.iter().any(|v| v.as_str() == Some("Read(/some/other/path/*)")),
+            "user-owned read entry must survive the merge"
+        );
+    }
+
+    #[test]
+    fn permissions_merge_sets_additional_directories() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let dirs = settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap();
+        assert!(
+            dirs.iter().any(|v| v.as_str() == Some("/home/test/.locus")),
+            "locus_home must be in additionalDirectories"
+        );
+    }
+
+    #[test]
+    fn permissions_merge_is_idempotent() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let first = settings.clone();
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        assert_eq!(first, settings, "second permissions merge must be a no-op");
+    }
+
+    #[test]
     fn event_mapping_round_trip() {
         let ss = events::map_lifecycle_event(&LifecycleEvent::SessionStart).unwrap();
         assert_eq!(ss.hook_name, "SessionStart");
