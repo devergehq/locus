@@ -147,6 +147,9 @@ fn setup_claude(locus_home: &std::path::Path) -> Result<(), LocusError> {
     output::info(
         "settings.json — hook entries for SessionStart, PreCompact, Stop, PreToolUse, PostToolUse, UserPromptSubmit, Notification"
     );
+    output::info(
+        "settings.json — read-access permissions for the Locus home directory (Read tool + cat/find/ls/head/tail)"
+    );
 
     output::section("How it works");
     output::info("Claude Code loads the Locus Algorithm into every session via CLAUDE.md.");

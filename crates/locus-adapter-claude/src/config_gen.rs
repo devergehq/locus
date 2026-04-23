@@ -178,6 +178,7 @@ pub fn update_settings_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
 
     merge_locus_hooks(&mut settings);
     merge_locus_statusline(&mut settings, locus_home);
+    merge_locus_permissions(&mut settings, locus_home);
 
     let content = serde_json::to_string_pretty(&settings).map_err(|e| LocusError::Adapter {
         platform: Platform::ClaudeCode,
@@ -267,6 +268,94 @@ pub fn merge_locus_statusline(settings: &mut serde_json::Value, locus_home: &Pat
             }),
         );
     }
+}
+
+/// The Locus-owned `permissions.allow` entries for Claude Code's `settings.json`.
+///
+/// Uses Claude Code's permission rule syntax:
+/// - `Read(<path>/**)` — allows the Read tool on all files under `locus_home`.
+/// - `Bash(<cmd> <path>*)` — allows read-only shell commands on `locus_home` paths.
+///
+/// Write/Edit operations are not included — they continue to require a permission
+/// prompt. Exposed so unit tests can assert against the exact set.
+pub fn locus_permission_entries(locus_path: &str) -> Vec<String> {
+    vec![
+        format!("Read({}/**)", locus_path),
+        format!("Bash(cat {}*)", locus_path),
+        format!("Bash(find {}*)", locus_path),
+        format!("Bash(ls {}*)", locus_path),
+        format!("Bash(head {}*)", locus_path),
+        format!("Bash(tail {}*)", locus_path),
+    ]
+}
+
+/// Merge Locus read-access permission entries into a parsed settings.json value.
+///
+/// Adds `permissions.allow` entries for the Read tool and common read-only Bash
+/// commands on `locus_home`, and adds `locus_home` to `additionalDirectories`.
+/// Write/Edit operations are intentionally excluded — they keep requiring a
+/// permission prompt.
+///
+/// The merge is idempotent: existing Locus-owned entries are replaced on each
+/// run, non-Locus entries are preserved.
+pub fn merge_locus_permissions(settings: &mut serde_json::Value, locus_home: &Path) {
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+
+    let locus_path = locus_home.display().to_string();
+    let entries = locus_permission_entries(&locus_path);
+
+    // Ensure permissions object exists.
+    {
+        let root = settings.as_object_mut().expect("settings is object");
+        if !root.get("permissions").map(|v| v.is_object()).unwrap_or(false) {
+            root.insert("permissions".to_string(), serde_json::json!({}));
+        }
+    }
+
+    let perms = settings
+        .get_mut("permissions")
+        .and_then(|v| v.as_object_mut())
+        .expect("permissions exists and is object");
+
+    // --- allow array ---
+    if !perms.get("allow").map(|v| v.is_array()).unwrap_or(false) {
+        perms.insert("allow".to_string(), serde_json::json!([]));
+    }
+
+    let allow = perms
+        .get_mut("allow")
+        .and_then(|v| v.as_array_mut())
+        .expect("allow is array");
+
+    // Remove any prior Locus-owned entries so the merge is idempotent.
+    allow.retain(|entry| {
+        let s = entry.as_str().unwrap_or("");
+        !entries.iter().any(|e| e == s)
+    });
+
+    for entry in &entries {
+        allow.push(serde_json::json!(entry));
+    }
+
+    // --- additionalDirectories array ---
+    if !perms
+        .get("additionalDirectories")
+        .map(|v| v.is_array())
+        .unwrap_or(false)
+    {
+        perms.insert("additionalDirectories".to_string(), serde_json::json!([]));
+    }
+
+    let additional_dirs = perms
+        .get_mut("additionalDirectories")
+        .and_then(|v| v.as_array_mut())
+        .expect("additionalDirectories is array");
+
+    // Remove stale Locus entry (handles LOCUS_HOME changes) then re-add.
+    additional_dirs.retain(|entry| entry.as_str() != Some(&locus_path));
+    additional_dirs.push(serde_json::json!(locus_path));
 }
 
 /// Insert or replace a Locus-owned hook entry under the given hook name,
