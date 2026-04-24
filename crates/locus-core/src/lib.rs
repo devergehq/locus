@@ -38,7 +38,7 @@ pub mod skill;
 pub use adapter::PlatformAdapter;
 pub use agents::{ComposedAgent, Trait, Traits};
 pub use capabilities::CapabilityManifest;
-pub use config::LocusConfig;
+pub use config::{DelegationConfig, DelegationDefaults, LocusConfig};
 pub use delegation::{
     DelegationBackend, DelegationMode, DelegationRequest, DelegationResult, DelegationStatus,
     DelegationTaskKind,

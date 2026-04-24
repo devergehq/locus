@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::ValueEnum;
 use locus_adapter_opencode::run::run_delegation;
 use locus_core::{
-    DelegationBackend, DelegationMode, DelegationRequest, DelegationTaskKind, LocusError,
+    DelegationBackend, DelegationConfig, DelegationDefaults, DelegationMode, DelegationRequest,
+    DelegationTaskKind, LocusConfig, LocusError,
 };
 use serde::Serialize;
 
@@ -64,7 +65,7 @@ pub enum DelegateOutput {
 pub struct RunArgs {
     pub backend: DelegateBackendArg,
     pub task_kind: DelegateTaskKindArg,
-    pub model: String,
+    pub model: Option<String>,
     pub dir: PathBuf,
     pub prompt: String,
     pub agent: Option<String>,
@@ -80,7 +81,8 @@ pub struct RunArgs {
 pub fn run(args: RunArgs) -> Result<(), LocusError> {
     let dry_run = args.dry_run;
     let output_mode = args.output;
-    let request = build_request(args)?;
+    let delegation = load_delegation_config();
+    let request = build_request(args, &delegation)?;
     validate_request(&request)?;
 
     if dry_run {
@@ -97,19 +99,45 @@ pub fn run(args: RunArgs) -> Result<(), LocusError> {
     }
 }
 
-fn build_request(args: RunArgs) -> Result<DelegationRequest, LocusError> {
+/// Load delegation routing config from `~/.locus/locus.yaml`.
+///
+/// Falls back to an empty config when the file is missing or unparseable —
+/// resolution will produce a clear error at lookup time if no model can be
+/// resolved.
+fn load_delegation_config() -> DelegationConfig {
+    let Some(home) = dirs::home_dir() else {
+        return DelegationConfig::default();
+    };
+    let path = home.join(".locus").join("locus.yaml");
+    LocusConfig::from_file(&path)
+        .map(|cfg| cfg.delegation)
+        .unwrap_or_default()
+}
+
+fn build_request(
+    args: RunArgs,
+    delegation: &DelegationConfig,
+) -> Result<DelegationRequest, LocusError> {
     let id = new_request_id();
     let artifact_dir = args
         .artifact_dir
         .unwrap_or_else(|| default_artifact_dir(&id));
 
+    let backend: DelegationBackend = args.backend.into();
+    let task_kind: DelegationTaskKind = args.task_kind.into();
+    let defaults = delegation.lookup(backend.as_str(), task_kind.as_str());
+
+    let model = resolve_model(args.model.as_deref(), defaults, &backend, &task_kind)?;
+    let agent = resolve_optional(args.agent, defaults.and_then(|d| d.agent.clone()));
+    let variant = resolve_optional(args.variant, defaults.and_then(|d| d.variant.clone()));
+
     Ok(DelegationRequest {
         id,
-        backend: args.backend.into(),
-        task_kind: args.task_kind.into(),
-        model: args.model,
-        agent: args.agent,
-        variant: args.variant,
+        backend,
+        task_kind,
+        model,
+        agent,
+        variant,
         workspace_dir: args.dir,
         prompt: args.prompt,
         context_files: args.context_files,
@@ -118,6 +146,37 @@ fn build_request(args: RunArgs) -> Result<DelegationRequest, LocusError> {
         artifact_dir,
         timeout_seconds: args.timeout_seconds,
     })
+}
+
+fn resolve_model(
+    cli_model: Option<&str>,
+    defaults: Option<&DelegationDefaults>,
+    backend: &DelegationBackend,
+    task_kind: &DelegationTaskKind,
+) -> Result<String, LocusError> {
+    if let Some(m) = cli_model.map(str::trim).filter(|s| !s.is_empty()) {
+        return Ok(m.to_string());
+    }
+    if let Some(default) = defaults {
+        return Ok(default.model.clone());
+    }
+    Err(LocusError::Config {
+        message: format!(
+            "No --model provided and no delegation default configured for ({}, {}). Either pass --model or set delegation.defaults.{}.{}.model in ~/.locus/locus.yaml.",
+            backend.as_str(),
+            task_kind.as_str(),
+            backend.as_str(),
+            task_kind.as_str()
+        ),
+        path: None,
+    })
+}
+
+fn resolve_optional(cli_value: Option<String>, default_value: Option<String>) -> Option<String> {
+    cli_value
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or(default_value)
 }
 
 fn validate_request(request: &DelegationRequest) -> Result<(), LocusError> {
@@ -611,12 +670,13 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn sample_args() -> RunArgs {
         RunArgs {
             backend: DelegateBackendArg::Opencode,
             task_kind: DelegateTaskKindArg::Research,
-            model: "openai/gpt-5.5".into(),
+            model: Some("openai/gpt-5.5".into()),
             dir: PathBuf::from("/tmp/project"),
             prompt: "Research a topic".into(),
             agent: Some("research".into()),
@@ -629,9 +689,28 @@ mod tests {
         }
     }
 
+    fn empty_config() -> DelegationConfig {
+        DelegationConfig::default()
+    }
+
+    fn config_with_research_default(model: &str) -> DelegationConfig {
+        let mut inner = HashMap::new();
+        inner.insert(
+            "research".to_string(),
+            DelegationDefaults {
+                model: model.into(),
+                variant: Some("low".into()),
+                agent: Some("default-agent".into()),
+            },
+        );
+        let mut outer = HashMap::new();
+        outer.insert("opencode".to_string(), inner);
+        DelegationConfig { defaults: outer }
+    }
+
     #[test]
     fn build_request_enforces_read_only_mode() {
-        let request = build_request(sample_args()).unwrap();
+        let request = build_request(sample_args(), &empty_config()).unwrap();
 
         assert_eq!(request.backend, DelegationBackend::OpenCode);
         assert_eq!(request.task_kind, DelegationTaskKind::Research);
@@ -644,7 +723,7 @@ mod tests {
 
     #[test]
     fn build_request_keeps_context_files() {
-        let request = build_request(sample_args()).unwrap();
+        let request = build_request(sample_args(), &empty_config()).unwrap();
 
         assert_eq!(
             request.context_files,
@@ -655,7 +734,7 @@ mod tests {
 
     #[test]
     fn validate_request_rejects_zero_timeout() {
-        let mut request = build_request(sample_args()).unwrap();
+        let mut request = build_request(sample_args(), &empty_config()).unwrap();
         request.timeout_seconds = 0;
 
         assert!(validate_request(&request).is_err());
@@ -897,5 +976,53 @@ mod tests {
             output: DelegateOutput::Json,
         });
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn build_request_resolves_model_from_config_when_cli_omits_it() {
+        let mut args = sample_args();
+        args.model = None;
+        args.agent = None;
+        args.variant = None;
+
+        let config = config_with_research_default("openai/gpt-5.4-mini");
+        let request = build_request(args, &config).unwrap();
+
+        assert_eq!(request.model, "openai/gpt-5.4-mini");
+        assert_eq!(request.agent.as_deref(), Some("default-agent"));
+        assert_eq!(request.variant.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn build_request_errors_when_no_model_and_no_default() {
+        let mut args = sample_args();
+        args.model = None;
+
+        let err = build_request(args, &empty_config()).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("No --model provided"));
+        assert!(message.contains("delegation.defaults.opencode.research"));
+    }
+
+    #[test]
+    fn build_request_cli_model_overrides_config_default() {
+        let args = sample_args();
+        let config = config_with_research_default("openai/gpt-5.4-mini");
+        let request = build_request(args, &config).unwrap();
+
+        assert_eq!(request.model, "openai/gpt-5.5");
+        // CLI agent/variant also win since they were Some in sample_args.
+        assert_eq!(request.agent.as_deref(), Some("research"));
+        assert_eq!(request.variant.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn build_request_treats_empty_model_string_as_unset() {
+        let mut args = sample_args();
+        args.model = Some("   ".into());
+        let config = config_with_research_default("openai/gpt-5.4-mini");
+        let request = build_request(args, &config).unwrap();
+
+        assert_eq!(request.model, "openai/gpt-5.4-mini");
     }
 }

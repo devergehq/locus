@@ -280,5 +280,6 @@ fn build_default_config(platforms: Vec<Platform>, _env: &DetectedEnv) -> LocusCo
         inference: InferenceConfig::default(),
         paths: PathConfig::default(),
         platform_overrides: std::collections::HashMap::new(),
+        delegation: locus_core::DelegationConfig::default(),
     }
 }

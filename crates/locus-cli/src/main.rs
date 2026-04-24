@@ -188,8 +188,11 @@ enum DelegateCommands {
         task_kind: commands::delegate::DelegateTaskKindArg,
 
         /// Provider/model identifier, e.g. openai/gpt-5.5.
+        ///
+        /// Optional when `delegation.defaults.<backend>.<task_kind>.model` is
+        /// set in `~/.locus/locus.yaml`. The CLI flag wins when both are set.
         #[arg(long)]
-        model: String,
+        model: Option<String>,
 
         /// Workspace directory for the delegated backend.
         #[arg(long)]
@@ -414,8 +417,34 @@ mod tests {
                 command: DelegateCommands::Run { dry_run, model, .. },
             } => {
                 assert!(dry_run);
-                assert_eq!(model, "openai/gpt-5.5");
+                assert_eq!(model.as_deref(), Some("openai/gpt-5.5"));
             }
+            _ => panic!("expected delegate run command"),
+        }
+    }
+
+    #[test]
+    fn parses_delegate_run_command_without_model() {
+        let cli = Cli::try_parse_from([
+            "locus",
+            "delegate",
+            "run",
+            "--backend",
+            "opencode",
+            "--task-kind",
+            "research",
+            "--dir",
+            "/tmp/project",
+            "--prompt",
+            "Research this",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Delegate {
+                command: DelegateCommands::Run { model, .. },
+            } => assert!(model.is_none()),
             _ => panic!("expected delegate run command"),
         }
     }

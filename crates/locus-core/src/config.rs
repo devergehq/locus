@@ -40,6 +40,46 @@ pub struct LocusConfig {
     /// Per-platform overrides for adapter-specific settings.
     #[serde(default)]
     pub platform_overrides: HashMap<Platform, serde_yaml::Value>,
+
+    /// Routing defaults for `locus delegate run`.
+    #[serde(default)]
+    pub delegation: DelegationConfig,
+}
+
+/// Routing defaults for delegated execution.
+///
+/// Lets `locus delegate run` resolve `--model` (and optionally `--variant`,
+/// `--agent`) from configuration rather than requiring them on every call.
+/// Outer key is the backend's snake_case name (e.g. `opencode`); inner key
+/// is the task kind's snake_case name (e.g. `research`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DelegationConfig {
+    /// Per-backend, per-task-kind defaults.
+    #[serde(default)]
+    pub defaults: HashMap<String, HashMap<String, DelegationDefaults>>,
+}
+
+/// Default invocation settings for a (backend, task_kind) route.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationDefaults {
+    /// Provider/model identifier, e.g. `openai/gpt-5.5`.
+    pub model: String,
+    /// Optional provider-specific reasoning variant.
+    #[serde(default)]
+    pub variant: Option<String>,
+    /// Optional backend agent/profile name.
+    #[serde(default)]
+    pub agent: Option<String>,
+}
+
+impl DelegationConfig {
+    /// Look up defaults for the given backend/task-kind pair.
+    ///
+    /// Both keys are the snake_case stable names exposed by
+    /// `DelegationBackend::as_str` and `DelegationTaskKind::as_str`.
+    pub fn lookup(&self, backend: &str, task_kind: &str) -> Option<&DelegationDefaults> {
+        self.defaults.get(backend).and_then(|m| m.get(task_kind))
+    }
 }
 
 /// Algorithm behaviour settings.
@@ -327,6 +367,15 @@ inference:
 
 paths:
   data: /custom/data/path
+
+delegation:
+  defaults:
+    opencode:
+      research:
+        model: openai/gpt-5.5
+        variant: high
+      code_exploration:
+        model: openai/gpt-5.4-mini
 "#;
         let config: LocusConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.platforms.len(), 2);
@@ -338,6 +387,28 @@ paths:
             config.inference.model,
             Some("claude-sonnet-4-20250514".into())
         );
+        let research = config
+            .delegation
+            .lookup("opencode", "research")
+            .expect("research default present");
+        assert_eq!(research.model, "openai/gpt-5.5");
+        assert_eq!(research.variant.as_deref(), Some("high"));
+        assert!(research.agent.is_none());
+        assert_eq!(
+            config
+                .delegation
+                .lookup("opencode", "code_exploration")
+                .map(|d| d.model.as_str()),
+            Some("openai/gpt-5.4-mini")
+        );
+    }
+
+    #[test]
+    fn delegation_section_defaults_when_absent() {
+        let yaml = "platforms: [open-code]";
+        let config: LocusConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.delegation.defaults.is_empty());
+        assert!(config.delegation.lookup("opencode", "research").is_none());
     }
 
     #[test]
