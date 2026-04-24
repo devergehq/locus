@@ -133,11 +133,27 @@ pub fn run_delegation_with_bin(
             let raw_output_path = artifacts.first().cloned();
 
             if code == Some(0) {
-                let mut result = DelegationResult::success(
-                    request,
-                    summarize_success(&stdout, raw_output_path.as_ref()),
-                    duration_ms,
-                );
+                let parsed = parse::extract_final_answer(&stdout).map(|answer| {
+                    let sections = parse::extract_sections(&answer);
+                    (answer, sections)
+                });
+                let summary = match &parsed {
+                    Some((answer, sections)) => sections
+                        .summary
+                        .clone()
+                        .unwrap_or_else(|| answer.trim().to_string()),
+                    None => format_artifact_summary(
+                        "OpenCode completed successfully",
+                        raw_output_path.as_ref(),
+                    ),
+                };
+                let mut result = DelegationResult::success(request, summary, duration_ms);
+                if let Some((_, sections)) = parsed {
+                    result.findings = sections.findings;
+                    result.evidence = sections.evidence;
+                    result.risks = sections.risks;
+                    result.files_referenced = sections.files_referenced;
+                }
                 result.artifacts.append(&mut artifacts);
                 result.raw_output_path = raw_output_path;
                 Ok(result)
@@ -263,19 +279,6 @@ fn write_artifacts(
     Ok(artifacts)
 }
 
-fn summarize_success(stdout: &[u8], raw_output_path: Option<&PathBuf>) -> String {
-    let text = String::from_utf8_lossy(stdout).trim().to_string();
-    if text.is_empty() {
-        return format_artifact_summary("OpenCode completed successfully", raw_output_path);
-    }
-
-    let compact = compact_text(&text, 1200);
-    format!(
-        "OpenCode completed successfully. Compact output excerpt: {}",
-        compact
-    )
-}
-
 fn summarize_failure(code: Option<i32>, stderr: &[u8], stdout: &[u8]) -> String {
     let stderr_text = String::from_utf8_lossy(stderr).trim().to_string();
     let stdout_text = String::from_utf8_lossy(stdout).trim().to_string();
@@ -309,6 +312,144 @@ fn compact_text(text: &str, max_chars: usize) -> String {
 
 fn elapsed_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+pub(crate) mod parse {
+    //! JSONL event parsing for OpenCode `--format json` output.
+
+    use serde_json::Value;
+
+    /// Parsed markdown sections from a delegated final answer.
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub struct ParsedSections {
+        pub summary: Option<String>,
+        pub findings: Vec<String>,
+        pub evidence: Vec<String>,
+        pub risks: Vec<String>,
+        pub files_referenced: Vec<String>,
+    }
+
+    /// Pull the model's final answer text from an OpenCode JSONL stdout stream.
+    ///
+    /// Prefers the last text event marked `phase = "final_answer"` and falls
+    /// back to the last text event of any phase. Returns None when no text
+    /// events are present.
+    pub fn extract_final_answer(stdout: &[u8]) -> Option<String> {
+        let raw = std::str::from_utf8(stdout).ok()?;
+        let mut last_text: Option<String> = None;
+        let mut last_final_answer: Option<String> = None;
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if value.get("type").and_then(Value::as_str) != Some("text") {
+                continue;
+            }
+            let part = match value.get("part") {
+                Some(p) => p,
+                None => continue,
+            };
+            let text = match part.get("text").and_then(Value::as_str) {
+                Some(t) if !t.trim().is_empty() => t.to_string(),
+                _ => continue,
+            };
+            last_text = Some(text.clone());
+            let phase = part
+                .pointer("/metadata/openai/phase")
+                .and_then(Value::as_str);
+            if phase == Some("final_answer") {
+                last_final_answer = Some(text);
+            }
+        }
+
+        last_final_answer.or(last_text)
+    }
+
+    /// Split a markdown final answer into known structured sections.
+    ///
+    /// Recognises `**Summary**`, `**Findings**`, `**Evidence**`, `**Risks**`,
+    /// and `**Files Referenced**` headers. Bullet lines (`- item`) under each
+    /// header populate the matching vector; non-bullet text under `**Summary**`
+    /// becomes the summary string. Content outside known sections is ignored.
+    pub fn extract_sections(answer: &str) -> ParsedSections {
+        let mut sections = ParsedSections::default();
+        let mut current: Option<Section> = None;
+        let mut summary_lines: Vec<String> = Vec::new();
+
+        for raw_line in answer.lines() {
+            let line = raw_line.trim();
+            if let Some(section) = match_header(line) {
+                if let Some(Section::Summary) = current {
+                    if !summary_lines.is_empty() {
+                        sections.summary = Some(summary_lines.join("\n").trim().to_string());
+                        summary_lines.clear();
+                    }
+                }
+                current = Some(section);
+                continue;
+            }
+            let Some(section) = current else { continue };
+            match section {
+                Section::Summary => {
+                    if !line.is_empty() {
+                        summary_lines.push(line.to_string());
+                    }
+                }
+                Section::Findings => push_bullet(line, &mut sections.findings),
+                Section::Evidence => push_bullet(line, &mut sections.evidence),
+                Section::Risks => push_bullet(line, &mut sections.risks),
+                Section::FilesReferenced => push_bullet(line, &mut sections.files_referenced),
+            }
+        }
+        if let Some(Section::Summary) = current {
+            if !summary_lines.is_empty() && sections.summary.is_none() {
+                sections.summary = Some(summary_lines.join("\n").trim().to_string());
+            }
+        }
+        sections
+    }
+
+    #[derive(Copy, Clone)]
+    enum Section {
+        Summary,
+        Findings,
+        Evidence,
+        Risks,
+        FilesReferenced,
+    }
+
+    fn match_header(line: &str) -> Option<Section> {
+        match line {
+            "**Summary**" => Some(Section::Summary),
+            "**Findings**" => Some(Section::Findings),
+            "**Evidence**" => Some(Section::Evidence),
+            "**Risks**" => Some(Section::Risks),
+            "**Files Referenced**" => Some(Section::FilesReferenced),
+            _ => None,
+        }
+    }
+
+    fn push_bullet(line: &str, dest: &mut Vec<String>) {
+        if let Some(rest) = line.strip_prefix("- ") {
+            let item = strip_wrapping_backticks(rest.trim());
+            if !item.is_empty() {
+                dest.push(item.to_string());
+            }
+        }
+    }
+
+    fn strip_wrapping_backticks(item: &str) -> &str {
+        item.strip_prefix('`')
+            .and_then(|s| s.strip_suffix('`'))
+            .filter(|s| !s.contains('`'))
+            .unwrap_or(item)
+    }
 }
 
 #[cfg(test)]
@@ -417,5 +558,109 @@ mod tests {
         assert!(result.error.as_deref().unwrap().contains("OpenCode exited"));
         assert!(result.raw_output_path.as_ref().unwrap().exists());
         let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    const SMOKE_FIXTURE: &str =
+        include_str!("../tests/fixtures/opencode_final_answer.jsonl");
+
+    #[test]
+    fn parse_extracts_final_answer_from_smoke_fixture() {
+        let answer = parse::extract_final_answer(SMOKE_FIXTURE.as_bytes())
+            .expect("smoke fixture should yield a final answer");
+
+        assert!(answer.contains("**Summary**"));
+        assert!(answer.contains("**Findings**"));
+        assert!(answer.contains("locus-cli"));
+
+        let sections = parse::extract_sections(&answer);
+
+        assert!(sections
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("six top-level crates"));
+        assert!(sections.findings.iter().any(|f| f.contains("locus-cli")));
+        assert!(sections.findings.iter().any(|f| f.contains("locus-core")));
+        assert!(sections
+            .findings
+            .iter()
+            .any(|f| f.contains("locus-adapter-opencode")));
+        assert!(sections.evidence.iter().any(|e| e.contains("Cargo.toml")));
+        assert!(!sections.risks.is_empty());
+        assert!(sections
+            .files_referenced
+            .iter()
+            .any(|f| f == "Cargo.toml"));
+        assert!(sections
+            .files_referenced
+            .iter()
+            .any(|f| f.contains("locus-cli/Cargo.toml")));
+    }
+
+    #[test]
+    fn parse_falls_back_to_last_text_when_no_final_answer_phase() {
+        let stdout = concat!(
+            "{\"type\":\"text\",\"part\":{\"text\":\"first\"}}\n",
+            "{\"type\":\"text\",\"part\":{\"text\":\"second\"}}\n",
+        );
+        let answer = parse::extract_final_answer(stdout.as_bytes()).unwrap();
+        assert_eq!(answer, "second");
+    }
+
+    #[test]
+    fn parse_returns_none_for_empty_stdout() {
+        assert!(parse::extract_final_answer(b"").is_none());
+        assert!(parse::extract_final_answer(b"\n\n").is_none());
+    }
+
+    #[test]
+    fn parse_skips_malformed_lines() {
+        let stdout = concat!(
+            "not json at all\n",
+            "{\"type\":\"text\",\"part\":{\"text\":\"good\"}}\n",
+            "{not closed\n",
+        );
+        let answer = parse::extract_final_answer(stdout.as_bytes()).unwrap();
+        assert_eq!(answer, "good");
+    }
+
+    #[test]
+    fn parse_returns_whole_answer_when_no_sections_present() {
+        let answer = "Just a free-form response without any section headers.";
+        let sections = parse::extract_sections(answer);
+        assert!(sections.summary.is_none());
+        assert!(sections.findings.is_empty());
+    }
+
+    #[test]
+    fn parse_extracts_each_named_section() {
+        let answer = concat!(
+            "preamble line\n",
+            "**Summary**\n",
+            "All went well.\n",
+            "\n",
+            "**Findings**\n",
+            "- finding one\n",
+            "- finding two\n",
+            "\n",
+            "**Evidence**\n",
+            "- evidence one\n",
+            "\n",
+            "**Risks**\n",
+            "- risk one\n",
+            "\n",
+            "**Files Referenced**\n",
+            "- src/lib.rs\n",
+            "- src/main.rs\n",
+        );
+        let sections = parse::extract_sections(answer);
+        assert_eq!(sections.summary.as_deref(), Some("All went well."));
+        assert_eq!(sections.findings, vec!["finding one", "finding two"]);
+        assert_eq!(sections.evidence, vec!["evidence one"]);
+        assert_eq!(sections.risks, vec!["risk one"]);
+        assert_eq!(
+            sections.files_referenced,
+            vec!["src/lib.rs", "src/main.rs"]
+        );
     }
 }
