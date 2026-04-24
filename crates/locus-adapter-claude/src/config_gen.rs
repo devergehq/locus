@@ -284,13 +284,17 @@ pub fn merge_locus_statusline(settings: &mut serde_json::Value, locus_home: &Pat
 ///
 /// Uses Claude Code's permission rule syntax:
 /// - `Read(<path>/**)` — allows the Read tool on all files under `locus_home`.
+/// - `Write(<path>/**)` — allows the Edit tool on all files under `locus_home/data`.
 /// - `Bash(<cmd> <path>*)` — allows read-only shell commands on `locus_home` paths.
 ///
-/// Write/Edit operations are not included — they continue to require a permission
-/// prompt. Exposed so unit tests can assert against the exact set.
+/// Read access is granted across the entire Locus home so skills, agents, and
+/// protocols can be loaded on demand. Write access is limited to `data/` so
+/// PRDs, checkpoints, and learnings can be persisted without prompting.
+/// Exposed so unit tests can assert against the exact set.
 pub fn locus_permission_entries(locus_path: &str) -> Vec<String> {
     vec![
         format!("Read({}/**)", locus_path),
+        format!("Write({}/data/**)", locus_path),
         format!("Bash(cat {}*)", locus_path),
         format!("Bash(find {}*)", locus_path),
         format!("Bash(ls {}*)", locus_path),
@@ -299,12 +303,11 @@ pub fn locus_permission_entries(locus_path: &str) -> Vec<String> {
     ]
 }
 
-/// Merge Locus read-access permission entries into a parsed settings.json value.
+/// Merge Locus permission entries into a parsed settings.json value.
 ///
-/// Adds `permissions.allow` entries for the Read tool and common read-only Bash
-/// commands on `locus_home`, and adds `locus_home` to `additionalDirectories`.
-/// Write/Edit operations are intentionally excluded — they keep requiring a
-/// permission prompt.
+/// Adds `permissions.allow` entries for Read (whole `locus_home`), Write
+/// (`locus_home/data/**` only), and common read-only Bash commands on
+/// `locus_home`. Also adds `locus_home` to `additionalDirectories`.
 ///
 /// The merge is idempotent: existing Locus-owned entries are replaced on each
 /// run, non-Locus entries are preserved.

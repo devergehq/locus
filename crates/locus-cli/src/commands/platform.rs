@@ -111,6 +111,14 @@ fn setup_opencode(locus_home: &std::path::Path) -> Result<(), LocusError> {
         locus_home.display(),
         locus_home.display()
     ));
+    output::info(&format!(
+        "opencode.json — read permission for all of {} (skills, agents, protocols)",
+        locus_home.display()
+    ));
+    output::info(&format!(
+        "opencode.json — edit permission for {}/data/ only (PRDs, checkpoints, learnings)",
+        locus_home.display()
+    ));
 
     output::section("How it works");
     output::info("OpenCode loads the Locus Algorithm into every session via instructions.");

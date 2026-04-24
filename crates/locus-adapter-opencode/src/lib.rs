@@ -134,4 +134,93 @@ mod tests {
         assert!(content.contains("VERIFY"));
         assert!(content.contains("LEARN"));
     }
+
+    #[test]
+    fn permissions_merge_sets_read_on_whole_locus() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+
+        let read = config["permission"]["read"].as_object().unwrap();
+        assert_eq!(
+            read.get("/home/test/.locus/**"),
+            Some(&serde_json::json!("allow"))
+        );
+        // Read should cover the whole locus home, not just data.
+        assert!(!read.contains_key("/home/test/.locus/data/**"));
+    }
+
+    #[test]
+    fn permissions_merge_sets_edit_only_on_data() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+
+        let edit = config["permission"]["edit"].as_object().unwrap();
+        assert_eq!(
+            edit.get("/home/test/.locus/data/**"),
+            Some(&serde_json::json!("allow"))
+        );
+        // Edit should NOT cover the whole locus home.
+        assert!(!edit.contains_key("/home/test/.locus/**"));
+    }
+
+    #[test]
+    fn permissions_merge_preserves_non_locus_entries() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({
+            "permission": {
+                "read": {
+                    "/some/other/path/**": "allow"
+                },
+                "bash": "ask"
+            }
+        });
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+
+        let read = config["permission"]["read"].as_object().unwrap();
+        assert_eq!(
+            read.get("/some/other/path/**"),
+            Some(&serde_json::json!("allow"))
+        );
+        assert_eq!(
+            read.get("/home/test/.locus/**"),
+            Some(&serde_json::json!("allow"))
+        );
+        assert_eq!(
+            config["permission"]["bash"].as_str(),
+            Some("ask")
+        );
+    }
+
+    #[test]
+    fn permissions_merge_is_idempotent() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+        let first = config.clone();
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+        assert_eq!(first, config, "second permissions merge must be a no-op");
+    }
+
+    #[test]
+    fn permissions_merge_updates_on_locus_home_change() {
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, Path::new("/old/.locus"));
+        config_gen::merge_locus_permissions(&mut config, Path::new("/new/.locus"));
+
+        let read = config["permission"]["read"].as_object().unwrap();
+        assert!(!read.contains_key("/old/.locus/**"));
+        assert_eq!(
+            read.get("/new/.locus/**"),
+            Some(&serde_json::json!("allow"))
+        );
+
+        let edit = config["permission"]["edit"].as_object().unwrap();
+        assert!(!edit.contains_key("/old/.locus/data/**"));
+        assert_eq!(
+            edit.get("/new/.locus/data/**"),
+            Some(&serde_json::json!("allow"))
+        );
+    }
 }
