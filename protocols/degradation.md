@@ -27,6 +27,14 @@ On [platform], falling back to [alternative approach].
 This may be [slower/less thorough/sequential instead of parallel].
 ```
 
+### Tool-Level Degradation
+
+When a platform lacks a specific tool that agents expect (e.g., `web_search`), the agent must adapt its methodology rather than fail silently:
+
+1. **Check the tool manifest first** — before attempting any tool, verify it is in the platform's available tool list.
+2. **Use the nearest equivalent** — if `web_search` is unavailable, use `web_fetch` against known URLs or `bash` with `curl`/`gh` for discovery.
+3. **Declare the degradation** — state clearly in the output which tool was unavailable and how the agent adapted.
+
 ### Examples
 
 | Skill | Full Mode | Degraded Mode |
@@ -35,6 +43,8 @@ This may be [slower/less thorough/sequential instead of parallel].
 | Red Team | 8+ parallel attack agents | Unavailable (requires delegation) |
 | Research (Extensive) | 4-8 parallel research agents | Sequential research from multiple angles |
 | Research (Quick) | Single-agent research | No change (doesn't need delegation) |
+| Research (Discovery) | `web_search` for open-ended discovery | `web_fetch` against known URLs + `bash` with `curl`/`gh` |
+| Research (Verification) | `web_fetch` to verify citations | No change (both platforms support fetch) |
 
 ## Implementation
 

@@ -76,6 +76,7 @@ Iterative deep-investigation researcher, persistent vault across sessions. 3-60 
 
 - **With delegation**: full multi-researcher parallel in Standard/Extensive/Deep modes.
 - **Without delegation**: all modes fall back to sequential single-researcher execution. Still thorough via methodology rotation, but slower and less diverse per unit time.
+- **Without web_search**: discovery degrades to `web_fetch` against known URLs, `bash` with `curl`/`gh`, and `sourcegraph` code search. Agents must verify every URL they cite. OpenCode users: start with `OPENCODE_ENABLE_EXA=1` to enable native web search.
 
 ## Output discipline
 
