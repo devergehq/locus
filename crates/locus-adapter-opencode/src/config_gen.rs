@@ -230,6 +230,8 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
 /// load skills, agents, algorithms, and protocols without prompting.
 /// Pre-allows edit access only to `locus_home/data/**` so PRDs, checkpoints,
 /// and learnings can be written without prompting.
+/// Also pre-allows read and write access to the allele home directory so the
+/// AI can operate on allele workspaces without prompting.
 /// Existing non-Locus permissions are preserved. The merge is idempotent.
 pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path) {
     if !config.is_object() {
@@ -273,6 +275,27 @@ pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path
         .expect("edit perms is object");
     edit_perms.retain(|k, _| !k.contains(".locus/"));
     edit_perms.insert(edit_path, serde_json::json!("allow"));
+
+    // --- allele workspaces: read + write ---
+    if let Some(allele_home) = dirs::home_dir().map(|h| h.join(".allele")) {
+        let allele_path = allele_home.display().to_string();
+        let allele_read = format!("{}/**", allele_path);
+        let allele_edit = format!("{}/**", allele_path);
+
+        let read_perms = permissions
+            .get_mut("read")
+            .and_then(|v| v.as_object_mut())
+            .expect("read perms is object");
+        read_perms.retain(|k, _| !k.contains(".allele/"));
+        read_perms.insert(allele_read, serde_json::json!("allow"));
+
+        let edit_perms = permissions
+            .get_mut("edit")
+            .and_then(|v| v.as_object_mut())
+            .expect("edit perms is object");
+        edit_perms.retain(|k, _| !k.contains(".allele/"));
+        edit_perms.insert(allele_edit, serde_json::json!("allow"));
+    }
 }
 
 /// Convert an absolute path to a tilde path (e.g., /Users/foo/.locus -> ~/.locus).

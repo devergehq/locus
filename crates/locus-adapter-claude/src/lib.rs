@@ -300,6 +300,46 @@ mod tests {
     }
 
     #[test]
+    fn permissions_merge_sets_allele_allow_entries() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+
+        let allele_entries: Vec<String> = allow
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| s.contains(".allele"))
+            .map(|s| s.to_string())
+            .collect();
+
+        assert!(!allele_entries.is_empty(), "allele entries must exist");
+        assert!(
+            allele_entries.iter().any(|s| s.starts_with("Read(")),
+            "allele Read entry must exist"
+        );
+        assert!(
+            allele_entries.iter().any(|s| s.starts_with("Write(")),
+            "allele Write entry must exist"
+        );
+    }
+
+    #[test]
+    fn permissions_merge_sets_allele_additional_directories() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let dirs = settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap();
+        assert!(
+            dirs.iter()
+                .any(|v| v.as_str().map(|s| s.contains(".allele")).unwrap_or(false)),
+            "allele home must be in additionalDirectories"
+        );
+    }
+
+    #[test]
     fn event_mapping_round_trip() {
         let ss = events::map_lifecycle_event(&LifecycleEvent::SessionStart).unwrap();
         assert_eq!(ss.hook_name, "SessionStart");

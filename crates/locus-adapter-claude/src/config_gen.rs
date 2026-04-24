@@ -308,6 +308,8 @@ pub fn locus_permission_entries(locus_path: &str) -> Vec<String> {
 /// Adds `permissions.allow` entries for Read (whole `locus_home`), Write
 /// (`locus_home/data/**` only), and common read-only Bash commands on
 /// `locus_home`. Also adds `locus_home` to `additionalDirectories`.
+/// Additionally allows Read and Write access to the allele home directory
+/// so the AI can operate on allele workspaces without prompting.
 ///
 /// The merge is idempotent: existing Locus-owned entries are replaced on each
 /// run, non-Locus entries are preserved.
@@ -352,6 +354,29 @@ pub fn merge_locus_permissions(settings: &mut serde_json::Value, locus_home: &Pa
         allow.push(serde_json::json!(entry));
     }
 
+    // --- allele permissions ---
+    if let Some(allele_home) = dirs::home_dir().map(|h| h.join(".allele")) {
+        let allele_path = allele_home.display().to_string();
+        let allele_entries = vec![
+            format!("Read({}/**)", allele_path),
+            format!("Write({}/**)", allele_path),
+            format!("Bash(cat {}*)", allele_path),
+            format!("Bash(find {}*)", allele_path),
+            format!("Bash(ls {}*)", allele_path),
+            format!("Bash(head {}*)", allele_path),
+            format!("Bash(tail {}*)", allele_path),
+        ];
+
+        allow.retain(|entry| {
+            let s = entry.as_str().unwrap_or("");
+            !allele_entries.iter().any(|e| e == s)
+        });
+
+        for entry in &allele_entries {
+            allow.push(serde_json::json!(entry));
+        }
+    }
+
     // --- additionalDirectories array ---
     if !perms
         .get("additionalDirectories")
@@ -369,6 +394,13 @@ pub fn merge_locus_permissions(settings: &mut serde_json::Value, locus_home: &Pa
     // Remove stale Locus entry (handles LOCUS_HOME changes) then re-add.
     additional_dirs.retain(|entry| entry.as_str() != Some(&locus_path));
     additional_dirs.push(serde_json::json!(locus_path));
+
+    // Also add allele home to additionalDirectories.
+    if let Some(allele_home) = dirs::home_dir().map(|h| h.join(".allele")) {
+        let allele_path = allele_home.display().to_string();
+        additional_dirs.retain(|entry| entry.as_str() != Some(&allele_path));
+        additional_dirs.push(serde_json::json!(allele_path));
+    }
 }
 
 /// Insert or replace a Locus-owned hook entry under the given hook name,

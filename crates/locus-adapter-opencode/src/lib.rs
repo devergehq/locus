@@ -223,4 +223,41 @@ mod tests {
             Some(&serde_json::json!("allow"))
         );
     }
+
+    #[test]
+    fn permissions_merge_sets_read_and_edit_on_allele() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+
+        let read = config["permission"]["read"].as_object().unwrap();
+        let edit = config["permission"]["edit"].as_object().unwrap();
+
+        let read_key = read
+            .keys()
+            .find(|k| k.contains(".allele"))
+            .expect("allele read key exists");
+        assert!(read_key.ends_with("/**"));
+        assert_eq!(read.get(read_key), Some(&serde_json::json!("allow")));
+
+        let edit_key = edit
+            .keys()
+            .find(|k| k.contains(".allele"))
+            .expect("allele edit key exists");
+        assert!(edit_key.ends_with("/**"));
+        assert_eq!(edit.get(edit_key), Some(&serde_json::json!("allow")));
+    }
+
+    #[test]
+    fn permissions_merge_is_idempotent_for_allele() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+        let first = config.clone();
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+        assert_eq!(
+            first, config,
+            "second permissions merge must be a no-op for allele entries"
+        );
+    }
 }
