@@ -95,6 +95,14 @@ pub struct CapabilityManifest {
     /// Maximum system prompt size in characters, if known.
     /// `None` means no known limit.
     pub max_prompt_size: Option<usize>,
+
+    /// Which native tools the platform exposes to agents.
+    ///
+    /// Tool names are canonical (e.g., "web_search", "web_fetch", "read",
+    /// "edit", "bash", "task") so agents can check availability before use.
+    /// This prevents agents from attempting tools that don't exist on the
+    /// current platform (e.g., Claude Code's WebSearch vs OpenCode's fetch).
+    pub available_tools: HashSet<String>,
 }
 
 impl CapabilityManifest {
@@ -116,6 +124,11 @@ impl CapabilityManifest {
     /// Check whether any form of delegation is available.
     pub fn has_delegation(&self) -> bool {
         self.delegation != DelegationSupport::None
+    }
+
+    /// Check whether a specific native tool is available.
+    pub fn has_tool(&self, tool: &str) -> bool {
+        self.available_tools.contains(tool)
     }
 
     /// Returns a list of features that are unavailable on this platform.
@@ -143,6 +156,14 @@ impl CapabilityManifest {
                 feature: "MCP servers".into(),
                 reason: "Platform does not support Model Context Protocol".into(),
                 affected_skills: vec![],
+            });
+        }
+
+        if !self.has_tool("web_search") {
+            features.push(UnavailableFeature {
+                feature: "Web search".into(),
+                reason: "Platform does not expose a web search tool".into(),
+                affected_skills: vec!["research".into()],
             });
         }
 

@@ -136,6 +136,42 @@ mod tests {
     }
 
     #[test]
+    fn agents_md_lists_platform_tools() {
+        let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("Platform Tools (OpenCode)"));
+        assert!(content.contains("web_fetch"));
+        assert!(content.contains("bash"));
+        assert!(content.contains("OPENCODE_ENABLE_EXA=1"));
+    }
+
+    #[test]
+    fn capabilities_lists_opencode_tools() {
+        let adapter = OpenCodeAdapter::new();
+        let caps = adapter.capabilities();
+        assert!(caps.has_tool("glob"));
+        assert!(caps.has_tool("grep"));
+        assert!(caps.has_tool("read"));
+        assert!(caps.has_tool("edit"));
+        assert!(caps.has_tool("bash"));
+        assert!(caps.has_tool("web_fetch"));
+        assert!(caps.has_tool("task"));
+    }
+
+    #[test]
+    fn capabilities_web_search_conditional_on_env() {
+        let adapter = OpenCodeAdapter::new();
+        let caps = adapter.capabilities();
+        // Without OPENCODE_ENABLE_EXA set, web_search should not be present.
+        let has_web_search = caps.has_tool("web_search");
+        let env_set = std::env::var("OPENCODE_ENABLE_EXA")
+            .is_ok_and(|v| !v.is_empty() && v != "0");
+        assert_eq!(
+            has_web_search, env_set,
+            "web_search availability must match OPENCODE_ENABLE_EXA env var"
+        );
+    }
+
+    #[test]
     fn permissions_merge_sets_read_on_whole_locus() {
         let locus_home = Path::new("/home/test/.locus");
         let mut config = serde_json::json!({});

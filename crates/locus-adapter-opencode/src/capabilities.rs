@@ -27,6 +27,19 @@ pub fn opencode_capabilities() -> CapabilityManifest {
     // PreFileWrite is available via file.edited event.
     hook_events.insert(HookEvent::PreFileWrite);
 
+    let mut available_tools = HashSet::new();
+    available_tools.insert("glob".to_string());
+    available_tools.insert("grep".to_string());
+    available_tools.insert("read".to_string());
+    available_tools.insert("edit".to_string());
+    available_tools.insert("bash".to_string());
+    available_tools.insert("web_fetch".to_string());
+    available_tools.insert("task".to_string());
+    // WebSearch is only available when OPENCODE_ENABLE_EXA=1 is set.
+    if std::env::var("OPENCODE_ENABLE_EXA").is_ok_and(|v| !v.is_empty() && v != "0") {
+        available_tools.insert("web_search".to_string());
+    }
+
     CapabilityManifest {
         lifecycle_events,
         hook_events,
@@ -36,5 +49,6 @@ pub fn opencode_capabilities() -> CapabilityManifest {
         inference: InferenceMethod::Api,
         mcp_support: true,
         max_prompt_size: None,
+        available_tools,
     }
 }

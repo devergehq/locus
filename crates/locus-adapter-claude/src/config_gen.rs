@@ -111,6 +111,22 @@ Available skills: research, first-principles, iterative-depth, council, red-team
 
 Claude Code supports native subagent spawning via the Task tool. When the Algorithm requires delegation (e.g., extensive research, council debate, red team), invoke the Task tool directly. Load the relevant agent definition from `{home}/agents/<role>.md` via Read first so you have the persona to pass into the task prompt.
 
+## Platform Tools (Claude Code)
+
+The following native tools are available in this Claude Code session:
+- **read** — read files
+- **edit** — modify files
+- **bash** — execute shell commands
+- **web_search** — open-ended web search
+- **web_fetch** — retrieve content from URLs
+- **task** — delegate to sub-agents
+- **glob** — find files by pattern
+- **grep** — search file contents
+
+Always prefer the native tool over shell equivalents (e.g., use `glob` instead of `find`,
+use `grep` instead of `grep` in Bash). Use `web_search` for discovery and `web_fetch`
+for verification of specific URLs.
+
 ---
 
 {algorithm}

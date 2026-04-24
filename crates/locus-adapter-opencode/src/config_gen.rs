@@ -96,6 +96,22 @@ a skill, use the Read tool to load its SKILL.md from `{home}/skills/<skill-id>/S
 Available skills: research, first-principles, iterative-depth, council, red-team,
 creative, science, extract-wisdom, documents, security, media, parser.
 
+## Platform Tools (OpenCode)
+
+The following native tools are available in this OpenCode session:
+- **glob** — find files by pattern
+- **grep** — search file contents
+- **read** (view) — read files
+- **edit** / **write** — modify files
+- **bash** — execute shell commands
+- **web_fetch** (fetch) — retrieve content from URLs
+- **task** (agent) — delegate to sub-agents
+
+**Important:** `web_search` (open-ended web search) is NOT available unless OpenCode
+was started with the environment variable `OPENCODE_ENABLE_EXA=1`. If `web_search` is
+unavailable, use `web_fetch` against known URLs or `bash` with `curl`/`gh` for discovery.
+Never attempt a tool that is not in the list above.
+
 ---
 
 {algorithm}

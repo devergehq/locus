@@ -141,6 +141,29 @@ mod tests {
     }
 
     #[test]
+    fn claude_md_lists_platform_tools() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("Platform Tools (Claude Code)"));
+        assert!(content.contains("web_search"));
+        assert!(content.contains("web_fetch"));
+        assert!(content.contains("bash"));
+    }
+
+    #[test]
+    fn capabilities_lists_claude_tools() {
+        let adapter = ClaudeAdapter::new();
+        let caps = adapter.capabilities();
+        assert!(caps.has_tool("web_search"));
+        assert!(caps.has_tool("web_fetch"));
+        assert!(caps.has_tool("read"));
+        assert!(caps.has_tool("edit"));
+        assert!(caps.has_tool("bash"));
+        assert!(caps.has_tool("task"));
+        assert!(caps.has_tool("glob"));
+        assert!(caps.has_tool("grep"));
+    }
+
+    #[test]
     fn settings_merge_preserves_non_locus_hooks() {
         let mut settings = serde_json::json!({
             "otherSetting": true,

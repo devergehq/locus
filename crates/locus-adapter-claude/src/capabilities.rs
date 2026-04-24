@@ -35,6 +35,16 @@ pub fn claude_capabilities() -> CapabilityManifest {
     // PreFileWrite is available via PreToolUse with a Write|Edit matcher.
     hook_events.insert(HookEvent::PreFileWrite);
 
+    let mut available_tools = HashSet::new();
+    available_tools.insert("web_search".to_string());
+    available_tools.insert("web_fetch".to_string());
+    available_tools.insert("read".to_string());
+    available_tools.insert("edit".to_string());
+    available_tools.insert("bash".to_string());
+    available_tools.insert("task".to_string());
+    available_tools.insert("glob".to_string());
+    available_tools.insert("grep".to_string());
+
     CapabilityManifest {
         lifecycle_events,
         hook_events,
@@ -44,5 +54,6 @@ pub fn claude_capabilities() -> CapabilityManifest {
         inference: InferenceMethod::Cli,
         mcp_support: true,
         max_prompt_size: None,
+        available_tools,
     }
 }
