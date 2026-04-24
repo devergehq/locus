@@ -146,6 +146,18 @@ mod tests {
     }
 
     #[test]
+    fn agents_md_does_not_contain_delegation_directive() {
+        // OpenCode is the BACKEND for `locus delegate run`, not its caller.
+        // This guards the asymmetry decision documented in config_gen.rs.
+        let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
+        assert!(
+            !content.contains("locus delegate run"),
+            "AGENTS.md must not teach OpenCode to delegate to itself"
+        );
+        assert!(!content.contains("OpenCode Delegation"));
+    }
+
+    #[test]
     fn capabilities_lists_opencode_tools() {
         let adapter = OpenCodeAdapter::new();
         let caps = adapter.capabilities();

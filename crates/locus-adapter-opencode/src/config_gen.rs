@@ -6,6 +6,12 @@
 //!   the Algorithm and protocols into context automatically
 //!
 //! Zero files are written to `.opencode/`. All Locus content stays in `~/.locus/`.
+//!
+//! Note: AGENTS.md intentionally does NOT include the `locus delegate run`
+//! directive. In the current architecture OpenCode is the BACKEND that runs
+//! delegated jobs, not the orchestrator that issues them — only the Claude
+//! adapter teaches delegation. Revisit if a future role lets OpenCode delegate
+//! to a different backend.
 
 use std::path::{Path, PathBuf};
 

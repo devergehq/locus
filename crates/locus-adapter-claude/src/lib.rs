@@ -150,6 +150,49 @@ mod tests {
     }
 
     #[test]
+    fn claude_md_contains_delegation_section() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("## OpenCode Delegation"));
+        assert!(content.contains("locus delegate run"));
+        assert!(content.contains("--backend opencode"));
+        assert!(content.contains("read-only"));
+        assert!(content.contains("summary"));
+        assert!(content.contains("findings"));
+        assert!(content.contains("files_referenced"));
+    }
+
+    #[test]
+    fn claude_md_delegation_lists_when_to_use() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        let section_start = content
+            .find("## OpenCode Delegation")
+            .expect("delegation section present");
+        let section_end = content[section_start..]
+            .find("## Platform Tools")
+            .expect("section bounded by Platform Tools heading")
+            + section_start;
+        let section = &content[section_start..section_end];
+
+        assert!(section.contains("**When to delegate:**"));
+        assert!(section.contains("**When NOT to delegate:**"));
+        assert!(section.contains("**Result envelope:**"));
+        let when_to_bullets = section
+            .split("**When to delegate:**")
+            .nth(1)
+            .and_then(|s| s.split("**When NOT to delegate:**").next())
+            .unwrap_or("");
+        let bullet_count = when_to_bullets
+            .lines()
+            .filter(|l| l.trim_start().starts_with("- "))
+            .count();
+        assert!(
+            bullet_count >= 3,
+            "expected at least 3 when-to bullets, got {}",
+            bullet_count
+        );
+    }
+
+    #[test]
     fn capabilities_lists_claude_tools() {
         let adapter = ClaudeAdapter::new();
         let caps = adapter.capabilities();

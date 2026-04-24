@@ -111,6 +111,49 @@ Available skills: research, first-principles, iterative-depth, council, red-team
 
 Claude Code supports native subagent spawning via the Task tool. When the Algorithm requires delegation (e.g., extensive research, council debate, red team), invoke the Task tool directly. Load the relevant agent definition from `{home}/agents/<role>.md` via Read first so you have the persona to pass into the task prompt.
 
+## OpenCode Delegation
+
+For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. This is distinct from native subagents above: native subagents are other Claudes; OpenCode delegation runs an entirely different model under a different provider, returning a compact JSON envelope so the raw exploration never enters this context.
+
+**When to delegate:**
+- Research with broad scope (multiple sources, comparison sweeps, "what's the state of X")
+- Read-only codebase mapping in unfamiliar repos (>5 files to understand structure)
+- Documentation or API surface enumeration where the answer is structured but voluminous
+- Any task whose intermediate work matters less than its final summary
+
+**When NOT to delegate:**
+- Trivial lookups (one file, one grep) — the round-trip costs more than doing it
+- Anything requiring writes, commits, or persistent state changes (delegation is read-only)
+- Time-sensitive work in an interactive flow (delegation adds 30-90s latency)
+- Tasks that depend on context already loaded in this session
+- Anything that needs a tool the backend doesn't have (e.g. a specific MCP server)
+
+**Invocation:**
+
+```bash
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --model openai/gpt-5.5 \
+  --dir <workspace> \
+  --prompt "<bounded task>" \
+  --output json
+```
+
+Use `--task-kind code-exploration` for codebase mapping and `--task-kind general` for everything else. Substitute `<provider/model>` to match the work — research benefits from larger models; mapping is fine on cheaper ones.
+
+**Result envelope:**
+
+The command prints a single JSON object with these fields:
+- `summary` — one-paragraph synthesis of the model's final answer
+- `findings` — bulleted observations extracted from the answer
+- `evidence` — concrete references the answer cited
+- `risks` — caveats or limitations the model flagged
+- `files_referenced` — paths the model read or named
+- `raw_output_path` — JSONL artifact with the full event stream, for deep dives
+
+Read `summary`, `findings`, and `files_referenced` straight into your reasoning. Only open `raw_output_path` if you need detail the envelope dropped.
+
 ## Platform Tools (Claude Code)
 
 The following native tools are available in this Claude Code session:
