@@ -5,6 +5,7 @@ mod commands;
 mod output;
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
@@ -106,6 +107,12 @@ enum Commands {
         #[command(subcommand)]
         command: AgentCommands,
     },
+
+    /// Delegate bounded work to an external execution backend.
+    Delegate {
+        #[command(subcommand)]
+        command: DelegateCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -166,6 +173,60 @@ enum AgentCommands {
 
     /// List all available traits across expertise / stance / approach axes.
     ListTraits,
+}
+
+#[derive(Subcommand)]
+enum DelegateCommands {
+    /// Run a read-only delegated task through a backend such as OpenCode.
+    Run {
+        /// Backend to use for execution.
+        #[arg(long, value_enum)]
+        backend: commands::delegate::DelegateBackendArg,
+
+        /// Broad category of delegated work.
+        #[arg(long, value_enum)]
+        task_kind: commands::delegate::DelegateTaskKindArg,
+
+        /// Provider/model identifier, e.g. openai/gpt-5.5.
+        #[arg(long)]
+        model: String,
+
+        /// Workspace directory for the delegated backend.
+        #[arg(long)]
+        dir: PathBuf,
+
+        /// Task prompt passed to the delegated backend.
+        #[arg(long)]
+        prompt: String,
+
+        /// Optional backend agent/profile name.
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Optional provider-specific reasoning variant.
+        #[arg(long)]
+        variant: Option<String>,
+
+        /// Context file attached to the delegated request.
+        #[arg(long = "context-file")]
+        context_files: Vec<PathBuf>,
+
+        /// Directory where raw backend artifacts are written.
+        #[arg(long)]
+        artifact_dir: Option<PathBuf>,
+
+        /// Maximum execution time in seconds.
+        #[arg(long, default_value_t = 600)]
+        timeout_seconds: u64,
+
+        /// Print the request JSON without invoking the backend.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output mode.
+        #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Json)]
+        output: commands::delegate::DelegateOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -231,10 +292,75 @@ fn main() {
             } => commands::agent::compose(&traits, role, task, output),
             AgentCommands::ListTraits => commands::agent::list_traits(),
         },
+        Commands::Delegate { command } => match command {
+            DelegateCommands::Run {
+                backend,
+                task_kind,
+                model,
+                dir,
+                prompt,
+                agent,
+                variant,
+                context_files,
+                artifact_dir,
+                timeout_seconds,
+                dry_run,
+                output,
+            } => commands::delegate::run(commands::delegate::RunArgs {
+                backend,
+                task_kind,
+                model,
+                dir,
+                prompt,
+                agent,
+                variant,
+                context_files,
+                artifact_dir,
+                timeout_seconds,
+                dry_run,
+                output,
+            }),
+        },
     };
 
     if let Err(e) = result {
         output::error(&e.to_string());
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_delegate_run_command() {
+        let cli = Cli::try_parse_from([
+            "locus",
+            "delegate",
+            "run",
+            "--backend",
+            "opencode",
+            "--task-kind",
+            "research",
+            "--model",
+            "openai/gpt-5.5",
+            "--dir",
+            "/tmp/project",
+            "--prompt",
+            "Research this",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Delegate {
+                command: DelegateCommands::Run { dry_run, model, .. },
+            } => {
+                assert!(dry_run);
+                assert_eq!(model, "openai/gpt-5.5");
+            }
+            _ => panic!("expected delegate run command"),
+        }
     }
 }
