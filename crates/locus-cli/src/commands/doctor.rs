@@ -6,6 +6,7 @@ use locus_core::config::LocusConfig;
 use locus_core::platform::Platform;
 use locus_core::LocusError;
 
+use crate::commands::update_content;
 use crate::output;
 
 /// Run the doctor command.
@@ -52,7 +53,39 @@ pub fn run() -> Result<(), LocusError> {
     output::section("Agent Composition");
     check_traits(&home, &mut issues, &mut warnings);
 
-    // 5. Check platforms.
+    // 5. Check content staleness.
+    output::section("Content");
+    match update_content::check_staleness(&home) {
+        Ok(update_content::StalenessReport::MissingManifest) => {
+            output::warn("Content manifest missing. Run `locus update-content`.");
+            warnings.push("Content manifest missing. Run `locus update-content`.".into());
+        }
+        Ok(update_content::StalenessReport::UpToDate) => {
+            output::success("Content is up to date");
+        }
+        Ok(update_content::StalenessReport::Stale(files)) => {
+            output::warn(&format!("{} content file(s) are stale", files.len()));
+            for f in &files {
+                output::warn(&format!("  outdated: {}", f));
+            }
+            warnings.push(format!(
+                "{} content file(s) stale. Run `locus update-content`.",
+                files.len()
+            ));
+        }
+        Err(e) => {
+            output::warn(&format!("Could not check content staleness: {}", e));
+            warnings.push(format!("Content staleness check failed: {}", e));
+        }
+    }
+
+    let platform_config_warnings = update_content::check_platform_configs(&home);
+    for w in &platform_config_warnings {
+        output::warn(w);
+        warnings.push(w.clone());
+    }
+
+    // 6. Check platforms.
     output::section("Platforms");
     if let Some(ref config) = config {
         if config.platforms.is_empty() {

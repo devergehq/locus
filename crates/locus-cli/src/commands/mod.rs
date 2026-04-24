@@ -7,3 +7,4 @@ pub mod skill;
 pub mod status;
 pub mod sync;
 pub mod upgrade;
+pub mod update_content;

@@ -141,6 +141,29 @@ mod tests {
     }
 
     #[test]
+    fn claude_md_lists_platform_tools() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("Platform Tools (Claude Code)"));
+        assert!(content.contains("web_search"));
+        assert!(content.contains("web_fetch"));
+        assert!(content.contains("bash"));
+    }
+
+    #[test]
+    fn capabilities_lists_claude_tools() {
+        let adapter = ClaudeAdapter::new();
+        let caps = adapter.capabilities();
+        assert!(caps.has_tool("web_search"));
+        assert!(caps.has_tool("web_fetch"));
+        assert!(caps.has_tool("read"));
+        assert!(caps.has_tool("edit"));
+        assert!(caps.has_tool("bash"));
+        assert!(caps.has_tool("task"));
+        assert!(caps.has_tool("glob"));
+        assert!(caps.has_tool("grep"));
+    }
+
+    #[test]
     fn settings_merge_preserves_non_locus_hooks() {
         let mut settings = serde_json::json!({
             "otherSetting": true,
@@ -297,6 +320,46 @@ mod tests {
         let first = settings.clone();
         config_gen::merge_locus_permissions(&mut settings, locus_home);
         assert_eq!(first, settings, "second permissions merge must be a no-op");
+    }
+
+    #[test]
+    fn permissions_merge_sets_allele_allow_entries() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let allow = settings["permissions"]["allow"].as_array().unwrap();
+
+        let allele_entries: Vec<String> = allow
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter(|s| s.contains(".allele"))
+            .map(|s| s.to_string())
+            .collect();
+
+        assert!(!allele_entries.is_empty(), "allele entries must exist");
+        assert!(
+            allele_entries.iter().any(|s| s.starts_with("Read(")),
+            "allele Read entry must exist"
+        );
+        assert!(
+            allele_entries.iter().any(|s| s.starts_with("Write(")),
+            "allele Write entry must exist"
+        );
+    }
+
+    #[test]
+    fn permissions_merge_sets_allele_additional_directories() {
+        let locus_home = std::path::Path::new("/home/test/.locus");
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut settings, locus_home);
+        let dirs = settings["permissions"]["additionalDirectories"]
+            .as_array()
+            .unwrap();
+        assert!(
+            dirs.iter()
+                .any(|v| v.as_str().map(|s| s.contains(".allele")).unwrap_or(false)),
+            "allele home must be in additionalDirectories"
+        );
     }
 
     #[test]

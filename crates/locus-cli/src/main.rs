@@ -1,5 +1,6 @@
 //! Locus CLI — the entry point for the Locus agentic workflow framework.
 
+mod bundled;
 mod commands;
 mod output;
 
@@ -73,6 +74,17 @@ enum Commands {
         /// Check for updates without installing.
         #[arg(long)]
         check: bool,
+    },
+
+    /// Update bundled content from the binary to ~/.locus/.
+    ///
+    /// Syncs algorithm, skills, agents, protocols, and scripts.
+    /// Compares SHA-256 hashes and only overwrites files that changed.
+    /// By default also regenerates platform adapter configs.
+    UpdateContent {
+        /// Skip regenerating platform adapter configs.
+        #[arg(long)]
+        skip_platforms: bool,
     },
 
     /// Platform hook event handler.
@@ -194,6 +206,9 @@ fn main() {
         },
         Commands::Sync { init_remote } => commands::sync::run(init_remote),
         Commands::Upgrade { check } => commands::upgrade::run(check),
+        Commands::UpdateContent { skip_platforms } => {
+            commands::update_content::run(skip_platforms)
+        }
         Commands::Hook { command } => {
             let kind = match command {
                 HookCommands::SessionStart => commands::hook::HookEventKind::SessionStart,
