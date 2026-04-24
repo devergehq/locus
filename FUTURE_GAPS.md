@@ -16,6 +16,15 @@ mark them as implemented and move details into the relevant crate's docs.
 stub (single doc comment in `src/lib.rs`). Deferred until after the Claude
 Code cutover is stable.
 
+**Known surface mismatch:** the crate's `Cargo.toml` description
+("Project indexing for Locus — tree-sitter AST, embeddings, vector search")
+and `src/lib.rs` documentation both describe working capabilities that do
+not exist. Expected dependencies (`tree-sitter`, `ignore`, `reqwest`/`ureq`,
+`rusqlite`) are also absent. When picking this up, either implement the
+described surface or downgrade the description and lib docs to "stub —
+see FUTURE_GAPS.md G-1" so consumers reading metadata or generated docs
+aren't misled. Surfaced by an OpenCode-delegated mapping job, 2026-04-24.
+
 ### What it is
 
 Semantic code indexing for project codebases. Indexes source files using
