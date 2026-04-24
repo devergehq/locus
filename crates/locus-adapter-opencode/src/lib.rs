@@ -13,6 +13,7 @@
 pub mod capabilities;
 pub mod config_gen;
 pub mod events;
+pub mod run;
 
 use locus_core::capabilities::CapabilityManifest;
 use locus_core::error::LocusError;
@@ -223,10 +224,7 @@ mod tests {
             read.get("/home/test/.locus/**"),
             Some(&serde_json::json!("allow"))
         );
-        assert_eq!(
-            config["permission"]["bash"].as_str(),
-            Some("ask")
-        );
+        assert_eq!(config["permission"]["bash"].as_str(), Some("ask"));
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub mod adapter;
 pub mod agents;
 pub mod capabilities;
 pub mod config;
+pub mod delegation;
 pub mod error;
 pub mod events;
 pub mod memory;
@@ -38,6 +39,10 @@ pub use adapter::PlatformAdapter;
 pub use agents::{ComposedAgent, Trait, Traits};
 pub use capabilities::CapabilityManifest;
 pub use config::LocusConfig;
+pub use delegation::{
+    DelegationBackend, DelegationMode, DelegationRequest, DelegationResult, DelegationStatus,
+    DelegationTaskKind,
+};
 pub use error::LocusError;
 pub use events::{EventKind, HookEvent, LifecycleEvent};
 pub use platform::Platform;
