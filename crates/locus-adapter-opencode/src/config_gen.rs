@@ -207,6 +207,9 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
         }
     }
 
+    // Merge Locus read/edit permissions for the data directory.
+    merge_locus_permissions(&mut config, locus_home);
+
     // Write back.
     let content = serde_json::to_string_pretty(&config).map_err(|e| LocusError::Adapter {
         platform: Platform::OpenCode,
@@ -219,6 +222,57 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     })?;
 
     Ok(config_path)
+}
+
+/// Merge Locus permission entries into a parsed opencode.json value.
+///
+/// Pre-allows read access to the entire `locus_home` directory so the AI can
+/// load skills, agents, algorithms, and protocols without prompting.
+/// Pre-allows edit access only to `locus_home/data/**` so PRDs, checkpoints,
+/// and learnings can be written without prompting.
+/// Existing non-Locus permissions are preserved. The merge is idempotent.
+pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path) {
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+
+    let locus_path = locus_home.display().to_string();
+    let read_path = format!("{}/**", locus_path);
+    let edit_path = format!("{}/data/**", locus_path);
+
+    let root = config.as_object_mut().expect("config is object");
+
+    // Ensure permissions object exists.
+    if !root.get("permission").map(|v| v.is_object()).unwrap_or(false) {
+        root.insert("permission".to_string(), serde_json::json!({}));
+    }
+
+    let permissions = root
+        .get_mut("permission")
+        .and_then(|v| v.as_object_mut())
+        .expect("permission exists and is object");
+
+    // --- read: whole locus home ---
+    if !permissions.get("read").map(|v| v.is_object()).unwrap_or(false) {
+        permissions.insert("read".to_string(), serde_json::json!({}));
+    }
+    let read_perms = permissions
+        .get_mut("read")
+        .and_then(|v| v.as_object_mut())
+        .expect("read perms is object");
+    read_perms.retain(|k, _| !k.contains(".locus/"));
+    read_perms.insert(read_path, serde_json::json!("allow"));
+
+    // --- edit: only data directory ---
+    if !permissions.get("edit").map(|v| v.is_object()).unwrap_or(false) {
+        permissions.insert("edit".to_string(), serde_json::json!({}));
+    }
+    let edit_perms = permissions
+        .get_mut("edit")
+        .and_then(|v| v.as_object_mut())
+        .expect("edit perms is object");
+    edit_perms.retain(|k, _| !k.contains(".locus/"));
+    edit_perms.insert(edit_path, serde_json::json!("allow"));
 }
 
 /// Convert an absolute path to a tilde path (e.g., /Users/foo/.locus -> ~/.locus).
