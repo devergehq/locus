@@ -218,8 +218,8 @@ enum DelegateCommands {
         #[arg(long)]
         artifact_dir: Option<PathBuf>,
 
-        /// Maximum execution time in seconds.
-        #[arg(long, default_value_t = 600)]
+        /// Maximum execution time in seconds. Default 1200 (20 minutes).
+        #[arg(long, default_value_t = 1200)]
         timeout_seconds: u64,
 
         /// Print the request JSON without invoking the backend.
