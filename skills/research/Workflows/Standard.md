@@ -45,6 +45,7 @@ ACADEMIC_PROMPT=$(locus agent compose \
 locus delegate run \
   --backend opencode \
   --task-kind research \
+  --mode native \
   --dir . \
   --prompt "$ACADEMIC_PROMPT" \
   --output json
@@ -61,6 +62,7 @@ MULTI_PROMPT=$(locus agent compose \
 locus delegate run \
   --backend opencode \
   --task-kind research \
+  --mode native \
   --dir . \
   --prompt "$MULTI_PROMPT" \
   --output json
@@ -77,6 +79,7 @@ INVESTIGATIVE_PROMPT=$(locus agent compose \
 locus delegate run \
   --backend opencode \
   --task-kind research \
+  --mode native \
   --dir . \
   --prompt "$INVESTIGATIVE_PROMPT" \
   --output json

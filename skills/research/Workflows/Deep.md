@@ -2,7 +2,7 @@
 
 **Iterative landscape mapping with persistent vault. Multi-session if needed.**
 
-The skill orchestrates and writes the vault. Each research pass shells out to `locus delegate run --backend opencode --task-kind research`, with the trait bundle from `agents/deep-investigation-researcher.md` composed via `locus agent compose`.
+The skill orchestrates and writes the vault. Each research pass shells out to `locus delegate run --backend opencode --task-kind research --mode native`, with the trait bundle from `agents/deep-investigation-researcher.md` composed via `locus agent compose`.
 
 ## When to use
 
@@ -40,7 +40,7 @@ The vault survives across sessions. A subsequent invocation can resume where the
 Per iteration:
 1. Orchestrator reads the current vault state (landscape, rubric, iteration log) — this is cheap, the files are small.
 2. Orchestrator composes a research prompt that bundles all context the delegated researcher needs (scope, current rubric, target entity, prior findings to build on).
-3. Orchestrator calls `locus delegate run --backend opencode --task-kind research --dir .` with the composed prompt.
+3. Orchestrator calls `locus delegate run --backend opencode --task-kind research --mode native --dir .` with the composed prompt.
 4. Delegated process does the heavy work (search, primary-source reads, cross-references) and returns a compact JSON envelope (`summary`, `findings`, `evidence`, `risks`, `files_referenced`).
 5. Orchestrator transforms the envelope into a dossier file written to `entities/<slug>.md`, updates the scoring rubric, appends to the iteration log.
 
@@ -62,6 +62,7 @@ Per iteration:
    locus delegate run \
      --backend opencode \
      --task-kind research \
+     --mode native \
      --dir . \
      --prompt "$LANDSCAPE_PROMPT" \
      --output json
@@ -86,6 +87,7 @@ Per iteration:
    locus delegate run \
      --backend opencode \
      --task-kind research \
+     --mode native \
      --dir . \
      --prompt "$ENTITY_PROMPT" \
      --output json
@@ -103,14 +105,14 @@ Dispatch two `locus delegate run` calls in the *same assistant message*, each ta
 # Same message, two independent Bash tool calls:
 ENTITY_A_PROMPT=$(locus agent compose --traits "research,iterative,hypothesis-driven,systems-thinking" \
   --role "..." --task "<entity A context>")
-locus delegate run --backend opencode --task-kind research --dir . \
+locus delegate run --backend opencode --task-kind research --mode native --dir . \
   --prompt "$ENTITY_A_PROMPT" --output json
 ```
 
 ```bash
 ENTITY_B_PROMPT=$(locus agent compose --traits "research,iterative,hypothesis-driven,systems-thinking" \
   --role "..." --task "<entity B context>")
-locus delegate run --backend opencode --task-kind research --dir . \
+locus delegate run --backend opencode --task-kind research --mode native --dir . \
   --prompt "$ENTITY_B_PROMPT" --output json
 ```
 
