@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -259,27 +260,60 @@ fn run_command_with_timeout(
     }
     let mut child = command.spawn()?;
 
+    // Drain stdout/stderr in background threads. Without this the child
+    // blocks the moment its stdout pipe fills (default 64 KiB on macOS
+    // and Linux). For opencode delegations any single tool result over
+    // ~50 KiB — e.g. reading one large source file — wedges the session
+    // mid-stream because the orchestrator only reads stdout *after* the
+    // child exits via `wait_with_output`.
+    let mut child_stdout = child.stdout.take().expect("stdout was piped");
+    let mut child_stderr = child.stderr.take().expect("stderr was piped");
+    let stdout_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = child_stdout.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_thread = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = child_stderr.read_to_end(&mut buf);
+        buf
+    });
+
     let start = Instant::now();
+    let exit_code: Option<i32>;
+    let timed_out: bool;
     loop {
-        if child.try_wait()?.is_some() {
-            let output = child.wait_with_output()?;
-            return Ok(TimedOutput::Completed {
-                stdout: output.stdout,
-                stderr: output.stderr,
-                code: output.status.code(),
-            });
+        match child.try_wait()? {
+            Some(status) => {
+                exit_code = status.code();
+                timed_out = false;
+                break;
+            }
+            None => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    exit_code = None;
+                    timed_out = true;
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
         }
+    }
 
-        if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let output = child.wait_with_output()?;
-            return Ok(TimedOutput::TimedOut {
-                stdout: output.stdout,
-                stderr: output.stderr,
-            });
-        }
+    // Child has exited; pipes are now closed; reader threads will return.
+    let stdout = stdout_thread.join().unwrap_or_default();
+    let stderr = stderr_thread.join().unwrap_or_default();
 
-        thread::sleep(Duration::from_millis(50));
+    if timed_out {
+        Ok(TimedOutput::TimedOut { stdout, stderr })
+    } else {
+        Ok(TimedOutput::Completed {
+            stdout,
+            stderr,
+            code: exit_code,
+        })
     }
 }
 
@@ -575,6 +609,38 @@ mod tests {
             "algorithmic mode must inherit OpenCode config from the global install, got {:?}",
             spec.envs
         );
+    }
+
+    /// Regression for the 64 KiB stdout pipe deadlock. Pre-fix runs of
+    /// `run_command_with_timeout` only drained the child's stdout via
+    /// `child.wait_with_output()` *after* the child had exited, so any
+    /// child that wrote more than the pipe-buffer size before exiting
+    /// blocked forever and our 1200 s timeout was needed to recover (with
+    /// truncated, useless output). This test spawns a child that writes
+    /// 200 000 NUL bytes — well past 64 KiB — and asserts we capture all
+    /// of them and report a clean non-timeout exit.
+    #[test]
+    fn large_stdout_does_not_deadlock() {
+        let spec = OpenCodeCommandSpec {
+            program: "head".into(),
+            args: vec!["-c".into(), "200000".into(), "/dev/zero".into()],
+            envs: Vec::new(),
+        };
+        let outcome = run_command_with_timeout(&spec, Duration::from_secs(10))
+            .expect("spawn ok");
+        match outcome {
+            TimedOutput::Completed {
+                stdout,
+                stderr: _,
+                code,
+            } => {
+                assert_eq!(stdout.len(), 200_000, "expected full pipe drain");
+                assert_eq!(code, Some(0));
+            }
+            TimedOutput::TimedOut { .. } => {
+                panic!("child timed out — pipe deadlock is back")
+            }
+        }
     }
 
     #[test]
