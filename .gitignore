@@ -3,3 +3,4 @@ Cargo.lock
 session-*.md
 AGENTS.md
 AGENTS.old.md
+.claude/
