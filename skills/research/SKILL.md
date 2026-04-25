@@ -20,7 +20,7 @@ tags:
   - research
   - information-gathering
 requires:
-  delegation: false
+  delegation: true
   inference: true
 ---
 
@@ -30,9 +30,26 @@ Multi-depth research framework that scales from quick single-pass lookups to ext
 
 **Mandatory protocol:** `UrlVerificationProtocol.md`. Every URL returned must be verified — research agents hallucinate URLs, and a single broken link is a catastrophic failure.
 
-## Researcher archetypes (not per-API theatre)
+## Execution model
 
-Locus does NOT use per-model-provider researcher theatre (ClaudeResearcher / GeminiResearcher / PerplexityResearcher). The evidence-backed design uses methodology-based researchers that differ in *how* they research, not which API they call. See the `agents/*-researcher.md` files:
+**The research skill is the orchestrator. The research work runs in OpenCode via `locus delegate run`.**
+
+The orchestrator (this Claude session) is responsible for:
+- Choosing methodology mix (academic / investigative / contrarian / multi-angle / deep-investigation)
+- Deciding agent count (1 for Quick, 3 for Standard, 12 for Extensive, 1×N passes for Deep)
+- Composing per-agent prompts (via `locus agent compose --traits ... --role ... --task ...`)
+- Synthesising returned envelopes (convergence, contradictions, gaps)
+- Verifying every URL before returning results
+
+The work itself — running searches, reading sources, drafting findings, citing — runs in a delegated OpenCode process per `locus delegate run --backend opencode --task-kind research`. The orchestrator never does the raw research itself; it dispatches and synthesises.
+
+**Why:** raw research output (search results, page reads, scratch reasoning) is voluminous and would burn the orchestrator's context. The delegated process returns a compact JSON envelope (`summary`, `findings`, `evidence`, `risks`, `files_referenced`) — only the synthesis enters this context.
+
+**DO NOT use the platform-native Task tool for research dispatch.** Task-tool subagents are other Claudes burning the same context budget. Research dispatch goes through `locus delegate run`, which runs an entirely different model (typically `openai/gpt-5.5`) under a different provider.
+
+## Researcher archetypes (methodology, not per-API theatre)
+
+Locus does NOT use per-model-provider researcher theatre (ClaudeResearcher / GeminiResearcher / PerplexityResearcher). The evidence-backed design uses methodology-based researchers that differ in *how* they research, not which API they call. The methodology is encoded in the trait bundle passed to `locus agent compose` and in the role/task framing of the delegated prompt:
 
 - **academic-researcher** — peer-reviewed and preprint literature, citation discipline
 - **investigative-researcher** — journalism-style triangulation and follow-the-lead
@@ -40,7 +57,7 @@ Locus does NOT use per-model-provider researcher theatre (ClaudeResearcher / Gem
 - **multi-angle-researcher** — orthogonal sub-query decomposition
 - **deep-investigation-researcher** — iterative vault-building across passes
 
-The underlying model is whatever the platform provides. The diversity is in method.
+See the `agents/*-researcher.md` files for the trait bundles each archetype uses. The underlying model that runs the delegated process is whatever `~/.locus/locus.yaml` resolves for `delegation.defaults.opencode.research.model` (currently `openai/gpt-5.5`); the diversity per archetype is in the trait composition, not the model.
 
 ## Workflow routing
 
@@ -74,9 +91,11 @@ Iterative deep-investigation researcher, persistent vault across sessions. 3-60 
 
 ## Degradation
 
-- **With delegation**: full multi-researcher parallel in Standard/Extensive/Deep modes.
-- **Without delegation**: all modes fall back to sequential single-researcher execution. Still thorough via methodology rotation, but slower and less diverse per unit time.
-- **Without web_search**: discovery degrades to `web_fetch` against known URLs, `bash` with `curl`/`gh`, and `sourcegraph` code search. Agents must verify every URL they cite. OpenCode users: start with `OPENCODE_ENABLE_EXA=1` to enable native web search.
+- **With `locus delegate run` available**: parallel multi-researcher execution across Standard/Extensive/Deep — three or more `locus delegate run` Bash calls dispatched in a single assistant message.
+- **`locus delegate run` available but rate-limited / failing**: degrade to *sequential* `locus delegate run` calls (one researcher at a time). Slower, but the work still happens out-of-context and the envelope semantics are unchanged.
+- **`locus delegate run` not on PATH** (development environment, foreign machine): fall back to in-context execution via `web_search` + `web_fetch`. The orchestrator's context absorbs the raw research — accept the cost and keep the methodology rotation. Note this in the response so the user knows context was burned.
+- **Partial failure across N parallel delegations**: if M of N succeed (M ≥ 1), synthesise from the M results and list the failed researcher(s) under the `Gaps` section of the output. Do not retry blindly — flag and move on.
+- **Without web access at all** (delegated process can't browse): the OpenCode side will return an envelope with empty `findings` and a risk note. Surface the gap; don't fabricate.
 
 ## Output discipline
 
@@ -98,6 +117,9 @@ Never cite a URL you have not verified resolves.
 - **red-team** — research grounds adversarial analysis
 
 ### Uses
-- **delegation** skill — for parallel researcher dispatch
+- **`locus delegate run --backend opencode --task-kind research`** — the actual research execution; this skill is the orchestrator only
+- **`locus agent compose`** — builds methodology-specific prompts before dispatch
 - **extract-wisdom** — for insight extraction from specific sources
 - **iterative-depth** — for multi-angle research decomposition
+
+The platform-native `delegation` skill (Task-tool subagents, worktrees, agent teams) is *not* used for research dispatch — see "Execution model" above.
