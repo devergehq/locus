@@ -85,6 +85,35 @@ Extracts can be persisted to `{data}/memory/research/knowledge/{YYYY-MM}/{source
 - **Extracting trivia.** A knowledge extract is load-bearing reference material; not every fact in the source warrants extraction.
 - **Hallucinating schema fields.** If the source doesn't provide a field the schema requires, mark it "not specified in source" — do not invent.
 
+## Long-content delegation
+
+If the source exceeds ~10,000 words (long paper, book chapter, full transcript), do not extract in the orchestrator's context. The schema-fill pass over a long source eats budget the orchestrator needs for synthesis afterwards.
+
+Delegate the extraction to a single OpenCode agent instead:
+
+**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the long source and the per-entry schema fills stay out of orchestrator context.
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "research,empirical,rationalist,systematic,skeptical" \
+  --role "Knowledge extractor" \
+  --task "Apply the Extract Knowledge workflow to the content at <source path or URL>. Schema: <schema name on first line, then each field one-per-line as 'field: type'>. For each load-bearing item, fill the schema fields; preserve direct quotes verbatim where phrasing matters; cite location (page/timestamp) within the source. Mark fields not specified in the source as 'not specified in source' — do not invent.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+The envelope's `findings` field carries the entries; pipe into the output template.
+
+**Failure handling:** if the delegation fails (rate limit, network, parse error), fall back to inline extraction with an explicit budget warning to the user — flag that orchestrator context will be reduced for downstream synthesis.
+
+Short content (< ~10k words) — extract inline; delegation overhead exceeds the saved context budget.
+
 ## Budget
 
-Scales with source length: short article ~3 minutes, long paper ~10 minutes, book chapter ~20 minutes. Chunk long sources and extract in passes.
+Scales with source length: short article ~3 minutes, long paper ~10 minutes, book chapter ~20 minutes. Long-content delegation adds ~30-60s of dispatch overhead but keeps orchestrator context clean for downstream synthesis.

@@ -80,9 +80,38 @@ The highest-value alpha is usually a **reframe** — a new way of seeing an exis
 - <URL 2>
 ```
 
+## Long-content delegation
+
+If the source exceeds ~10,000 words (book chapter, full transcript, multi-part essay), do not run Steps 2-5 in the orchestrator's context. The enumerate-then-rank passes will eat the budget and degrade output quality.
+
+Delegate the whole workflow to a single OpenCode agent instead:
+
+**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the long source and the ranking passes stay out of orchestrator context, and only the structured envelope returns.
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "research,empirical,rationalist,systematic,skeptical" \
+  --role "Alpha extractor" \
+  --task "Apply the Extract Alpha workflow to the content at <source path or URL>. Enumerate every load-bearing claim. Score each on non-obviousness (0-3) and consequentiality (0-3). Return the top 3-5 by score, each with: claim verbatim, why non-obvious, what decision it would change, source location. Weight reframes higher than standalone facts.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+The envelope's `findings` field carries the ranked alpha; map it directly into the output template below.
+
+**Failure handling:** if the delegation fails (rate limit, network, parse error), fall back to inline extraction with an explicit budget warning to the user — flag that orchestrator context will be reduced for the rest of the session.
+
+Short content (< ~10k words) — run the steps inline; delegation overhead exceeds the saved context budget.
+
 ## Speed target
 
-~60s for a short article. ~2-3 minutes for a book chapter or transcript. Longer content benefits from delegated chunking.
+~60s for a short article. ~2-3 minutes for a book chapter or transcript. Long-content delegation adds ~30-60s of dispatch overhead but keeps orchestrator context clean.
 
 ## Anti-patterns
 

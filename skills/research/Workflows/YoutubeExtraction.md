@@ -44,6 +44,8 @@ Depending on the caller's intent:
 
 Or run a direct analysis if the intent is bespoke.
 
+**Dispatch inheritance:** the chosen downstream workflow handles its own dispatch — Interview.md spawns 3 parallel `locus delegate run` researchers; ExtractAlpha and ExtractKnowledge delegate to a single OpenCode agent when the transcript exceeds ~10k words. This workflow does not dispatch directly; it routes.
+
 ### Step 5 — Analyse
 
 Apply the chosen workflow to the transcript. Treat the transcript as the source; quote with timestamps where possible.

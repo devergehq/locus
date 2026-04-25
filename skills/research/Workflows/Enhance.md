@@ -36,12 +36,41 @@ For each weak spot, decide the type of enhancement:
 
 ### Step 3 — Research the enhancements
 
-Spawn researchers (methodology-appropriate — often academic-researcher for evidence, multi-angle-researcher for counter-cases) to source the supporting material.
+**The skill orchestrates; OpenCode does the research.** For each weak spot, dispatch one `locus delegate run` Bash call with the methodology that fits the enhancement type. If the weak-spot count is ≤ 12, dispatch all calls in a *single assistant message* so the platform parallelises them. If > 12, run in waves of 12.
 
-Each enhancement returns:
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the heavy research runs out-of-context and only compact envelopes return.
+
+Map the weak-spot type from Step 2 to a methodology + trait bundle:
+
+| Weak spot type   | Methodology              | Trait bundle                                                |
+|------------------|--------------------------|-------------------------------------------------------------|
+| Assertion        | academic-researcher      | `research,empirical,rationalist,systematic,skeptical`       |
+| Hollow           | investigative-researcher | `research,skeptical,contrarian,exploratory`                 |
+| Unguarded        | multi-angle-researcher   | `research,exploratory,iterative,analogical`                 |
+
+Per weak spot:
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<bundle from table above>" \
+  --role "<methodology> researcher" \
+  --task "<weak-spot text — verbatim sentence from Step 1 plus its weak-spot type from Step 2>. Source supporting material: a verified citation, a concrete example or a counter-case as appropriate. Return the source, a verified URL, and a suggested 1-3 sentence integration that preserves the original author's voice.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+Each enhancement returns (via the JSON envelope's `summary` / `findings` / `evidence` fields):
 - The source / evidence
 - A verified URL
 - A suggested integration — where in the content it slots, how long the insertion should be.
+
+**Failure handling:** if a weak-spot delegation fails, the original content stays as-is — do not invent supporting material. Flag failed weak spots in the enhancement log.
 
 ### Step 4 — Integrate
 

@@ -22,11 +22,66 @@ Identify the subject and the interview frame:
 
 ### Step 2 — Researcher assignment (parallel delegation)
 
-Launch 3 researchers:
+Three methodology-diverse researchers, each tuned to a different facet of the subject:
 
 1. **Academic researcher** — subject's papers, public academic work, intellectual lineage.
 2. **Investigative researcher** — subject's recent work, projects, public statements, controversies or reversals of position.
 3. **Contrarian researcher** — positions where the subject's view diverges from consensus or from their own past views.
+
+**The skill orchestrates; OpenCode does the research.** Dispatch all three `locus delegate run` Bash tool calls in a single assistant message — the platform tracks them as parallel tool uses and they execute concurrently.
+
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the raw research happens out-of-context and only a compact envelope returns.
+
+Substitute `<subject>` in each prompt with the subject's full name plus a one-line role descriptor (e.g., `"Jane Doe, computational biologist at MIT"`). Build each prompt with `locus agent compose` and dispatch all three blocks in a single assistant message:
+
+```bash
+ACADEMIC_PROMPT=$(locus agent compose \
+  --traits "research,empirical,rationalist,systematic,skeptical" \
+  --role "Academic researcher" \
+  --task "<subject>'s published work, papers, and intellectual lineage. Surface the specific positions they have argued in print, with citations.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$ACADEMIC_PROMPT" \
+  --output json
+```
+
+```bash
+INVESTIGATIVE_PROMPT=$(locus agent compose \
+  --traits "research,skeptical,contrarian,exploratory" \
+  --role "Investigative researcher" \
+  --task "<subject>'s recent work, projects, public statements over the last 24 months. Flag controversies, reversals of position, or unfinished arguments.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$INVESTIGATIVE_PROMPT" \
+  --output json
+```
+
+```bash
+CONTRARIAN_PROMPT=$(locus agent compose \
+  --traits "research,contrarian,skeptical,adversarial" \
+  --role "Contrarian researcher" \
+  --task "Positions where <subject> diverges from consensus, or from their own earlier views. Identify the strongest critics of those positions and what those critics actually argue.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$CONTRARIAN_PROMPT" \
+  --output json
+```
+
+Each call returns a JSON envelope on stdout with `summary`, `findings`, `evidence`, `risks`, `files_referenced`, and `raw_output_path`.
+
+**Failure handling:** if 2 of 3 succeed, generate questions from the 2 and flag the missing methodology in the output. If 0 of 3 succeed, report failure and offer to retry sequentially.
 
 ### Step 3 — Generate candidate questions
 
