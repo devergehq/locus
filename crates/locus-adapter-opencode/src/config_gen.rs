@@ -28,6 +28,14 @@ fn global_config_dir() -> Result<PathBuf, LocusError> {
         })
 }
 
+/// Whether `web_search` is enabled in the current OpenCode session, based on
+/// the `OPENCODE_ENABLE_EXA` env var read at AGENTS.md generation time. Must
+/// match the gate in `capabilities.rs` so the AGENTS.md tool list and the
+/// in-process capability manifest stay aligned.
+fn web_search_enabled_from_env() -> bool {
+    std::env::var("OPENCODE_ENABLE_EXA").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
 /// Generate the AGENTS.md file with the Algorithm inlined.
 ///
 /// This is placed at `~/.config/opencode/AGENTS.md` and applies to all
@@ -35,15 +43,41 @@ fn global_config_dir() -> Result<PathBuf, LocusError> {
 /// guaranteed to be in the AI's context — not dependent on `instructions`
 /// path resolution.
 ///
+/// The platform-tools section is generated dynamically from the
+/// `OPENCODE_ENABLE_EXA` env var: when set, `web_search` is bullet-listed
+/// and the model is told it is available; otherwise it is omitted and the
+/// fallback guidance to `web_fetch` / `bash` is shown. Regenerate after
+/// changing the env with `locus platform add opencode`.
+///
 /// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
-/// Regenerate with `locus platform add opencode`.
 pub fn generate_agents_md(locus_home: &Path) -> String {
+    generate_agents_md_with(locus_home, web_search_enabled_from_env())
+}
+
+/// Deterministic variant of `generate_agents_md` for tests and tooling that
+/// need to control the `web_search`-available bit without mutating env.
+pub fn generate_agents_md_with(locus_home: &Path, web_search_available: bool) -> String {
     let home = locus_home.display();
 
     // Read the Algorithm from disk.
     let algorithm_path = locus_home.join("algorithm").join("v1.1.md");
     let algorithm_content = std::fs::read_to_string(&algorithm_path)
         .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
+
+    let web_search_bullet = if web_search_available {
+        "\n- **web_search** (Exa) — open-ended web discovery"
+    } else {
+        ""
+    };
+
+    let web_search_note = if web_search_available {
+        "**`web_search` is available** in this session because `OPENCODE_ENABLE_EXA=1` is set. \
+         Use it for open-ended discovery; use `web_fetch` for targeted retrieval of known URLs."
+    } else {
+        "**`web_search` (open-ended web search) is NOT available** in this session because \
+         `OPENCODE_ENABLE_EXA=1` was not set. Use `web_fetch` against known URLs or `bash` \
+         with `curl`/`gh` for discovery."
+    };
 
     format!(
         r#"# Locus
@@ -111,11 +145,9 @@ The following native tools are available in this OpenCode session:
 - **edit** / **write** — modify files
 - **bash** — execute shell commands
 - **web_fetch** (fetch) — retrieve content from URLs
-- **task** (agent) — delegate to sub-agents
+- **task** (agent) — delegate to sub-agents{web_search_bullet}
 
-**Important:** `web_search` (open-ended web search) is NOT available unless OpenCode
-was started with the environment variable `OPENCODE_ENABLE_EXA=1`. If `web_search` is
-unavailable, use `web_fetch` against known URLs or `bash` with `curl`/`gh` for discovery.
+{web_search_note}
 Never attempt a tool that is not in the list above.
 
 ---
@@ -124,6 +156,8 @@ Never attempt a tool that is not in the list above.
 "#,
         home = home,
         algorithm = algorithm_content,
+        web_search_bullet = web_search_bullet,
+        web_search_note = web_search_note,
     )
 }
 

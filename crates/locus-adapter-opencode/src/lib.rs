@@ -138,11 +138,35 @@ mod tests {
 
     #[test]
     fn agents_md_lists_platform_tools() {
-        let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
+        // Use the deterministic helper so the test isn't sensitive to the
+        // host's OPENCODE_ENABLE_EXA env state.
+        let content =
+            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
         assert!(content.contains("Platform Tools (OpenCode)"));
         assert!(content.contains("web_fetch"));
         assert!(content.contains("bash"));
         assert!(content.contains("OPENCODE_ENABLE_EXA=1"));
+    }
+
+    #[test]
+    fn agents_md_omits_web_search_when_env_unset() {
+        let content =
+            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
+        // The bullet line must not appear.
+        assert!(!content.contains("- **web_search**"));
+        // The negative caveat must appear.
+        assert!(content.contains("`web_search` (open-ended web search) is NOT available"));
+    }
+
+    #[test]
+    fn agents_md_lists_web_search_when_env_set() {
+        let content =
+            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), true);
+        // The bullet line must appear.
+        assert!(content.contains("- **web_search** (Exa)"));
+        // The positive note must appear; the negative caveat must not.
+        assert!(content.contains("`web_search` is available"));
+        assert!(!content.contains("`web_search` (open-ended web search) is NOT available"));
     }
 
     #[test]
