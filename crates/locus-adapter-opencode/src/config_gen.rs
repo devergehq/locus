@@ -363,3 +363,110 @@ fn tilde_path(path: &Path) -> String {
     }
     path.display().to_string()
 }
+
+// ----------------------------------------------------------------------------
+// Native config — for sessions spawned in `ExecutionMode::Native`.
+//
+// Lives at `~/.locus/opencode-native-xdg/opencode/` so that setting
+// `XDG_CONFIG_HOME=~/.locus/opencode-native-xdg` on the spawned process
+// causes OpenCode to read this isolated config instead of the global
+// `~/.config/opencode/`. Auth (XDG_DATA_HOME) is shared.
+// ----------------------------------------------------------------------------
+
+/// Path to the native XDG_CONFIG_HOME used for delegated sessions.
+pub fn native_xdg_config_dir(locus_home: &Path) -> PathBuf {
+    locus_home.join("opencode-native-xdg")
+}
+
+/// Path to the per-app native opencode config directory (`<xdg>/opencode`).
+fn native_opencode_dir(locus_home: &Path) -> PathBuf {
+    native_xdg_config_dir(locus_home).join("opencode")
+}
+
+/// Generate the AGENTS.md content for a native delegated session.
+///
+/// Deliberately thin: tells the model it is a delegated worker, that the
+/// prompt is its task, and that orchestration scaffolding does NOT apply.
+/// This text is the antithesis of `generate_agents_md` — no Algorithm,
+/// no Mode Classification, no skills loading.
+pub fn generate_native_agents_md() -> String {
+    r#"# Delegated worker session
+
+You are a worker spawned by a Locus orchestrator (typically via `locus delegate run`).
+The orchestrator is the *outer* session. You are *not* the orchestrator.
+
+## Your job
+
+Read the user prompt. Use the tools available to do the work the prompt describes.
+Produce the requested output (a research dossier, a code-exploration summary, an
+extracted answer — whatever the prompt asks for) directly in your response.
+
+## What you must NOT do
+
+- Do not classify the request as Trivial / Non-trivial.
+- Do not run OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN phases.
+- Do not write a PRD, checkpoint, or learning file.
+- Do not invoke skills, agents, or protocols. They do not apply here.
+- Do not delegate further (you are already a delegate).
+
+If the prompt itself describes a multi-step process, follow that process — but do
+not impose your own orchestration framework on top of it.
+
+## Tools
+
+Use the tools your runtime provides (read, edit/write, bash, web_fetch, web_search
+when available). Verify every URL you cite. If a tool you would normally reach for
+is not available, say so in your output and proceed with what you have.
+"#
+    .to_string()
+}
+
+/// Generate the minimal `opencode.json` for a native delegated session.
+///
+/// No `instructions:` array — that's the whole point. Permissions are kept
+/// permissive so the worker can read the workspace it was pointed at.
+fn generate_native_opencode_json() -> String {
+    let value = serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+    });
+    serde_json::to_string_pretty(&value).expect("static JSON serialises")
+}
+
+/// Write the native config bundle (AGENTS.md + opencode.json) under
+/// `~/.locus/opencode-native-xdg/opencode/`. Idempotent.
+pub fn write_native_config(locus_home: &Path) -> Result<NativeConfigWrite, LocusError> {
+    let dir = native_opencode_dir(locus_home);
+    std::fs::create_dir_all(&dir).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to create native config dir: {}", e),
+        path: dir.clone(),
+    })?;
+
+    let agents_path = dir.join("AGENTS.md");
+    std::fs::write(&agents_path, generate_native_agents_md()).map_err(|e| {
+        LocusError::Filesystem {
+            message: format!("Failed to write native AGENTS.md: {}", e),
+            path: agents_path.clone(),
+        }
+    })?;
+
+    let config_path = dir.join("opencode.json");
+    std::fs::write(&config_path, generate_native_opencode_json()).map_err(|e| {
+        LocusError::Filesystem {
+            message: format!("Failed to write native opencode.json: {}", e),
+            path: config_path.clone(),
+        }
+    })?;
+
+    Ok(NativeConfigWrite {
+        agents_md_path: agents_path,
+        config_path,
+    })
+}
+
+/// Result of writing the native config bundle.
+pub struct NativeConfigWrite {
+    /// Path to the native AGENTS.md.
+    pub agents_md_path: PathBuf,
+    /// Path to the native opencode.json.
+    pub config_path: PathBuf,
+}

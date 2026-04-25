@@ -229,6 +229,12 @@ enum DelegateCommands {
         /// Output mode.
         #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Json)]
         output: commands::delegate::DelegateOutput,
+
+        /// Execution mode for the spawned session. `native` (default) skips
+        /// the Locus Algorithm in the delegated session; `algorithmic` loads
+        /// it. Almost always `native` — the orchestrator is here, not there.
+        #[arg(long, value_enum, default_value_t = commands::delegate::ExecutionModeArg::Native)]
+        mode: commands::delegate::ExecutionModeArg,
     },
 
     /// List existing delegation artifact directories.
@@ -347,6 +353,7 @@ fn main() {
                 timeout_seconds,
                 dry_run,
                 output,
+                mode,
             } => commands::delegate::run(commands::delegate::RunArgs {
                 backend,
                 task_kind,
@@ -360,6 +367,7 @@ fn main() {
                 timeout_seconds,
                 dry_run,
                 output,
+                mode,
             }),
             DelegateCommands::Ls { root, output } => {
                 commands::delegate::ls(commands::delegate::LsArgs { root, output })
@@ -445,6 +453,60 @@ mod tests {
             Commands::Delegate {
                 command: DelegateCommands::Run { model, .. },
             } => assert!(model.is_none()),
+            _ => panic!("expected delegate run command"),
+        }
+    }
+
+    #[test]
+    fn parses_delegate_run_command_with_explicit_mode() {
+        let cli = Cli::try_parse_from([
+            "locus",
+            "delegate",
+            "run",
+            "--backend",
+            "opencode",
+            "--task-kind",
+            "research",
+            "--dir",
+            "/tmp/project",
+            "--prompt",
+            "Research this",
+            "--mode",
+            "algorithmic",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Delegate {
+                command: DelegateCommands::Run { mode, .. },
+            } => assert_eq!(mode, commands::delegate::ExecutionModeArg::Algorithmic),
+            _ => panic!("expected delegate run command"),
+        }
+    }
+
+    #[test]
+    fn parses_delegate_run_command_defaults_to_native_mode() {
+        let cli = Cli::try_parse_from([
+            "locus",
+            "delegate",
+            "run",
+            "--backend",
+            "opencode",
+            "--task-kind",
+            "research",
+            "--dir",
+            "/tmp/project",
+            "--prompt",
+            "Research this",
+            "--dry-run",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Delegate {
+                command: DelegateCommands::Run { mode, .. },
+            } => assert_eq!(mode, commands::delegate::ExecutionModeArg::Native),
             _ => panic!("expected delegate run command"),
         }
     }

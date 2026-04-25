@@ -56,6 +56,40 @@ pub enum DelegationMode {
     ReadOnly,
 }
 
+/// Orchestration-context mode for a spawned session.
+///
+/// `Native` sessions run with no Locus orchestration scaffolding loaded — bare
+/// model + tools, intended for bounded execution (delegation, council members,
+/// red-team attackers). `Algorithmic` sessions load the full Algorithm and
+/// skill machinery — intended for the top-level orchestrator.
+///
+/// Orthogonal to `DelegationMode` (read-only vs write-isolated). A request
+/// can be `(Native, ReadOnly)` or in future `(Algorithmic, WriteIsolated)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    /// Bare session — no Algorithm, no Mode Classification, no skills load.
+    Native,
+    /// Full Locus orchestration loaded into the session.
+    Algorithmic,
+}
+
+impl Default for ExecutionMode {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+impl ExecutionMode {
+    /// Stable string used in CLI parsing and prompts.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Algorithmic => "algorithmic",
+        }
+    }
+}
+
 /// Completion status for a delegated task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -92,8 +126,14 @@ pub struct DelegationRequest {
     /// Files attached as bounded context.
     #[serde(default)]
     pub context_files: Vec<PathBuf>,
-    /// Safety mode for this request.
+    /// Safety mode for this request (read-only vs hypothetical write-isolated).
     pub mode: DelegationMode,
+    /// Orchestration-context mode for the spawned session. Defaults to
+    /// `Native`: delegated work is bounded execution and should NOT inherit
+    /// the Locus Algorithm. Set to `Algorithmic` only when the delegated
+    /// session itself needs to orchestrate.
+    #[serde(default)]
+    pub execution_mode: ExecutionMode,
     /// Result schema version expected by the caller.
     pub output_schema_version: u32,
     /// Directory where raw backend artifacts are written.
@@ -211,6 +251,7 @@ mod tests {
             prompt: "Research the topic".into(),
             context_files: vec![PathBuf::from("/tmp/context.md")],
             mode: DelegationMode::ReadOnly,
+            execution_mode: ExecutionMode::Native,
             output_schema_version: DelegationRequest::CURRENT_SCHEMA_VERSION,
             artifact_dir: PathBuf::from("/tmp/artifacts"),
             timeout_seconds: 600,
@@ -224,7 +265,33 @@ mod tests {
         assert_eq!(json["backend"], "opencode");
         assert_eq!(json["task_kind"], "research");
         assert_eq!(json["mode"], "read_only");
+        assert_eq!(json["execution_mode"], "native");
         assert_eq!(json["output_schema_version"], 1);
+    }
+
+    #[test]
+    fn execution_mode_default_is_native() {
+        assert_eq!(ExecutionMode::default(), ExecutionMode::Native);
+    }
+
+    #[test]
+    fn execution_mode_field_is_optional_in_serde() {
+        // Older request payloads (pre-execution-mode field) must still parse,
+        // defaulting to Native.
+        let json = r#"{
+            "id": "x",
+            "backend": "opencode",
+            "task_kind": "research",
+            "model": "openai/gpt-5.5",
+            "workspace_dir": "/tmp/p",
+            "prompt": "hi",
+            "mode": "read_only",
+            "output_schema_version": 1,
+            "artifact_dir": "/tmp/a",
+            "timeout_seconds": 60
+        }"#;
+        let parsed: DelegationRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.execution_mode, ExecutionMode::Native);
     }
 
     #[test]

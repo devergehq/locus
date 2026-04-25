@@ -49,11 +49,14 @@ impl OpenCodeAdapter {
     pub fn setup(&self, locus_home: &Path) -> Result<SetupResult, LocusError> {
         let write_result = config_gen::write_agents_md(locus_home)?;
         let config_path = config_gen::update_opencode_json(locus_home)?;
+        let native = config_gen::write_native_config(locus_home)?;
 
         Ok(SetupResult {
             agents_md_path: write_result.path,
             config_path,
             backed_up_agents_md: write_result.backed_up,
+            native_agents_md_path: native.agents_md_path,
+            native_config_path: native.config_path,
         })
     }
 }
@@ -66,14 +69,20 @@ impl Default for OpenCodeAdapter {
 
 /// Result of setting up Locus for OpenCode.
 pub struct SetupResult {
-    /// Path to the generated AGENTS.md.
+    /// Path to the generated AGENTS.md (algorithmic, global).
     pub agents_md_path: PathBuf,
 
-    /// Path to the updated opencode.json.
+    /// Path to the updated opencode.json (algorithmic, global).
     pub config_path: PathBuf,
 
     /// Whether an existing AGENTS.md was backed up.
     pub backed_up_agents_md: bool,
+
+    /// Path to the native AGENTS.md (used when delegating with `--mode native`).
+    pub native_agents_md_path: PathBuf,
+
+    /// Path to the native opencode.json (used when delegating with `--mode native`).
+    pub native_config_path: PathBuf,
 }
 
 #[cfg(test)]
@@ -167,6 +176,53 @@ mod tests {
         // The positive note must appear; the negative caveat must not.
         assert!(content.contains("`web_search` is available"));
         assert!(!content.contains("`web_search` (open-ended web search) is NOT available"));
+    }
+
+    #[test]
+    fn native_agents_md_omits_algorithm_scaffolding() {
+        let content = config_gen::generate_native_agents_md();
+        // Forbidden hijacking imperatives — markers that would cause the
+        // model to run the Algorithm in a delegated session. The word
+        // "OBSERVE" may appear in negative guidance ("Do not run OBSERVE
+        // ... phases"); what we forbid is the *imperative* form.
+        assert!(!content.contains("Mode Classification (MANDATORY)"));
+        assert!(!content.contains("Algorithm v1.1"));
+        assert!(!content.contains("Follow the 7-phase structure"));
+        assert!(!content.contains("Classification: Trivial"));
+        assert!(!content.contains("Classification: Non-trivial"));
+    }
+
+    #[test]
+    fn native_agents_md_frames_session_as_worker() {
+        let content = config_gen::generate_native_agents_md();
+        assert!(
+            content.to_lowercase().contains("delegated worker")
+                || content.to_lowercase().contains("worker spawned")
+        );
+        // Explicit "do not orchestrate" guidance.
+        assert!(content.contains("Do not classify"));
+        assert!(content.contains("Do not run OBSERVE"));
+    }
+
+    #[test]
+    fn write_native_config_writes_both_files_under_xdg_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = config_gen::write_native_config(tmp.path()).unwrap();
+
+        // Layout: <locus_home>/opencode-native-xdg/opencode/{AGENTS.md,opencode.json}
+        let expected_dir = tmp.path().join("opencode-native-xdg").join("opencode");
+        assert_eq!(result.agents_md_path, expected_dir.join("AGENTS.md"));
+        assert_eq!(result.config_path, expected_dir.join("opencode.json"));
+        assert!(result.agents_md_path.exists());
+        assert!(result.config_path.exists());
+
+        // opencode.json must NOT contain the `instructions` array.
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&result.config_path).unwrap()).unwrap();
+        assert!(
+            json.get("instructions").is_none(),
+            "native opencode.json must not load Locus instructions"
+        );
     }
 
     #[test]

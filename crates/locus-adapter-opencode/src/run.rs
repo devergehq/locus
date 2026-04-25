@@ -8,18 +8,25 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use locus_core::{
-    DelegationMode, DelegationRequest, DelegationResult, DelegationStatus, LocusError, Platform,
+    DelegationMode, DelegationRequest, DelegationResult, DelegationStatus, ExecutionMode,
+    LocusError, Platform,
 };
 
-/// Command program, arguments, and environment that will invoke OpenCode.
+/// Command program, arguments, and environment overrides that will invoke OpenCode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeCommandSpec {
     /// Executable name or path.
     pub program: String,
     /// Arguments passed to the executable.
     pub args: Vec<String>,
-    /// Environment variables overlaid on the spawned process.
-    pub env: Vec<(String, String)>,
+    /// Environment variables to set on the spawned process.
+    ///
+    /// Always includes `XDG_DATA_HOME` pointing at a per-delegation data dir
+    /// so parallel delegations don't contend on OpenCode's SQLite WAL.
+    /// For `ExecutionMode::Native` requests, also includes `XDG_CONFIG_HOME`
+    /// pointing at `~/.locus/opencode-native-xdg`, isolating the spawned
+    /// OpenCode session from the global Locus install at `~/.config/opencode/`.
+    pub envs: Vec<(String, String)>,
 }
 
 /// Per-invocation OpenCode data directory under the request's artifact dir.
@@ -29,14 +36,6 @@ pub struct OpenCodeCommandSpec {
 /// when delegations run in parallel.
 pub fn opencode_data_dir(request: &DelegationRequest) -> PathBuf {
     request.artifact_dir.join("opencode-data")
-}
-
-/// Build the env overlay applied to the OpenCode subprocess.
-pub fn build_opencode_env(request: &DelegationRequest) -> Vec<(String, String)> {
-    vec![(
-        "XDG_DATA_HOME".to_string(),
-        opencode_data_dir(request).display().to_string(),
-    )]
 }
 
 /// Build deterministic `opencode run` arguments for a delegated request.
@@ -67,8 +66,38 @@ pub fn build_opencode_args(request: &DelegationRequest) -> Vec<String> {
         args.push(file.display().to_string());
     }
 
+    if request.execution_mode == ExecutionMode::Native {
+        // Skip plugin loading for native sessions — we want maximum isolation
+        // from the user's global OpenCode customisations.
+        args.push("--pure".to_string());
+    }
+
     args.push(build_delegated_prompt(request));
     args
+}
+
+/// Build the env overrides for a delegated request.
+///
+/// Always sets `XDG_DATA_HOME` to a per-delegation data dir so parallel
+/// delegations don't contend on OpenCode's SQLite WAL. Native execution
+/// mode additionally redirects `XDG_CONFIG_HOME` to the Locus-managed
+/// native config dir so the spawned OpenCode session does not load the
+/// algorithmic AGENTS.md or `instructions:` array from `~/.config/opencode/`.
+/// Algorithmic mode inherits the parent's config unmodified.
+pub fn build_opencode_envs(request: &DelegationRequest) -> Vec<(String, String)> {
+    let mut envs = vec![(
+        "XDG_DATA_HOME".to_string(),
+        opencode_data_dir(request).display().to_string(),
+    )];
+
+    if request.execution_mode == ExecutionMode::Native {
+        if let Some(home) = dirs::home_dir() {
+            let xdg = home.join(".locus").join("opencode-native-xdg");
+            envs.push(("XDG_CONFIG_HOME".to_string(), xdg.display().to_string()));
+        }
+    }
+
+    envs
 }
 
 /// Build the command spec using a custom executable path.
@@ -79,7 +108,7 @@ pub fn build_opencode_command_with_bin(
     OpenCodeCommandSpec {
         program: opencode_bin.into(),
         args: build_opencode_args(request),
-        env: build_opencode_env(request),
+        envs: build_opencode_envs(request),
     }
 }
 
@@ -220,12 +249,15 @@ fn run_command_with_timeout(
     spec: &OpenCodeCommandSpec,
     timeout: Duration,
 ) -> io::Result<TimedOutput> {
-    let mut child = Command::new(&spec.program)
+    let mut command = Command::new(&spec.program);
+    command
         .args(&spec.args)
-        .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+        .stderr(Stdio::piped());
+    for (key, value) in &spec.envs {
+        command.env(key, value);
+    }
+    let mut child = command.spawn()?;
 
     let start = Instant::now();
     loop {
@@ -455,7 +487,9 @@ pub(crate) mod parse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use locus_core::{DelegationBackend, DelegationMode, DelegationRequest, DelegationTaskKind};
+    use locus_core::{
+        DelegationBackend, DelegationMode, DelegationRequest, DelegationTaskKind, ExecutionMode,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_request() -> DelegationRequest {
@@ -470,6 +504,7 @@ mod tests {
             prompt: "Research readback patterns".into(),
             context_files: vec![PathBuf::from("/tmp/context.md")],
             mode: DelegationMode::ReadOnly,
+            execution_mode: ExecutionMode::Native,
             output_schema_version: DelegationRequest::CURRENT_SCHEMA_VERSION,
             artifact_dir: std::env::temp_dir().join(unique_id()),
             timeout_seconds: 5,
@@ -504,6 +539,45 @@ mod tests {
     }
 
     #[test]
+    fn native_mode_spec_has_pure_arg_and_xdg_env() {
+        let mut request = sample_request();
+        request.execution_mode = ExecutionMode::Native;
+        let spec = build_opencode_command_with_bin(&request, "opencode-test");
+
+        assert!(
+            spec.args.iter().any(|a| a == "--pure"),
+            "native mode must pass --pure to skip plugin loading"
+        );
+        let xdg = spec
+            .envs
+            .iter()
+            .find(|(k, _)| k == "XDG_CONFIG_HOME")
+            .expect("native mode must set XDG_CONFIG_HOME");
+        assert!(
+            xdg.1.ends_with("opencode-native-xdg"),
+            "XDG_CONFIG_HOME should point at the Locus-managed native config dir, got {}",
+            xdg.1
+        );
+    }
+
+    #[test]
+    fn algorithmic_mode_spec_has_no_pure_and_no_xdg_config_override() {
+        let mut request = sample_request();
+        request.execution_mode = ExecutionMode::Algorithmic;
+        let spec = build_opencode_command_with_bin(&request, "opencode-test");
+
+        assert!(
+            !spec.args.iter().any(|a| a == "--pure"),
+            "algorithmic mode must NOT pass --pure"
+        );
+        assert!(
+            !spec.envs.iter().any(|(k, _)| k == "XDG_CONFIG_HOME"),
+            "algorithmic mode must inherit OpenCode config from the global install, got {:?}",
+            spec.envs
+        );
+    }
+
+    #[test]
     fn successful_run_records_stdout_artifact() {
         let request = sample_request();
         let result = run_delegation_with_bin(&request, "true").unwrap();
@@ -521,11 +595,11 @@ mod tests {
         let spec = build_opencode_command_with_bin(&request, "opencode-test");
 
         let xdg = spec
-            .env
+            .envs
             .iter()
             .find(|(k, _)| k == "XDG_DATA_HOME")
             .map(|(_, v)| v.clone())
-            .expect("spec env should set XDG_DATA_HOME");
+            .expect("spec envs should set XDG_DATA_HOME");
 
         let expected = request
             .artifact_dir

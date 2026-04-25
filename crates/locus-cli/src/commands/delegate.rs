@@ -9,7 +9,7 @@ use clap::ValueEnum;
 use locus_adapter_opencode::run::run_delegation;
 use locus_core::{
     DelegationBackend, DelegationConfig, DelegationDefaults, DelegationMode, DelegationRequest,
-    DelegationTaskKind, LocusConfig, LocusError,
+    DelegationTaskKind, ExecutionMode, LocusConfig, LocusError,
 };
 use serde::Serialize;
 
@@ -60,6 +60,26 @@ pub enum DelegateOutput {
     Human,
 }
 
+/// Execution-mode CLI flag (orchestration context).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ExecutionModeArg {
+    /// Bare session — no Locus Algorithm loaded into the spawned process.
+    Native,
+    /// Full Locus Algorithm loaded into the spawned process. Rare; almost
+    /// always you want `native` because the orchestrator is the *outer*
+    /// session, not the delegated one.
+    Algorithmic,
+}
+
+impl From<ExecutionModeArg> for ExecutionMode {
+    fn from(value: ExecutionModeArg) -> Self {
+        match value {
+            ExecutionModeArg::Native => Self::Native,
+            ExecutionModeArg::Algorithmic => Self::Algorithmic,
+        }
+    }
+}
+
 /// Arguments for `locus delegate run`.
 #[derive(Debug, Clone)]
 pub struct RunArgs {
@@ -75,6 +95,7 @@ pub struct RunArgs {
     pub timeout_seconds: u64,
     pub dry_run: bool,
     pub output: DelegateOutput,
+    pub mode: ExecutionModeArg,
 }
 
 /// Run a delegated task through the selected backend.
@@ -142,6 +163,7 @@ fn build_request(
         prompt: args.prompt,
         context_files: args.context_files,
         mode: DelegationMode::ReadOnly,
+        execution_mode: args.mode.into(),
         output_schema_version: DelegationRequest::CURRENT_SCHEMA_VERSION,
         artifact_dir,
         timeout_seconds: args.timeout_seconds,
@@ -686,6 +708,7 @@ mod tests {
             timeout_seconds: 600,
             dry_run: true,
             output: DelegateOutput::Json,
+            mode: ExecutionModeArg::Native,
         }
     }
 
@@ -1024,5 +1047,19 @@ mod tests {
         let request = build_request(args, &config).unwrap();
 
         assert_eq!(request.model, "openai/gpt-5.4-mini");
+    }
+
+    #[test]
+    fn build_request_propagates_native_mode_by_default() {
+        let request = build_request(sample_args(), &empty_config()).unwrap();
+        assert_eq!(request.execution_mode, ExecutionMode::Native);
+    }
+
+    #[test]
+    fn build_request_propagates_algorithmic_mode_when_set() {
+        let mut args = sample_args();
+        args.mode = ExecutionModeArg::Algorithmic;
+        let request = build_request(args, &empty_config()).unwrap();
+        assert_eq!(request.execution_mode, ExecutionMode::Algorithmic);
     }
 }
