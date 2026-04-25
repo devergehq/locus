@@ -10,15 +10,36 @@ Council debates run in **three rounds**. Each round has a specific purpose. Runn
 
 Two rounds are insufficient: members state positions and rebut once, with no chance to revisit after hearing the rebuttal. Four or more rounds produces diminishing insight and increases persona drift risk.
 
+## Dispatch idiom
+
+Each round dispatches one `locus delegate run` per member, all in a single assistant message so the platform parallelises them. Each member's prompt is composed via `locus agent compose` from that member's trait bundle. **DO NOT use the platform-native Task tool** — Task subagents burn the orchestrator's context budget; native delegation runs the member out-of-process and returns a compact envelope.
+
+The shape of each per-member dispatch is:
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<member trait bundle>" \
+  --role "Council member: <RoleName>" \
+  --task "<round-specific task; see per-round prompts below>")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+The returned envelope's `summary` is the member's response; the orchestrator collects the N envelopes and assembles the transcript before the next round.
+
 ## Round 1 — Initial Positions
 
-**Parallel execution.** Launch one delegation per member, all in a single message.
+**Parallel execution.** Dispatch one `locus delegate run` per member in a single assistant message.
 
-**Each member's prompt:**
+**Each member's `--task` text:**
 
 ```
-<trait-composed role>
-
 COUNCIL DEBATE - ROUND 1: INITIAL POSITIONS
 
 Topic: <the question being debated>
@@ -31,17 +52,15 @@ Give your initial position on this topic from your composed stance.
 - You will engage with other members' positions in Round 2.
 ```
 
-**Collect** the four responses. **Display** the transcript in full before proceeding.
+**Collect** the responses (each from the JSON envelope's `summary` field) and **display** the transcript in full before proceeding.
 
 ## Round 2 — Responses & Challenges
 
-**Parallel execution, with full Round 1 transcript in each member's prompt.**
+**Parallel execution.** Dispatch per-member `locus delegate run` calls again, with the full Round 1 transcript inlined into each `--task` text.
 
-**Each member's prompt:**
+**Each member's `--task` text:**
 
 ```
-<trait-composed role>
-
 COUNCIL DEBATE - ROUND 2: RESPONSES & CHALLENGES
 
 Topic: <the question being debated>
@@ -60,15 +79,15 @@ Now respond to the other members:
 The value is in genuine intellectual friction — engage with their actual arguments, not strawmen.
 ```
 
+**Note on prompt size:** for a 4-member debate this Round-2 task text is ~1-2 KB (Round 1 transcript). Well within bounds.
+
 ## Round 3 — Synthesis
 
-**Parallel execution, with full Rounds 1 + 2 transcripts.**
+**Parallel execution.** Dispatch per-member `locus delegate run` calls with the full Rounds 1 + 2 transcripts in each `--task` text.
 
-**Each member's prompt:**
+**Each member's `--task` text:**
 
 ```
-<trait-composed role>
-
 COUNCIL DEBATE - ROUND 3: SYNTHESIS
 
 Topic: <the question being debated>
@@ -86,6 +105,8 @@ Provide your final synthesis:
 
 Be honest about remaining disagreements. Forced consensus is worse than acknowledged tension.
 ```
+
+**Note on prompt size:** for a 4-member debate the Rounds-1+2 transcript is ~3-4 KB per Round-3 task text. Still fine; no truncation needed.
 
 ## After Round 3 — Council Synthesis
 

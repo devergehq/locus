@@ -28,9 +28,39 @@ If in doubt, use `academic-researcher` — it has the highest citation disciplin
 
 Craft one query. Be specific. "Bash read command flags" is a weak query; "`read -t` flag behaviour on macOS Bash 3.2 vs Bash 5" is a good Quick query — specific enough to get a precise answer.
 
-### Step 3 — Delegate
+### Step 3 — Delegate via `locus delegate run`
 
-Spawn one agent via the platform's delegation mechanism, with a trait-composed role per the chosen methodology.
+**The skill orchestrates; OpenCode does the research.** Compose the prompt with `locus agent compose`, then dispatch a single `locus delegate run` Bash call. The trait bundle below picks the chosen methodology's canonical composition (per `agents/{methodology}-researcher.md`).
+
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the heavy work runs out-of-context and only a compact envelope returns.
+
+Pick the trait bundle for the chosen methodology:
+
+| Methodology               | Trait bundle                                                |
+|---------------------------|-------------------------------------------------------------|
+| academic-researcher       | `research,empirical,rationalist,systematic,skeptical`       |
+| investigative-researcher  | `research,skeptical,contrarian,exploratory`                 |
+| contrarian-researcher     | `research,contrarian,skeptical,adversarial`                 |
+| multi-angle-researcher    | `research,exploratory,iterative,analogical`                 |
+
+Then:
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<bundle from table above>" \
+  --role "<methodology> researcher" \
+  --task "<the focused query>")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+The returned JSON envelope has `summary`, `findings`, `evidence`, `files_referenced`. Use those directly.
 
 ### Step 4 — Verify URLs
 

@@ -18,29 +18,73 @@ State the creative task:
 
 Example: "Produce a design spec for the billing subsystem. Must support: monthly invoicing, prorated upgrades, dunning workflow. Success = design survives a 30-minute engineering review with no load-bearing objections."
 
-### Step 2 — Generate candidates
+### Step 2 — Generate candidates via `locus delegate run`
 
-Launch 3-5 parallel attackers, each with trait bundles chosen for **diversity across design philosophy**, not just role. E.g.:
+Dispatch 3-5 parallel `locus delegate run` calls in a single assistant message, each with a trait bundle chosen for **diversity across design philosophy**, not just role. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section.
 
 | Candidate | Trait bundle                                              | Design philosophy              |
 |-----------|-----------------------------------------------------------|--------------------------------|
-| Minimal   | `architecture + pragmatic + rapid`                        | Ship-first, refactor-later     |
-| Bullet    | `security + adversarial + systematic`                     | Defence-in-depth, assume-breach|
-| Elegant   | `architecture + systems-thinking + iterative`             | First-principles clean design  |
-| Scrappy   | `implementation + contrarian + rapid`                     | Minimum viable, break rules    |
-| Thorough  | `architecture + systematic + thorough`                    | Comprehensive, edge-case-first |
+| Minimal   | `architecture,pragmatic,rapid`                            | Ship-first, refactor-later     |
+| Bullet    | `security,adversarial,systematic`                         | Defence-in-depth, assume-breach|
+| Elegant   | `architecture,systems-thinking,iterative`                 | First-principles clean design  |
+| Scrappy   | `implementation,contrarian,rapid`                         | Minimum viable, break rules    |
+| Thorough  | `architecture,systematic,thorough`                        | Comprehensive, edge-case-first |
 
-Each produces a standalone candidate design for the same task.
+Per candidate:
 
-### Step 3 — Adversarial cross-attack
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<bundle from table above>" \
+  --role "Adversarial designer: <Candidate name>" \
+  --task "Produce a standalone candidate design for this task, expressing your design philosophy without compromise.
 
-Each candidate is attacked by the other candidates. Each attacker receives:
+Task scope:
+<scope text from Step 1>
 
-- The other candidate's design.
-- Their own trait-composed role.
-- Explicit task: "Attack this design from your design philosophy. Where does it fail?"
+Constraints:
+<non-negotiable constraints>
 
-Output: per-candidate attack summary — the flaws each other candidate surfaced.
+Success criterion:
+<criterion>
+
+Return the full design text.")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+The orchestrator collects N candidate designs from the `summary` field of each envelope.
+
+### Step 3 — Adversarial cross-attack via `locus delegate run`
+
+For each (attacker, target) pair where attacker ≠ target, dispatch one `locus delegate run`. With 5 candidates that's 20 attacks; with 3 candidates it's 6. Dispatch all in a single assistant message (or in waves of N if rate-limited).
+
+Per attack:
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<attacker's trait bundle>" \
+  --role "Adversarial designer attacking from <attacker philosophy>" \
+  --task "Attack this design from your design philosophy. Where does it fail? What would you do differently? Be specific — reference parts of the design, not generalities.
+
+Target design:
+<target candidate's design text>")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+Output: per-candidate attack summary aggregated from the envelopes — the flaws each other candidate's attacker surfaced.
 
 ### Step 4 — Synthesis
 

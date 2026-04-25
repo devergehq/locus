@@ -16,21 +16,40 @@ Break the proposal into its atomic claims. Not the proposal's sentences — its 
 
 Output: a numbered list of atomic claims.
 
-### Phase 2 — Parallel analysis
+### Phase 2 — Parallel analysis via `locus delegate run`
 
-Launch 8-16 parallel attackers (per the roster in `Philosophy.md`). Each receives:
+Dispatch 8-16 parallel attackers (per the roster in `Philosophy.md`) via `locus delegate run`, all in a single assistant message. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section for the rationale.
 
-- The full proposal text.
-- The list of atomic claims from Phase 1.
-- The attacker's trait-composed role prompt.
-- The explicit task: "Attack this proposal. Identify the single most load-bearing flaw. If you find multiple, rank by impact and surface the top one."
+For each attacker:
 
-Each attacker returns:
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<attacker trait bundle from Philosophy.md>" \
+  --role "Red-team attacker: <vector name>" \
+  --task "Attack this proposal from your trait stance. Identify the single most load-bearing flaw. If you find multiple, rank by impact and surface the top one.
 
-- **Steelman of the proposal** (not a paraphrase — the strongest version).
-- **Top flaw** — the load-bearing problem if the proposal has one.
-- **Supporting evidence** — why this flaw matters.
-- **Secondary concerns** — 2-3 further issues, ranked.
+Return your response in this structure:
+- STEELMAN: The strongest version of the proposal (not a paraphrase).
+- TOP_FLAW: The load-bearing problem if the proposal has one.
+- EVIDENCE: Why this flaw matters.
+- SECONDARY: 2-3 further issues, ranked by impact.
+
+Proposal text:
+<full proposal text>
+
+Atomic claims (from Phase 1 decomposition):
+<numbered list of claims>")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+Each attacker returns a JSON envelope; parse the `summary` field's STEELMAN / TOP_FLAW / EVIDENCE / SECONDARY sections. Attackers that fail to return a parseable response count as failed delegations and don't contribute to the synthesis convergence count.
 
 ### Phase 3 — Synthesis
 

@@ -24,20 +24,26 @@ Output the debate header per `OutputFormat.md`:
 
 ### Step 2 — Round 1: Initial Positions
 
-Launch N parallel delegations (one per member). Each member's prompt follows the Round 1 template in `RoundStructure.md`, composed from their trait bundle.
+Dispatch N parallel `locus delegate run` calls (one per member) in a single assistant message. Each member's prompt follows the Round 1 template in `RoundStructure.md` and uses the canonical dispatch idiom documented there:
 
-For each member, compose their prompt via:
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<member trait bundle>" \
+  --role "Council member: <RoleName>" \
+  --task "<Round 1 task text from RoundStructure.md, with topic substituted>")
 
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
 ```
-locus agent compose --traits "<trait-bundle>" \
-                    --role "Council member: <RoleName>" \
-                    --task "Round 1 initial position on: <topic>" \
-                    --output prompt
-```
 
-(If the `locus agent compose` CLI is not yet available, hand-compose the prompt by concatenating the trait `prompt_fragment` entries from `agents/traits.yaml`.)
+**DO NOT use the platform Task tool for this step** — see `RoundStructure.md`'s "Dispatch idiom" section for the rationale.
 
-Collect responses. Display as:
+Collect responses (each member's text from the JSON envelope's `summary` field). Display as:
 
 ```markdown
 ### Round 1: Initial Positions
@@ -57,7 +63,7 @@ Collect responses. Display as:
 
 ### Step 3 — Round 2: Responses & Challenges
 
-Launch N parallel delegations, each prompt including the full Round 1 transcript. Each member's prompt follows the Round 2 template in `RoundStructure.md`.
+Dispatch N parallel `locus delegate run` calls, each `--task` text including the full Round 1 transcript per the Round 2 template in `RoundStructure.md`. Same dispatch idiom as Step 2 — only the `--task` text changes.
 
 Collect and display:
 
@@ -72,7 +78,7 @@ Collect and display:
 
 ### Step 4 — Round 3: Synthesis
 
-Launch N parallel delegations with full Rounds 1+2 transcripts. Round 3 template in `RoundStructure.md`.
+Dispatch N parallel `locus delegate run` calls with the full Rounds 1+2 transcripts inlined per the Round 3 template in `RoundStructure.md`. Same dispatch idiom as Step 2.
 
 Collect and display:
 

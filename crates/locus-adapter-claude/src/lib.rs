@@ -162,6 +162,28 @@ mod tests {
     }
 
     #[test]
+    fn claude_md_documents_native_and_algorithmic_modes() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        // The invocation example must show the new --mode flag.
+        assert!(
+            content.contains("--mode native"),
+            "delegation example must show --mode native"
+        );
+        // Both modes must be named so the reader knows the knob exists.
+        assert!(
+            content.contains("`--mode algorithmic`"),
+            "must mention --mode algorithmic as the opt-in for the rare case"
+        );
+        // Must explain that native is the default (so the user understands
+        // omitting --mode is safe).
+        let lower = content.to_lowercase();
+        assert!(
+            lower.contains("native") && lower.contains("default"),
+            "must state that native is the default mode"
+        );
+    }
+
+    #[test]
     fn claude_md_delegation_lists_when_to_use() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         let section_start = content

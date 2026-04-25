@@ -33,14 +33,44 @@ For each sub-query, launch 4 researchers in parallel:
 
 Total: 3 sub-queries × 4 methodologies = **12 parallel delegations**.
 
-### Step 3 — Parallel execution
+### Step 3 — Parallel execution via `locus delegate run`
 
-All 12 delegations in a single message. Platform does the parallelism.
+**The skill orchestrates; OpenCode does the research.** Dispatch all 12 `locus delegate run` Bash calls in a *single assistant message* — the platform tracks them as parallel tool uses and they execute concurrently.
 
-Each researcher returns:
-- Findings with citations
-- Methodology-specific perspective
-- Verified URLs only
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the 12 heavy researches run out-of-context and only compact envelopes return.
+
+For each (sub-query × methodology) pair, build the prompt with `locus agent compose` and dispatch:
+
+```bash
+PROMPT=$(locus agent compose \
+  --traits "<methodology trait bundle>" \
+  --role "<Methodology> researcher (sub-query <N>)" \
+  --task "<sub-query N's text, framed for this methodology>")
+
+locus delegate run \
+  --backend opencode \
+  --task-kind research \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+Trait bundles per methodology (per `agents/{kind}-researcher.md`):
+
+| Methodology               | Trait bundle                                                |
+|---------------------------|-------------------------------------------------------------|
+| academic-researcher       | `research,empirical,rationalist,systematic,skeptical`       |
+| investigative-researcher  | `research,skeptical,contrarian,exploratory`                 |
+| contrarian-researcher     | `research,contrarian,skeptical,adversarial`                 |
+| multi-angle-researcher    | `research,exploratory,iterative,analogical`                 |
+
+Each researcher returns a JSON envelope with:
+- `summary`, `findings` with citations
+- `evidence`, `risks`, `files_referenced`
+- Methodology-specific perspective baked in via the trait composition
+
+**Failure handling:** if M of 12 succeed (M ≥ 6), synthesise from the M and list the failed (sub-query × methodology) pairs in the output's Gaps section. If fewer than 6 succeed, retry the failures sequentially before degrading the workflow.
 
 ### Step 4 — Cross-methodology synthesis per sub-query
 
@@ -98,4 +128,4 @@ All 12 researchers' URLs must pass `UrlVerificationProtocol.md`. Drop any that f
 
 ## Fallback
 
-If the platform doesn't support 12 concurrent delegations, run in waves of 4 (one wave per sub-query). ~2-3 minutes total in fallback.
+If `locus delegate run` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). ~2-3 minutes total in fallback.

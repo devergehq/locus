@@ -134,6 +134,7 @@ For bounded read-only work that would otherwise burn the orchestrator's context 
 locus delegate run \
   --backend opencode \
   --task-kind research \
+  --mode native \
   --model openai/gpt-5.5 \
   --dir <workspace> \
   --prompt "<bounded task>" \
@@ -141,6 +142,8 @@ locus delegate run \
 ```
 
 Use `--task-kind code-exploration` for codebase mapping and `--task-kind general` for everything else. Substitute `<provider/model>` to match the work — research benefits from larger models; mapping is fine on cheaper ones.
+
+**`--mode native` is the default and almost always what you want.** It runs the delegated session with no Locus orchestration scaffolding loaded — the delegated model just reads the prompt and produces the requested output, no `OBSERVE → THINK → PLAN` phases, no Mode Classification. Use `--mode algorithmic` *only* in the rare case the delegated session itself needs to orchestrate (you almost never want this; the orchestrator is *this* session, not the delegate). Algorithmic mode loads the full Locus Algorithm into the delegate, making it act like a second orchestrator — which usually means the delegate burns its turn writing phase scaffolding instead of doing the work. If you omit `--mode`, you get native.
 
 **Result envelope:**
 
