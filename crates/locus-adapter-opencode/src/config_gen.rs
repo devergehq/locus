@@ -423,11 +423,35 @@ is not available, say so in your output and proceed with what you have.
 
 /// Generate the minimal `opencode.json` for a native delegated session.
 ///
-/// No `instructions:` array — that's the whole point. Permissions are kept
-/// permissive so the worker can read the workspace it was pointed at.
+/// No `instructions:` array — that's the whole point of native mode.
+///
+/// Permissions: a delegated session has no human to answer "ask" prompts,
+/// so every permission that defaults to `ask` aborts the run silently. We
+/// pre-allow the safe-for-delegation set:
+/// - `doom_loop`: OpenCode's "agent appears to be repeating" check. In CLI
+///   `ask` aborts; for bounded research delegations we want to keep going.
+/// - `external_directory`: agents reading files outside `--dir` (e.g. shared
+///   docs) should not abort.
+/// - `webfetch`/`websearch`: research delegation needs the web.
+/// - `bash`: tools like `curl`/`gh` are common research utilities.
+/// - `todowrite`/`question`: ask-by-default but harmless inside a delegate.
+///
+/// `edit` is explicitly `deny` to enforce the read-only delegation contract
+/// at the OpenCode permission layer (belt-and-braces with the existing
+/// `DelegationMode::ReadOnly` validation in the runner).
 fn generate_native_opencode_json() -> String {
     let value = serde_json::json!({
         "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "doom_loop": "allow",
+            "external_directory": "allow",
+            "webfetch": "allow",
+            "websearch": "allow",
+            "bash": "allow",
+            "todowrite": "allow",
+            "question": "allow",
+            "edit": "deny"
+        }
     });
     serde_json::to_string_pretty(&value).expect("static JSON serialises")
 }

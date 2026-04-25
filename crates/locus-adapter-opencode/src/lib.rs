@@ -223,6 +223,34 @@ mod tests {
             json.get("instructions").is_none(),
             "native opencode.json must not load Locus instructions"
         );
+
+        // Permissions must pre-allow the ask-by-default knobs that would
+        // otherwise abort a non-interactive `opencode run`.
+        let perm = json
+            .get("permission")
+            .and_then(|v| v.as_object())
+            .expect("native opencode.json must define a permission block");
+        for key in [
+            "doom_loop",
+            "external_directory",
+            "webfetch",
+            "websearch",
+            "bash",
+            "todowrite",
+            "question",
+        ] {
+            assert_eq!(
+                perm.get(key).and_then(|v| v.as_str()),
+                Some("allow"),
+                "permission.{} must be allow in native config",
+                key
+            );
+        }
+        assert_eq!(
+            perm.get("edit").and_then(|v| v.as_str()),
+            Some("deny"),
+            "permission.edit must be deny to enforce the read-only contract"
+        );
     }
 
     #[test]
