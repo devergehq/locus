@@ -149,8 +149,7 @@ mod tests {
     fn agents_md_lists_platform_tools() {
         // Use the deterministic helper so the test isn't sensitive to the
         // host's OPENCODE_ENABLE_EXA env state.
-        let content =
-            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
+        let content = config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
         assert!(content.contains("Platform Tools (OpenCode)"));
         assert!(content.contains("web_fetch"));
         assert!(content.contains("bash"));
@@ -159,8 +158,7 @@ mod tests {
 
     #[test]
     fn agents_md_omits_web_search_when_env_unset() {
-        let content =
-            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
+        let content = config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), false);
         // The bullet line must not appear.
         assert!(!content.contains("- **web_search**"));
         // The negative caveat must appear.
@@ -169,8 +167,7 @@ mod tests {
 
     #[test]
     fn agents_md_lists_web_search_when_env_set() {
-        let content =
-            config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), true);
+        let content = config_gen::generate_agents_md_with(Path::new("/home/test/.locus"), true);
         // The bullet line must appear.
         assert!(content.contains("- **web_search** (Exa)"));
         // The positive note must appear; the negative caveat must not.
@@ -251,18 +248,20 @@ mod tests {
             Some("deny"),
             "permission.edit must be deny to enforce the read-only contract"
         );
+        assert_eq!(
+            perm.get("task").and_then(|v| v.as_str()),
+            Some("deny"),
+            "permission.task must be deny to prevent nested native subagents"
+        );
     }
 
     #[test]
-    fn agents_md_does_not_contain_delegation_directive() {
-        // OpenCode is the BACKEND for `locus delegate run`, not its caller.
-        // This guards the asymmetry decision documented in config_gen.rs.
+    fn agents_md_contains_delegation_guardrail() {
         let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
-        assert!(
-            !content.contains("locus delegate run"),
-            "AGENTS.md must not teach OpenCode to delegate to itself"
-        );
-        assert!(!content.contains("OpenCode Delegation"));
+        assert!(content.contains("## Delegation Guardrail"));
+        assert!(content.contains("locus delegate run"));
+        assert!(content.contains("prohibited for Locus delegation"));
+        assert!(!content.contains("invoke the Task tool directly"));
     }
 
     #[test]
@@ -284,8 +283,7 @@ mod tests {
         let caps = adapter.capabilities();
         // Without OPENCODE_ENABLE_EXA set, web_search should not be present.
         let has_web_search = caps.has_tool("web_search");
-        let env_set = std::env::var("OPENCODE_ENABLE_EXA")
-            .is_ok_and(|v| !v.is_empty() && v != "0");
+        let env_set = std::env::var("OPENCODE_ENABLE_EXA").is_ok_and(|v| !v.is_empty() && v != "0");
         assert_eq!(
             has_web_search, env_set,
             "web_search availability must match OPENCODE_ENABLE_EXA env var"
@@ -320,6 +318,15 @@ mod tests {
         );
         // Edit should NOT cover the whole locus home.
         assert!(!edit.contains_key("/home/test/.locus/**"));
+    }
+
+    #[test]
+    fn permissions_merge_denies_native_task_tool() {
+        let locus_home = Path::new("/home/test/.locus");
+        let mut config = serde_json::json!({});
+        config_gen::merge_locus_permissions(&mut config, locus_home);
+
+        assert_eq!(config["permission"]["task"].as_str(), Some("deny"));
     }
 
     #[test]

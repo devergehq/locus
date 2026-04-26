@@ -152,9 +152,11 @@ mod tests {
     #[test]
     fn claude_md_contains_delegation_section() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        assert!(content.contains("## OpenCode Delegation"));
+        assert!(content.contains("## Delegation Guardrail"));
+        assert!(content.contains("## Locus Delegate"));
         assert!(content.contains("locus delegate run"));
         assert!(content.contains("--backend opencode"));
+        assert!(content.contains("prohibited for Locus delegation"));
         assert!(content.contains("read-only"));
         assert!(content.contains("summary"));
         assert!(content.contains("findings"));
@@ -187,7 +189,7 @@ mod tests {
     fn claude_md_delegation_lists_when_to_use() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         let section_start = content
-            .find("## OpenCode Delegation")
+            .find("## Locus Delegate")
             .expect("delegation section present");
         let section_end = content[section_start..]
             .find("## Platform Tools")
@@ -298,7 +300,10 @@ mod tests {
         config_gen::merge_locus_statusline(&mut settings, std::path::Path::new("/fake/.locus"));
         let sl = settings.get("statusLine").expect("statusLine set");
         assert_eq!(sl["type"], "command");
-        assert!(sl["command"].as_str().unwrap().ends_with("scripts/statusline.sh"));
+        assert!(sl["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("scripts/statusline.sh"));
     }
 
     #[test]
@@ -358,7 +363,9 @@ mod tests {
             "user-owned allow entry must survive the merge"
         );
         assert!(
-            allow.iter().any(|v| v.as_str() == Some("Read(/some/other/path/*)")),
+            allow
+                .iter()
+                .any(|v| v.as_str() == Some("Read(/some/other/path/*)")),
             "user-owned read entry must survive the merge"
         );
     }

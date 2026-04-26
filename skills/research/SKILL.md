@@ -122,4 +122,4 @@ Never cite a URL you have not verified resolves.
 - **extract-wisdom** — for insight extraction from specific sources
 - **iterative-depth** — for multi-angle research decomposition
 
-The platform-native `delegation` skill (Task-tool subagents, worktrees, agent teams) is *not* used for research dispatch — see "Execution model" above.
+The general `delegation` skill is not needed for research dispatch — see "Execution model" above for the direct `locus delegate run` path.

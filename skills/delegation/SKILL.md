@@ -1,7 +1,7 @@
 ---
 id: delegation
 name: Delegation
-description: Parallelise work via background/foreground agents, trait-composed custom agents, worktree-isolated agents, and two-tier (lightweight vs full) delegation. USE WHEN 3+ independent workstreams, parallel execution, agent specialisation, Extended+ effort, agent team, swarm, create an agent team.
+description: Parallelise read-only work via Locus Delegate workers, trait-composed prompts, parallel dispatch, and two-tier (lightweight vs full) delegation. USE WHEN 3+ independent workstreams, parallel execution, agent specialisation, Extended+ effort, agent team, swarm, create an agent team.
 triggers:
   - delegation
   - parallelise
@@ -33,8 +33,8 @@ Delegate when any of these hold:
 - **3+ independent workstreams** at Extended+ effort.
 - **Multiple identical non-serial tasks** (update 12 files with same pattern).
 - **Specialisation needed** (security review for auth, design review for UI, architecture review for structural changes).
-- **Codebase changes spanning 5+ files** benefit from parallel workers.
-- **Research and execution** can proceed simultaneously.
+- **Codebase investigation spanning 5+ files** benefits from parallel workers.
+- **Research and implementation** can proceed without polluting orchestrator context.
 - **Adversarial validation** — Red Team's parallel attackers.
 - **Multi-perspective debate** — Council's parallel members.
 
@@ -45,33 +45,43 @@ Delegate when any of these hold:
 - Fewer than 3 workstreams would genuinely parallelise.
 - The spawned agent would start with zero useful context.
 
+## Execution Rule
+
+All agent-style delegation MUST use `locus delegate run`. Do not use platform-native Task, Agent, or Team tools for Locus delegation. If `locus delegate run` is unavailable or failing, do not fall back to native subagents; continue serially or ask the user how to proceed.
+
 ## Patterns
 
-### 1. Foreground delegation (default)
+### 1. Foreground Locus Delegate (default)
 
 Standard delegation — the spawning agent blocks until the delegated agent completes. Use when you need the result before proceeding.
 
+```bash
+locus delegate run \
+  --backend opencode \
+  --task-kind general \
+  --mode native \
+  --dir . \
+  --prompt "<bounded read-only task>" \
+  --output json
 ```
-<platform-native Task tool with subagent_type="engineer" or similar>
-```
 
-### 2. Background delegation
+### 2. Parallel dispatch
 
-Non-blocking. The spawning agent continues immediately; results read later. Use when results aren't needed immediately.
+N independent operations launched as separate `locus delegate run` Bash calls in one assistant message, results collected when all complete. Use for uniform read-only work, such as mapping separate subsystems.
 
-Good for: research during implementation, long builds, parallel investigations.
+### 3. Bounded context delegation
 
-### 3. Parallel dispatch
+Pass only the files or prompt context the worker needs. Use `--context-file` for concrete references and keep the prompt narrow.
 
-N identical operations launched in a single message, results collected when all complete. Use for uniform work (e.g., "update this pattern in 12 files" — one agent per file).
+Good for: research during implementation, documentation digestion, parallel investigations.
 
-### 4. Worktree-isolated delegation
+### 4. Artifact-isolated delegation
 
-Each agent gets its own git worktree. Files edited by different agents do not conflict. Auto-cleaned when the agent finishes (unless it committed changes).
+Each delegated run writes artifacts under its delegation artifact directory. The orchestrator reads the compact JSON envelope first and opens raw artifacts only if necessary.
 
-Good for: multiple agents editing the same files, competing approaches to the same change, file-safe parallelism.
+Good for: large research sweeps, codebase maps, source digests.
 
-Composable with background + parallel dispatch.
+Delegation is currently read-only. Do not send workers tasks that require editing files, committing, or mutating persistent state.
 
 ### 5. Trait-composed custom agents
 
@@ -83,13 +93,13 @@ locus agent compose --traits "security,skeptical,thorough" \
                     --task "Review the auth module for injection risks"
 ```
 
-The output is a composed prompt that combines trait fragments from `agents/traits.yaml`. Feed this into the platform's delegation mechanism as the agent's system prompt.
+The output is a composed prompt that combines trait fragments from `agents/traits.yaml`. Pass this prompt to `locus delegate run --prompt`.
 
-### 6. Agent teams (platform-native coordination)
+### 6. Agent batches
 
-When the platform supports persistent multi-agent coordination (e.g., Claude Code's `TeamCreate`), use it for Extended+ tasks that benefit from shared state, task lists, and multi-turn messaging.
+For Extended+ tasks, run multiple Locus Delegate workers as a batch. The orchestrator owns coordination, synthesis, criteria tracking, and any follow-up edits.
 
-Agent teams differ from parallel dispatch: teams persist, coordinate, and collaborate; parallel dispatch is fire-and-forget.
+Agent batches differ from persistent teams: workers do not coordinate with each other. They return compact envelopes to the orchestrator.
 
 Trigger phrases: "create an agent team", "swarm", "team of agents".
 
@@ -101,7 +111,7 @@ Not every delegation needs a full agent. Match delegation weight to task complex
 
 For: one-shot extraction, classification, summarisation, simple Q&A against provided content.
 
-- Use the platform's **smallest fast model** (e.g., Haiku for Claude).
+- Use a smaller configured `--model` when appropriate.
 - Cap turns at 3 — if it can't finish in 3 turns, it needs full delegation.
 - Provide all input inline in the prompt (no tool-use expected).
 
@@ -111,7 +121,7 @@ Examples: "classify this text as X/Y/Z", "extract the 5 key points from this art
 
 For: multi-step reasoning, tasks requiring tool use (file reads, searches, web), tasks that need their own iteration loop.
 
-- Default model (Sonnet/Opus).
+- Use the configured default model or pass `--model` explicitly.
 - No turn cap — agent iterates until done.
 - Agent uses tools autonomously.
 
@@ -136,11 +146,11 @@ Ask: *"Can this be answered in one LLM call with no tool use?"* → Lightweight.
 | Effort        | Delegation strategy                                          |
 |---------------|--------------------------------------------------------------|
 | Minimal       | No delegation — direct tools only                            |
-| Standard      | 1-2 foreground agents max for discrete subtasks              |
-| Extended      | 2-4 agents; background for research                          |
-| Advanced      | 4-8 agents; agent teams for 3+ workstreams                   |
-| Deep          | Full team orchestration, parallel workers, background + fg   |
-| Comprehensive | Unbounded — teams + parallel + background + worktrees        |
+| Standard      | 1-2 Locus Delegate workers max for discrete subtasks         |
+| Extended      | 2-4 workers; parallel research or exploration                |
+| Advanced      | 4-8 workers for 3+ independent workstreams                   |
+| Deep          | Multi-wave delegation with orchestrator-owned synthesis      |
+| Comprehensive | Unbounded only when bounded prompts and synthesis are clear  |
 
 ## Anti-patterns
 
@@ -150,6 +160,7 @@ Ask: *"Can this be answered in one LLM call with no tool use?"* → Lightweight.
 - **Sending agents work without full context** — they start fresh.
 - **Using built-in agent archetypes (Architect, Engineer) when the task actually needs a custom trait bundle.**
 - **Using full delegation for one-shot extraction/classification** — use lightweight tier.
+- **Using platform-native Task/Agent tools** — use `locus delegate run` instead.
 - **Parallelising dependent work** — if B needs A's output, they can't run in parallel.
 
 ## Composition
