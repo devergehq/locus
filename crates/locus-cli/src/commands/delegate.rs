@@ -1,14 +1,16 @@
 //! `locus delegate ...` — external execution delegation.
 
+use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::ValueEnum;
 use locus_adapter_opencode::run::run_delegation;
 use locus_core::{
     DelegationBackend, DelegationMode, DelegationRequest, DelegationTaskKind, LocusError,
 };
+use serde::Serialize;
 
 use crate::output;
 
@@ -211,13 +213,399 @@ fn new_request_id() -> String {
 }
 
 fn default_artifact_dir(id: &str) -> PathBuf {
+    default_delegations_root().join(id)
+}
+
+fn default_delegations_root() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".locus")
         .join("data")
         .join("memory")
         .join("work")
         .join("delegations")
-        .join(id)
+}
+
+/// Arguments for `locus delegate ls`.
+#[derive(Debug, Clone)]
+pub struct LsArgs {
+    pub root: Option<PathBuf>,
+    pub output: DelegateOutput,
+}
+
+/// Arguments for `locus delegate prune`.
+#[derive(Debug, Clone)]
+pub struct PruneArgs {
+    pub older_than: Option<String>,
+    pub all: bool,
+    pub apply: bool,
+    pub keep_stdout: bool,
+    pub root: Option<PathBuf>,
+    pub output: DelegateOutput,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct DelegationEntry {
+    id: String,
+    path: PathBuf,
+    age_seconds: u64,
+    size_bytes: u64,
+    opencode_data_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LsReport {
+    root: PathBuf,
+    entries: Vec<DelegationEntry>,
+    total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PruneReport {
+    root: PathBuf,
+    applied: bool,
+    keep_stdout: bool,
+    selected: Vec<DelegationEntry>,
+    freed_bytes: u64,
+}
+
+/// List existing delegation artifact directories.
+pub fn ls(args: LsArgs) -> Result<(), LocusError> {
+    let root = args.root.unwrap_or_else(default_delegations_root);
+    let entries = enumerate_delegations(&root, SystemTime::now())?;
+    let total_bytes = entries.iter().map(|e| e.size_bytes).sum();
+
+    let report = LsReport {
+        root,
+        entries,
+        total_bytes,
+    };
+
+    match args.output {
+        DelegateOutput::Json => print_json(&report),
+        DelegateOutput::Human => print_human_ls(&report),
+    }
+}
+
+/// Prune delegation artifact directories.
+pub fn prune(args: PruneArgs) -> Result<(), LocusError> {
+    if args.all == args.older_than.is_some() {
+        return Err(LocusError::Config {
+            message: "Specify exactly one of --all or --older-than".into(),
+            path: None,
+        });
+    }
+
+    let cutoff = match &args.older_than {
+        Some(spec) => Some(parse_duration(spec)?),
+        None => None,
+    };
+
+    let root = args.root.unwrap_or_else(default_delegations_root);
+    let now = SystemTime::now();
+    let all_entries = enumerate_delegations(&root, now)?;
+
+    let selected: Vec<DelegationEntry> = all_entries
+        .into_iter()
+        .filter(|entry| match &cutoff {
+            Some(min_age) => entry.age_seconds >= min_age.as_secs(),
+            None => true,
+        })
+        .collect();
+
+    let mut freed_bytes: u64 = 0;
+    if args.apply {
+        for entry in &selected {
+            freed_bytes += delete_entry(&entry.path, args.keep_stdout, &entry.id)?;
+        }
+    } else {
+        freed_bytes = selected.iter().map(|e| e.size_bytes).sum();
+    }
+
+    let report = PruneReport {
+        root,
+        applied: args.apply,
+        keep_stdout: args.keep_stdout,
+        selected,
+        freed_bytes,
+    };
+
+    match args.output {
+        DelegateOutput::Json => print_json(&report),
+        DelegateOutput::Human => print_human_prune(&report),
+    }
+}
+
+fn enumerate_delegations(
+    root: &Path,
+    now: SystemTime,
+) -> Result<Vec<DelegationEntry>, LocusError> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let read_dir = fs::read_dir(root).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to read delegations root: {}", e),
+        path: root.to_path_buf(),
+    })?;
+
+    let mut entries = Vec::new();
+    for item in read_dir {
+        let dir_entry = item.map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to read delegations entry: {}", e),
+            path: root.to_path_buf(),
+        })?;
+
+        let metadata = dir_entry.metadata().map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to stat delegation entry: {}", e),
+            path: dir_entry.path(),
+        })?;
+
+        if !metadata.is_dir() {
+            continue;
+        }
+
+        let path = dir_entry.path();
+        let id = dir_entry.file_name().to_string_lossy().into_owned();
+        let size_bytes = dir_size(&path)?;
+        let opencode_data_bytes = dir_size(&path.join("opencode-data")).unwrap_or(0);
+        let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
+        let age_seconds = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
+
+        entries.push(DelegationEntry {
+            id,
+            path,
+            age_seconds,
+            size_bytes,
+            opencode_data_bytes,
+        });
+    }
+
+    entries.sort_by(|a, b| b.age_seconds.cmp(&a.age_seconds));
+    Ok(entries)
+}
+
+fn dir_size(path: &Path) -> Result<u64, LocusError> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let metadata = fs::metadata(path).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to stat path: {}", e),
+        path: path.to_path_buf(),
+    })?;
+
+    if metadata.is_file() {
+        return Ok(metadata.len());
+    }
+
+    if !metadata.is_dir() {
+        return Ok(0);
+    }
+
+    let mut total = 0u64;
+    let read_dir = fs::read_dir(path).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to read directory: {}", e),
+        path: path.to_path_buf(),
+    })?;
+
+    for item in read_dir {
+        let entry = item.map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to read entry: {}", e),
+            path: path.to_path_buf(),
+        })?;
+        total += dir_size(&entry.path())?;
+    }
+
+    Ok(total)
+}
+
+fn delete_entry(path: &Path, keep_stdout: bool, id: &str) -> Result<u64, LocusError> {
+    if !keep_stdout {
+        let size = dir_size(path)?;
+        fs::remove_dir_all(path).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to remove delegation dir: {}", e),
+            path: path.to_path_buf(),
+        })?;
+        return Ok(size);
+    }
+
+    let stdout_name = format!("{}-opencode-stdout.jsonl", id);
+    let stderr_name = format!("{}-opencode-stderr.log", id);
+
+    let read_dir = fs::read_dir(path).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to read delegation dir: {}", e),
+        path: path.to_path_buf(),
+    })?;
+
+    let mut freed = 0u64;
+    for item in read_dir {
+        let entry = item.map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to read entry: {}", e),
+            path: path.to_path_buf(),
+        })?;
+
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str == stdout_name || name_str == stderr_name {
+            continue;
+        }
+
+        let entry_path = entry.path();
+        let size = dir_size(&entry_path)?;
+        if entry_path.is_dir() {
+            fs::remove_dir_all(&entry_path).map_err(|e| LocusError::Filesystem {
+                message: format!("Failed to remove directory: {}", e),
+                path: entry_path.clone(),
+            })?;
+        } else {
+            fs::remove_file(&entry_path).map_err(|e| LocusError::Filesystem {
+                message: format!("Failed to remove file: {}", e),
+                path: entry_path.clone(),
+            })?;
+        }
+        freed += size;
+    }
+
+    Ok(freed)
+}
+
+/// Parse a duration spec like `7d`, `12h`, `30m`, `45s`.
+fn parse_duration(spec: &str) -> Result<Duration, LocusError> {
+    let trimmed = spec.trim();
+    if trimmed.len() < 2 {
+        return Err(invalid_duration(spec));
+    }
+
+    let (num_part, unit) = trimmed.split_at(trimmed.len() - 1);
+    let value: u64 = num_part.parse().map_err(|_| invalid_duration(spec))?;
+
+    let seconds = match unit {
+        "s" => value,
+        "m" => value.checked_mul(60).ok_or_else(|| invalid_duration(spec))?,
+        "h" => value
+            .checked_mul(3_600)
+            .ok_or_else(|| invalid_duration(spec))?,
+        "d" => value
+            .checked_mul(86_400)
+            .ok_or_else(|| invalid_duration(spec))?,
+        _ => return Err(invalid_duration(spec)),
+    };
+
+    Ok(Duration::from_secs(seconds))
+}
+
+fn invalid_duration(spec: &str) -> LocusError {
+    LocusError::Config {
+        message: format!(
+            "Invalid duration '{}'. Expected <number><unit> where unit is one of d, h, m, s.",
+            spec
+        ),
+        path: None,
+    }
+}
+
+fn print_human_ls(report: &LsReport) -> Result<(), LocusError> {
+    output::print_header();
+    output::section("Delegations");
+    output::field("Root", &report.root.display().to_string());
+
+    if report.entries.is_empty() {
+        output::info("No delegation directories found.");
+        return Ok(());
+    }
+
+    for entry in &report.entries {
+        let label = format!("{} ({})", entry.id, format_age(entry.age_seconds));
+        let description = format!(
+            "{} total, {} in opencode-data",
+            format_bytes(entry.size_bytes),
+            format_bytes(entry.opencode_data_bytes)
+        );
+        output::list_item(&label, &description);
+    }
+
+    output::field(
+        "Total",
+        &format!(
+            "{} across {} delegation(s)",
+            format_bytes(report.total_bytes),
+            report.entries.len()
+        ),
+    );
+    Ok(())
+}
+
+fn print_human_prune(report: &PruneReport) -> Result<(), LocusError> {
+    output::print_header();
+    let title = if report.applied {
+        "Delegation Prune (applied)"
+    } else {
+        "Delegation Prune (dry-run)"
+    };
+    output::section(title);
+    output::field("Root", &report.root.display().to_string());
+    output::field(
+        "Mode",
+        if report.keep_stdout {
+            "keep stdout/stderr artifacts"
+        } else {
+            "remove entire delegation dirs"
+        },
+    );
+
+    if report.selected.is_empty() {
+        output::info("No delegations matched the selection.");
+        return Ok(());
+    }
+
+    for entry in &report.selected {
+        let label = format!("{} ({})", entry.id, format_age(entry.age_seconds));
+        output::list_item(&label, &format_bytes(entry.size_bytes));
+    }
+
+    let summary = if report.applied {
+        format!(
+            "Freed {} across {} delegation(s).",
+            format_bytes(report.freed_bytes),
+            report.selected.len()
+        )
+    } else {
+        format!(
+            "Would free {} across {} delegation(s). Re-run with --apply to delete.",
+            format_bytes(report.freed_bytes),
+            report.selected.len()
+        )
+    };
+    output::field("Result", &summary);
+    Ok(())
+}
+
+fn format_age(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{}s ago", seconds)
+    } else if seconds < 3_600 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 86_400 {
+        format!("{}h ago", seconds / 3_600)
+    } else {
+        format!("{}d ago", seconds / 86_400)
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +659,243 @@ mod tests {
         request.timeout_seconds = 0;
 
         assert!(validate_request(&request).is_err());
+    }
+
+    fn unique_root() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("locus-delegate-test-{}", nanos))
+    }
+
+    fn write_delegation(
+        root: &Path,
+        id: &str,
+        files: &[(&str, &[u8])],
+        opencode_files: &[(&str, &[u8])],
+    ) -> PathBuf {
+        let dir = root.join(id);
+        fs::create_dir_all(&dir).unwrap();
+        for (name, content) in files {
+            fs::write(dir.join(name), content).unwrap();
+        }
+        if !opencode_files.is_empty() {
+            let opencode = dir.join("opencode-data");
+            fs::create_dir_all(&opencode).unwrap();
+            for (name, content) in opencode_files {
+                fs::write(opencode.join(name), content).unwrap();
+            }
+        }
+        dir
+    }
+
+    #[test]
+    fn parse_duration_accepts_valid_units() {
+        assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
+        assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
+        assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7_200));
+        assert_eq!(parse_duration("3d").unwrap(), Duration::from_secs(259_200));
+    }
+
+    #[test]
+    fn parse_duration_rejects_malformed_input() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("d").is_err());
+        assert!(parse_duration("7").is_err());
+        assert!(parse_duration("7w").is_err());
+        assert!(parse_duration("-1d").is_err());
+        assert!(parse_duration("abc").is_err());
+    }
+
+    #[test]
+    fn enumerate_returns_empty_for_missing_root() {
+        let root = unique_root();
+        let entries = enumerate_delegations(&root, SystemTime::now()).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn enumerate_reports_size_and_opencode_breakdown() {
+        let root = unique_root();
+        write_delegation(
+            &root,
+            "delegate-aaa",
+            &[("delegate-aaa-opencode-stdout.jsonl", b"hello world")],
+            &[("opencode.db", &[0u8; 4096])],
+        );
+
+        let entries = enumerate_delegations(&root, SystemTime::now()).unwrap();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.id, "delegate-aaa");
+        assert_eq!(entry.opencode_data_bytes, 4096);
+        assert_eq!(entry.size_bytes, 4096 + 11);
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_dry_run_does_not_delete() {
+        let root = unique_root();
+        let dir = write_delegation(
+            &root,
+            "delegate-bbb",
+            &[("delegate-bbb-opencode-stdout.jsonl", b"x")],
+            &[("opencode.db", &[0u8; 1024])],
+        );
+
+        prune(PruneArgs {
+            older_than: None,
+            all: true,
+            apply: false,
+            keep_stdout: false,
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        assert!(dir.exists(), "dry-run must not delete the delegation dir");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_apply_removes_entire_dir() {
+        let root = unique_root();
+        let dir = write_delegation(
+            &root,
+            "delegate-ccc",
+            &[("delegate-ccc-opencode-stdout.jsonl", b"x")],
+            &[("opencode.db", &[0u8; 1024])],
+        );
+
+        prune(PruneArgs {
+            older_than: None,
+            all: true,
+            apply: true,
+            keep_stdout: false,
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        assert!(!dir.exists(), "apply must remove the delegation dir");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_keep_stdout_retains_artifacts_and_removes_data() {
+        let root = unique_root();
+        let id = "delegate-ddd";
+        let dir = write_delegation(
+            &root,
+            id,
+            &[
+                (
+                    &format!("{}-opencode-stdout.jsonl", id),
+                    b"final answer json",
+                ),
+                (
+                    &format!("{}-opencode-stderr.log", id),
+                    b"warning emitted",
+                ),
+            ],
+            &[("opencode.db", &[0u8; 2048])],
+        );
+
+        prune(PruneArgs {
+            older_than: None,
+            all: true,
+            apply: true,
+            keep_stdout: true,
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        assert!(dir.exists(), "delegation dir must remain");
+        assert!(
+            dir.join(format!("{}-opencode-stdout.jsonl", id)).exists(),
+            "stdout artifact must be kept"
+        );
+        assert!(
+            dir.join(format!("{}-opencode-stderr.log", id)).exists(),
+            "stderr artifact must be kept"
+        );
+        assert!(
+            !dir.join("opencode-data").exists(),
+            "opencode-data must be removed"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn enumerate_filters_by_age_using_now() {
+        let root = unique_root();
+        write_delegation(
+            &root,
+            "delegate-young",
+            &[("delegate-young-opencode-stdout.jsonl", b"x")],
+            &[],
+        );
+        write_delegation(
+            &root,
+            "delegate-mid",
+            &[("delegate-mid-opencode-stdout.jsonl", b"x")],
+            &[],
+        );
+
+        // Simulate "now" two hours into the future so all dirs are 2h+ old.
+        let future_now = SystemTime::now() + Duration::from_secs(7_200);
+        let entries = enumerate_delegations(&root, future_now).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let cutoff = parse_duration("1h").unwrap();
+        let aged: Vec<_> = entries
+            .iter()
+            .filter(|e| e.age_seconds >= cutoff.as_secs())
+            .collect();
+        assert_eq!(aged.len(), 2, "both dirs are >1h old in simulated time");
+
+        let cutoff_strict = parse_duration("3h").unwrap();
+        let aged_strict: Vec<_> = entries
+            .iter()
+            .filter(|e| e.age_seconds >= cutoff_strict.as_secs())
+            .collect();
+        assert!(
+            aged_strict.is_empty(),
+            "no dir is >3h old in simulated time"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_rejects_no_selector() {
+        let result = prune(PruneArgs {
+            older_than: None,
+            all: false,
+            apply: false,
+            keep_stdout: false,
+            root: Some(unique_root()),
+            output: DelegateOutput::Json,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn prune_rejects_both_selectors() {
+        let result = prune(PruneArgs {
+            older_than: Some("1d".into()),
+            all: true,
+            apply: false,
+            keep_stdout: false,
+            root: Some(unique_root()),
+            output: DelegateOutput::Json,
+        });
+        assert!(result.is_err());
     }
 }
