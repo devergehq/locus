@@ -11,13 +11,32 @@ use locus_core::{
     DelegationMode, DelegationRequest, DelegationResult, DelegationStatus, LocusError, Platform,
 };
 
-/// Command program and arguments that will invoke OpenCode.
+/// Command program, arguments, and environment that will invoke OpenCode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeCommandSpec {
     /// Executable name or path.
     pub program: String,
     /// Arguments passed to the executable.
     pub args: Vec<String>,
+    /// Environment variables overlaid on the spawned process.
+    pub env: Vec<(String, String)>,
+}
+
+/// Per-invocation OpenCode data directory under the request's artifact dir.
+///
+/// OpenCode opens a single SQLite database at `$XDG_DATA_HOME/opencode/opencode.db`.
+/// Pointing each delegation at its own `XDG_DATA_HOME` prevents WAL contention
+/// when delegations run in parallel.
+pub fn opencode_data_dir(request: &DelegationRequest) -> PathBuf {
+    request.artifact_dir.join("opencode-data")
+}
+
+/// Build the env overlay applied to the OpenCode subprocess.
+pub fn build_opencode_env(request: &DelegationRequest) -> Vec<(String, String)> {
+    vec![(
+        "XDG_DATA_HOME".to_string(),
+        opencode_data_dir(request).display().to_string(),
+    )]
 }
 
 /// Build deterministic `opencode run` arguments for a delegated request.
@@ -60,6 +79,7 @@ pub fn build_opencode_command_with_bin(
     OpenCodeCommandSpec {
         program: opencode_bin.into(),
         args: build_opencode_args(request),
+        env: build_opencode_env(request),
     }
 }
 
@@ -90,6 +110,12 @@ pub fn run_delegation_with_bin(
     fs::create_dir_all(&request.artifact_dir).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to create delegation artifact directory: {}", e),
         path: request.artifact_dir.clone(),
+    })?;
+
+    let data_dir = opencode_data_dir(request);
+    fs::create_dir_all(&data_dir).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to create OpenCode data directory: {}", e),
+        path: data_dir.clone(),
     })?;
 
     let spec = build_opencode_command_with_bin(request, opencode_bin);
@@ -180,6 +206,7 @@ fn run_command_with_timeout(
 ) -> io::Result<TimedOutput> {
     let mut child = Command::new(&spec.program)
         .args(&spec.args)
+        .envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
@@ -344,6 +371,40 @@ mod tests {
         let raw = result.raw_output_path.as_ref().unwrap();
         assert!(raw.exists());
         assert!(raw.ends_with(format!("{}-opencode-stdout.jsonl", request.id)));
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    #[test]
+    fn command_spec_isolates_xdg_data_home_per_request() {
+        let request = sample_request();
+        let spec = build_opencode_command_with_bin(&request, "opencode-test");
+
+        let xdg = spec
+            .env
+            .iter()
+            .find(|(k, _)| k == "XDG_DATA_HOME")
+            .map(|(_, v)| v.clone())
+            .expect("spec env should set XDG_DATA_HOME");
+
+        let expected = request
+            .artifact_dir
+            .join("opencode-data")
+            .display()
+            .to_string();
+        assert_eq!(xdg, expected);
+    }
+
+    #[test]
+    fn run_creates_per_invocation_data_dir() {
+        let request = sample_request();
+        let _ = run_delegation_with_bin(&request, "true").unwrap();
+
+        let data_dir = request.artifact_dir.join("opencode-data");
+        assert!(
+            data_dir.is_dir(),
+            "expected per-invocation OpenCode data dir at {}",
+            data_dir.display()
+        );
         let _ = fs::remove_dir_all(&request.artifact_dir);
     }
 

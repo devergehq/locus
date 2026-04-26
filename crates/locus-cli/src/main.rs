@@ -227,6 +227,44 @@ enum DelegateCommands {
         #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Json)]
         output: commands::delegate::DelegateOutput,
     },
+
+    /// List existing delegation artifact directories.
+    Ls {
+        /// Override the delegations root directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Output mode.
+        #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Human)]
+        output: commands::delegate::DelegateOutput,
+    },
+
+    /// Prune delegation artifact directories. Dry-run unless --apply is passed.
+    Prune {
+        /// Only prune delegations older than this duration (e.g. 7d, 12h, 30m).
+        #[arg(long)]
+        older_than: Option<String>,
+
+        /// Prune every delegation. Mutually exclusive with --older-than.
+        #[arg(long)]
+        all: bool,
+
+        /// Actually delete (without this flag, prune is a dry-run).
+        #[arg(long)]
+        apply: bool,
+
+        /// Keep stdout/stderr artifacts; only delete opencode-data and other files.
+        #[arg(long)]
+        keep_stdout: bool,
+
+        /// Override the delegations root directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Output mode.
+        #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Human)]
+        output: commands::delegate::DelegateOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -318,6 +356,24 @@ fn main() {
                 artifact_dir,
                 timeout_seconds,
                 dry_run,
+                output,
+            }),
+            DelegateCommands::Ls { root, output } => {
+                commands::delegate::ls(commands::delegate::LsArgs { root, output })
+            }
+            DelegateCommands::Prune {
+                older_than,
+                all,
+                apply,
+                keep_stdout,
+                root,
+                output,
+            } => commands::delegate::prune(commands::delegate::PruneArgs {
+                older_than,
+                all,
+                apply,
+                keep_stdout,
+                root,
                 output,
             }),
         },
