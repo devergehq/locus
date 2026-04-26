@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -26,8 +26,13 @@ pub struct OpenCodeCommandSpec {
     pub args: Vec<String>,
     /// Environment variables to set on the spawned process.
     ///
-    /// Always includes `XDG_DATA_HOME` pointing at a per-delegation data dir
-    /// so parallel delegations don't contend on OpenCode's SQLite WAL.
+    /// Always includes `XDG_DATA_HOME` and `XDG_STATE_HOME` pointing at
+    /// per-delegation directories so parallel delegations don't contend on
+    /// OpenCode's SQLite WAL (data) or its `models.dev` catalog lockfile
+    /// (state — `$XDG_STATE_HOME/opencode/locks/<sha>.lock`). Without state
+    /// isolation, parallel delegations race on the same lockfile and one
+    /// of them wedges at startup with no recovery.
+    ///
     /// For `ExecutionMode::Native` requests, also includes `XDG_CONFIG_HOME`
     /// pointing at `~/.locus/opencode-native-xdg`, isolating the spawned
     /// OpenCode session from the global Locus install at `~/.config/opencode/`.
@@ -41,6 +46,125 @@ pub struct OpenCodeCommandSpec {
 /// when delegations run in parallel.
 pub fn opencode_data_dir(request: &DelegationRequest) -> PathBuf {
     request.artifact_dir.join("opencode-data")
+}
+
+/// Per-invocation OpenCode state directory under the request's artifact dir.
+///
+/// OpenCode writes lockfiles under `$XDG_STATE_HOME/opencode/locks/`. Pointing
+/// each delegation at its own `XDG_STATE_HOME` prevents lockfile contention
+/// when delegations run in parallel — without this, parallel delegations all
+/// attempt to mkdir the same `~/.local/state/opencode/locks/<sha>.lock` path
+/// and either receive `EPERM` (under sandbox) or wedge waiting on the lock.
+pub fn opencode_state_dir(request: &DelegationRequest) -> PathBuf {
+    request.artifact_dir.join("opencode-state")
+}
+
+/// Per-invocation OpenCode cache directory under the request's artifact dir.
+///
+/// OpenCode caches the `models.dev` catalog at `$XDG_CACHE_HOME/opencode/models.json`.
+/// Pointing each delegation at its own `XDG_CACHE_HOME` is required under any
+/// sandbox that restricts writes outside the delegation tree (Claude Code's
+/// default sandbox blocks writes under `~/.cache`). Without this isolation,
+/// the cache write fails silently and OpenCode falls back to its tiny bundled
+/// model list — which omits recent models like `gpt-5.5`, surfacing as
+/// `ProviderModelNotFoundError` despite the model existing in the live catalog.
+pub fn opencode_cache_dir(request: &DelegationRequest) -> PathBuf {
+    request.artifact_dir.join("opencode-cache")
+}
+
+/// Seed the per-delegation cache with the user's existing `models.json` if any.
+///
+/// OpenCode loads its model catalog on startup but performs the `models.dev`
+/// catalog refresh asynchronously, dispatching the user's first request before
+/// the refresh completes. With an empty cache that means the model registry is
+/// empty when the request fires and any model lookup returns
+/// `ProviderModelNotFoundError`. By copying the user's existing
+/// `~/.cache/opencode/models.json` into the per-delegation cache before spawn,
+/// we ensure the registry is populated synchronously at startup — matching the
+/// behaviour observed when the cache was global and pre-populated. Errors are
+/// swallowed silently because the fallback (OpenCode's own fetch) should still
+/// work for users on systems without an existing cache file.
+fn seed_opencode_models_cache(cache_dir: &Path) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let source = home.join(".cache").join("opencode").join("models.json");
+    if !source.exists() {
+        return;
+    }
+    let dest_dir = cache_dir.join("opencode");
+    if fs::create_dir_all(&dest_dir).is_err() {
+        return;
+    }
+    let _ = fs::copy(&source, dest_dir.join("models.json"));
+}
+
+/// Seed the per-delegation data directory with the user's OpenCode credentials.
+///
+/// `$XDG_DATA_HOME/opencode/auth.json` is OpenCode's credential file —
+/// without it the spawned session has no provider auth and cannot dispatch
+/// any LLM call. Lacking auth, OpenCode reports `ProviderModelNotFoundError`
+/// for the requested model (the provider is filtered out before model
+/// lookup). The file is mode 0600 so we preserve those permissions on the
+/// copy. Errors are swallowed silently — if auth seeding fails the user
+/// will see the same `Model not found` error they would have seen anyway.
+fn seed_opencode_auth(data_dir: &Path) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let source = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("auth.json");
+    if !source.exists() {
+        return;
+    }
+    let dest_dir = data_dir.join("opencode");
+    if fs::create_dir_all(&dest_dir).is_err() {
+        return;
+    }
+    let dest = dest_dir.join("auth.json");
+    if fs::copy(&source, &dest).is_err() {
+        return;
+    }
+    // auth.json contains credentials — restrict to owner read/write.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(metadata) = fs::metadata(&dest) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&dest, perms);
+        }
+    }
+}
+
+/// Seed the per-delegation state with the user's runtime model registry.
+///
+/// `$XDG_STATE_HOME/opencode/model.json` is OpenCode's runtime model registry —
+/// it's the file that records which models the user has used recently and
+/// which variant (e.g. `xhigh`) to dispatch them with. Without this file
+/// OpenCode treats any non-bundled model as unknown and emits
+/// `ProviderModelNotFoundError` even when the catalog at
+/// `$XDG_CACHE_HOME/opencode/models.json` lists the model. Lock subdirectories
+/// under `state/opencode/locks/` are deliberately NOT seeded — those must
+/// remain per-delegation for parallelism. We only copy the small top-level
+/// preference files that drive model resolution.
+fn seed_opencode_user_state(state_dir: &Path) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let dest_dir = state_dir.join("opencode");
+    if fs::create_dir_all(&dest_dir).is_err() {
+        return;
+    }
+    for filename in ["model.json", "kv.json"] {
+        let source = home.join(".local").join("state").join("opencode").join(filename);
+        if source.exists() {
+            let _ = fs::copy(&source, dest_dir.join(filename));
+        }
+    }
 }
 
 /// Build deterministic `opencode run` arguments for a delegated request.
@@ -83,17 +207,34 @@ pub fn build_opencode_args(request: &DelegationRequest) -> Vec<String> {
 
 /// Build the env overrides for a delegated request.
 ///
-/// Always sets `XDG_DATA_HOME` to a per-delegation data dir so parallel
-/// delegations don't contend on OpenCode's SQLite WAL. Native execution
-/// mode additionally redirects `XDG_CONFIG_HOME` to the Locus-managed
-/// native config dir so the spawned OpenCode session does not load the
-/// algorithmic AGENTS.md or `instructions:` array from `~/.config/opencode/`.
-/// Algorithmic mode inherits the parent's config unmodified.
+/// Always sets `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` to
+/// per-delegation dirs so the entire OpenCode footprint lives inside the
+/// delegation's artifact tree. This prevents parallel delegations from
+/// contending on OpenCode's SQLite WAL (data), its `models.dev` lockfile
+/// (state), or its `models.dev` catalog cache (cache); it also keeps
+/// OpenCode functional under sandboxes that restrict writes under `~/.cache`,
+/// `~/.local/state`, or `~/.local/share`.
+///
+/// Native execution mode additionally redirects `XDG_CONFIG_HOME` to the
+/// Locus-managed native config dir so the spawned OpenCode session does not
+/// load the algorithmic AGENTS.md or `instructions:` array from
+/// `~/.config/opencode/`. Algorithmic mode inherits the parent's config
+/// unmodified.
 pub fn build_opencode_envs(request: &DelegationRequest) -> Vec<(String, String)> {
-    let mut envs = vec![(
-        "XDG_DATA_HOME".to_string(),
-        opencode_data_dir(request).display().to_string(),
-    )];
+    let mut envs = vec![
+        (
+            "XDG_DATA_HOME".to_string(),
+            opencode_data_dir(request).display().to_string(),
+        ),
+        (
+            "XDG_STATE_HOME".to_string(),
+            opencode_state_dir(request).display().to_string(),
+        ),
+        (
+            "XDG_CACHE_HOME".to_string(),
+            opencode_cache_dir(request).display().to_string(),
+        ),
+    ];
 
     if request.execution_mode == ExecutionMode::Native {
         if let Some(home) = dirs::home_dir() {
@@ -151,6 +292,21 @@ pub fn run_delegation_with_bin(
         message: format!("Failed to create OpenCode data directory: {}", e),
         path: data_dir.clone(),
     })?;
+    seed_opencode_auth(&data_dir);
+
+    let state_dir = opencode_state_dir(request);
+    fs::create_dir_all(&state_dir).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to create OpenCode state directory: {}", e),
+        path: state_dir.clone(),
+    })?;
+
+    let cache_dir = opencode_cache_dir(request);
+    fs::create_dir_all(&cache_dir).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to create OpenCode cache directory: {}", e),
+        path: cache_dir.clone(),
+    })?;
+    seed_opencode_models_cache(&cache_dir);
+    seed_opencode_user_state(&state_dir);
 
     let spec = build_opencode_command_with_bin(request, opencode_bin);
     let start = Instant::now();
@@ -167,6 +323,22 @@ pub fn run_delegation_with_bin(
             let raw_output_path = artifacts.first().cloned();
 
             if code == Some(0) {
+                // OpenCode sometimes exits 0 even when the only stdout event
+                // was a fatal error (e.g. ProviderModelNotFoundError). Don't
+                // claim success when the JSONL stream contains an error event
+                // — surface the error message so the caller can act on it.
+                if let Some(error_message) = parse::extract_error_message(&stdout) {
+                    let mut result = DelegationResult::failure(
+                        request,
+                        DelegationStatus::Failure,
+                        format!("OpenCode reported an error: {}", error_message),
+                        duration_ms,
+                    );
+                    result.artifacts.append(&mut artifacts);
+                    result.raw_output_path = raw_output_path;
+                    return Ok(result);
+                }
+
                 let parsed = parse::extract_final_answer(&stdout).map(|answer| {
                     let sections = parse::extract_sections(&answer);
                     (answer, sections)
@@ -263,11 +435,16 @@ fn run_command_with_timeout(
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for (key, value) in &spec.envs {
         command.env(key, value);
     }
+    // Stdin is explicitly /dev/null because OpenCode's startup blocks reading
+    // from stdin when the parent has no TTY (e.g. when locus is itself
+    // backgrounded). Inheriting stdin from a half-open unix socket wedges the
+    // child indefinitely at the json-migration step with no error logged.
     let mut child = command.spawn()?;
 
     // Drain stdout/stderr in background threads. Without this the child
@@ -440,6 +617,51 @@ pub(crate) mod parse {
         pub evidence: Vec<String>,
         pub risks: Vec<String>,
         pub files_referenced: Vec<String>,
+    }
+
+    /// Pull the first error message from an OpenCode JSONL stdout stream.
+    ///
+    /// Returns the human-readable message of the first event with
+    /// `type = "error"`, preferring `error.data.message` and falling back to
+    /// `error.name`. Returns None when no error events are present. Used to
+    /// detect fatal errors that don't propagate to OpenCode's exit code (e.g.
+    /// `ProviderModelNotFoundError` exits 0 but emits only an error event).
+    pub fn extract_error_message(stdout: &[u8]) -> Option<String> {
+        let raw = std::str::from_utf8(stdout).ok()?;
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if value.get("type").and_then(Value::as_str) != Some("error") {
+                continue;
+            }
+            let error = match value.get("error") {
+                Some(e) => e,
+                None => continue,
+            };
+            if let Some(message) = error
+                .pointer("/data/message")
+                .and_then(Value::as_str)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                return Some(message.to_string());
+            }
+            if let Some(name) = error
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                return Some(name.to_string());
+            }
+        }
+        None
     }
 
     /// Pull the model's final answer text from an OpenCode JSONL stdout stream.
@@ -743,6 +965,141 @@ mod tests {
             data_dir.is_dir(),
             "expected per-invocation OpenCode data dir at {}",
             data_dir.display()
+        );
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    #[test]
+    fn command_spec_isolates_xdg_state_home_per_request() {
+        let request = sample_request();
+        let spec = build_opencode_command_with_bin(&request, "opencode-test");
+
+        let xdg = spec
+            .envs
+            .iter()
+            .find(|(k, _)| k == "XDG_STATE_HOME")
+            .map(|(_, v)| v.clone())
+            .expect("spec envs should set XDG_STATE_HOME");
+
+        let expected = request
+            .artifact_dir
+            .join("opencode-state")
+            .display()
+            .to_string();
+        assert_eq!(xdg, expected);
+    }
+
+    #[test]
+    fn run_creates_per_invocation_state_dir() {
+        let request = sample_request();
+        let _ = run_delegation_with_bin(&request, "true").unwrap();
+
+        let state_dir = request.artifact_dir.join("opencode-state");
+        assert!(
+            state_dir.is_dir(),
+            "expected per-invocation OpenCode state dir at {}",
+            state_dir.display()
+        );
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    #[test]
+    fn command_spec_isolates_xdg_cache_home_per_request() {
+        let request = sample_request();
+        let spec = build_opencode_command_with_bin(&request, "opencode-test");
+
+        let xdg = spec
+            .envs
+            .iter()
+            .find(|(k, _)| k == "XDG_CACHE_HOME")
+            .map(|(_, v)| v.clone())
+            .expect("spec envs should set XDG_CACHE_HOME");
+
+        let expected = request
+            .artifact_dir
+            .join("opencode-cache")
+            .display()
+            .to_string();
+        assert_eq!(xdg, expected);
+    }
+
+    #[test]
+    fn run_creates_per_invocation_cache_dir() {
+        let request = sample_request();
+        let _ = run_delegation_with_bin(&request, "true").unwrap();
+
+        let cache_dir = request.artifact_dir.join("opencode-cache");
+        assert!(
+            cache_dir.is_dir(),
+            "expected per-invocation OpenCode cache dir at {}",
+            cache_dir.display()
+        );
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    #[test]
+    fn parse_extracts_error_message_with_data_message() {
+        let stdout = concat!(
+            r#"{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"UnknownError","data":{"message":"Model not found: openai/gpt-5.5."}}}"#,
+            "\n",
+        );
+        let msg = parse::extract_error_message(stdout.as_bytes()).unwrap();
+        assert_eq!(msg, "Model not found: openai/gpt-5.5.");
+    }
+
+    #[test]
+    fn parse_extracts_error_message_falls_back_to_name() {
+        let stdout = r#"{"type":"error","error":{"name":"UnknownError"}}"#;
+        let msg = parse::extract_error_message(stdout.as_bytes()).unwrap();
+        assert_eq!(msg, "UnknownError");
+    }
+
+    #[test]
+    fn parse_returns_none_when_no_error_event() {
+        let stdout = concat!(
+            r#"{"type":"text","part":{"text":"all good"}}"#,
+            "\n",
+        );
+        assert!(parse::extract_error_message(stdout.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn exit_zero_with_error_event_is_reported_as_failure() {
+        // Simulate the ProviderModelNotFoundError pattern: opencode exits 0
+        // but the only stdout is an error envelope. We must report Failure,
+        // not Success.
+        use std::io::Write;
+        let request = sample_request();
+        let script_path = request.artifact_dir.join("fake-opencode.sh");
+        fs::create_dir_all(&request.artifact_dir).unwrap();
+        let mut script = fs::File::create(&script_path).unwrap();
+        write!(
+            script,
+            "#!/bin/sh\ncat <<'EOF'\n{}\nEOF\nexit 0\n",
+            r#"{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"X","data":{"message":"Model not found: openai/gpt-5.5."}}}"#,
+        )
+        .unwrap();
+        drop(script);
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", script_path.to_str().unwrap()])
+            .output();
+
+        let result = run_delegation_with_bin(&request, script_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            result.status,
+            DelegationStatus::Failure,
+            "exit-0 with error event must be Failure, got {:?}",
+            result.status
+        );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Model not found: openai/gpt-5.5"),
+            "error message should surface, got {:?}",
+            result.error
         );
         let _ = fs::remove_dir_all(&request.artifact_dir);
     }
