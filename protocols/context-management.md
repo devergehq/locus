@@ -6,7 +6,7 @@ How Locus manages context window usage across long sessions.
 
 1. **Context is finite.** Every AI model has a context window. Long sessions degrade quality as the window fills with stale information.
 2. **Checkpoint aggressively.** Write state to disk so it survives compaction.
-3. **Delegate investigation.** Exploratory work happens in sub-agents. Only results enter the main context.
+3. **Delegate investigation through Locus.** Exploratory work uses `locus delegate run`; only compact results enter the main context.
 4. **Summarise at phase boundaries.** At each Algorithm phase transition (Extended+ effort), compress accumulated context.
 
 ## Checkpointing

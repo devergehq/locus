@@ -130,9 +130,31 @@ fn handle_user_prompt_submit(_event: &serde_json::Value, _data_dir: &Path) -> Re
     Ok(())
 }
 
-fn handle_pre_tool_use(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    // Reserved for future use (e.g., permission validation).
+fn handle_pre_tool_use(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
+    if let Some(decision) = native_agent_delegation_denial(event) {
+        return write_stdout_json(&decision);
+    }
+
     Ok(())
+}
+
+fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Value> {
+    let tool_name = event
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !matches!(tool_name, "Task" | "Agent" | "TeamCreate" | "task" | "agent") {
+        return None;
+    }
+
+    Some(serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Native agent delegation is prohibited by Locus. Use `locus delegate run --backend opencode --mode native --dir . --prompt \"<bounded task>\" --output json`, or continue serially if Locus Delegate is unavailable."
+        }
+    }))
 }
 
 fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
@@ -460,5 +482,35 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let name = entries[0].file_name();
         assert!(name.to_string_lossy().starts_with("checkpoint-pre-compact-"));
+    }
+
+    #[test]
+    fn pre_tool_use_denies_native_agent_delegation() {
+        let event = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Task",
+            "tool_input": {"description": "research"}
+        });
+
+        let decision = native_agent_delegation_denial(&event).expect("Task must be denied");
+        assert_eq!(
+            decision["hookSpecificOutput"]["permissionDecision"].as_str(),
+            Some("deny")
+        );
+        assert!(decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("locus delegate run"));
+    }
+
+    #[test]
+    fn pre_tool_use_allows_non_agent_tools() {
+        let event = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": "locus delegate run --backend opencode"}
+        });
+
+        assert!(native_agent_delegation_denial(&event).is_none());
     }
 }

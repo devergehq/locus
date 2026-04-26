@@ -7,11 +7,8 @@
 //!
 //! Zero files are written to `.opencode/`. All Locus content stays in `~/.locus/`.
 //!
-//! Note: AGENTS.md intentionally does NOT include the `locus delegate run`
-//! directive. In the current architecture OpenCode is the BACKEND that runs
-//! delegated jobs, not the orchestrator that issues them — only the Claude
-//! adapter teaches delegation. Revisit if a future role lets OpenCode delegate
-//! to a different backend.
+//! AGENTS.md includes a delegation guardrail: any agent-style delegation must
+//! go through `locus delegate run`, never the platform-native Task/Agent tool.
 
 use std::path::{Path, PathBuf};
 
@@ -90,7 +87,7 @@ Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial 
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md`.
-When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/`.
+When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/`, then delegate via `locus delegate run`.
 Protocols are at `{home}/protocols/`.
 
 User data (learnings, research, work artifacts) is persisted to `{home}/data/`.
@@ -136,6 +133,24 @@ a skill, use the Read tool to load its SKILL.md from `{home}/skills/<skill-id>/S
 Available skills: research, first-principles, iterative-depth, council, red-team,
 creative, science, extract-wisdom, documents, security, media, parser.
 
+## Delegation Guardrail
+
+Any agent-style delegation MUST go through `locus delegate run`. Do not use platform-native Task/Agent subagents for research, code exploration, council/red-team work, or any other delegated agent work. Native subagents burn orchestrator context and bypass Locus's compact result envelope.
+
+If `locus delegate run` is unavailable or failing, do not fall back to native Task/Agent delegation. Continue serially or ask the user how to proceed.
+
+Default command shape:
+
+```bash
+locus delegate run \
+  --backend opencode \
+  --task-kind <research|code-exploration|general> \
+  --mode native \
+  --dir . \
+  --prompt "<bounded task>" \
+  --output json
+```
+
 ## Platform Tools (OpenCode)
 
 The following native tools are available in this OpenCode session:
@@ -145,7 +160,7 @@ The following native tools are available in this OpenCode session:
 - **edit** / **write** — modify files
 - **bash** — execute shell commands
 - **web_fetch** (fetch) — retrieve content from URLs
-- **task** (agent) — delegate to sub-agents{web_search_bullet}
+- **task** (agent) — available, but prohibited for Locus delegation; use `locus delegate run`{web_search_bullet}
 
 {web_search_note}
 Never attempt a tool that is not in the list above.
@@ -301,7 +316,11 @@ pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path
     let root = config.as_object_mut().expect("config is object");
 
     // Ensure permissions object exists.
-    if !root.get("permission").map(|v| v.is_object()).unwrap_or(false) {
+    if !root
+        .get("permission")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         root.insert("permission".to_string(), serde_json::json!({}));
     }
 
@@ -310,8 +329,16 @@ pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path
         .and_then(|v| v.as_object_mut())
         .expect("permission exists and is object");
 
+    // Platform-native subagents burn orchestrator context. Force delegation
+    // through `locus delegate run`, which returns compact result envelopes.
+    permissions.insert("task".to_string(), serde_json::json!("deny"));
+
     // --- read: whole locus home ---
-    if !permissions.get("read").map(|v| v.is_object()).unwrap_or(false) {
+    if !permissions
+        .get("read")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         permissions.insert("read".to_string(), serde_json::json!({}));
     }
     let read_perms = permissions
@@ -322,7 +349,11 @@ pub fn merge_locus_permissions(config: &mut serde_json::Value, locus_home: &Path
     read_perms.insert(read_path, serde_json::json!("allow"));
 
     // --- edit: only data directory ---
-    if !permissions.get("edit").map(|v| v.is_object()).unwrap_or(false) {
+    if !permissions
+        .get("edit")
+        .map(|v| v.is_object())
+        .unwrap_or(false)
+    {
         permissions.insert("edit".to_string(), serde_json::json!({}));
     }
     let edit_perms = permissions
@@ -450,6 +481,7 @@ fn generate_native_opencode_json() -> String {
             "bash": "allow",
             "todowrite": "allow",
             "question": "allow",
+            "task": "deny",
             "edit": "deny"
         }
     });

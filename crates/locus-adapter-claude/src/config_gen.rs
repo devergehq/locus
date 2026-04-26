@@ -63,7 +63,7 @@ Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial 
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md` via the Read tool.
-When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/` via the Read tool, then delegate via the Task tool.
+When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/` via the Read tool, then delegate via `locus delegate run`.
 Protocols are at `{home}/protocols/`.
 
 User data (learnings, research, work artifacts, checkpoints) is persisted to `{home}/data/`.
@@ -107,13 +107,15 @@ Skills are NOT registered as native Claude Code skills — Locus deliberately ke
 
 Available skills: research, first-principles, iterative-depth, council, red-team, creative, science, extract-wisdom, documents, security, media, parser.
 
-## Subagent Delegation
+## Delegation Guardrail
 
-Claude Code supports native subagent spawning via the Task tool. When the Algorithm requires delegation (e.g., extensive research, council debate, red team), invoke the Task tool directly. Load the relevant agent definition from `{home}/agents/<role>.md` via Read first so you have the persona to pass into the task prompt.
+Any agent-style delegation MUST go through `locus delegate run`. Do not use platform-native Task/Agent subagents for research, code exploration, council/red-team work, or any other delegated agent work. Native subagents burn orchestrator context and bypass Locus's compact result envelope.
 
-## OpenCode Delegation
+If `locus delegate run` is unavailable or failing, do not fall back to native Task/Agent delegation. Continue serially or ask the user how to proceed.
 
-For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. This is distinct from native subagents above: native subagents are other Claudes; OpenCode delegation runs an entirely different model under a different provider, returning a compact JSON envelope so the raw exploration never enters this context.
+## Locus Delegate
+
+For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. Native subagents stay prohibited: they are other Claudes sharing the orchestrator budget, while Locus Delegate runs out-of-process and returns a compact JSON envelope so the raw exploration never enters this context.
 
 **When to delegate:**
 - Research with broad scope (multiple sources, comparison sweeps, "what's the state of X")
@@ -165,7 +167,7 @@ The following native tools are available in this Claude Code session:
 - **bash** — execute shell commands
 - **web_search** — open-ended web search
 - **web_fetch** — retrieve content from URLs
-- **task** — delegate to sub-agents
+- **task** — available, but prohibited for Locus delegation; use `locus delegate run`
 - **glob** — find files by pattern
 - **grep** — search file contents
 
@@ -386,7 +388,11 @@ pub fn merge_locus_permissions(settings: &mut serde_json::Value, locus_home: &Pa
     // Ensure permissions object exists.
     {
         let root = settings.as_object_mut().expect("settings is object");
-        if !root.get("permissions").map(|v| v.is_object()).unwrap_or(false) {
+        if !root
+            .get("permissions")
+            .map(|v| v.is_object())
+            .unwrap_or(false)
+        {
             root.insert("permissions".to_string(), serde_json::json!({}));
         }
     }
@@ -499,12 +505,9 @@ fn upsert_hook(
     };
 
     // Find an existing group with the same matcher, or create one.
-    let group_idx = arr.iter().position(|g| {
-        g.get("matcher")
-            .and_then(|m| m.as_str())
-            .unwrap_or("")
-            == matcher_str
-    });
+    let group_idx = arr
+        .iter()
+        .position(|g| g.get("matcher").and_then(|m| m.as_str()).unwrap_or("") == matcher_str);
 
     let group_idx = match group_idx {
         Some(i) => i,
@@ -517,9 +520,7 @@ fn upsert_hook(
         }
     };
 
-    let group = arr[group_idx]
-        .as_object_mut()
-        .expect("group is object");
+    let group = arr[group_idx].as_object_mut().expect("group is object");
 
     // Ensure `hooks` child array exists.
     let group_hooks = group
@@ -536,10 +537,7 @@ fn upsert_hook(
     // Remove any prior Locus-owned hook (any entry whose command starts with
     // "locus hook "). Preserve all other entries.
     group_hooks.retain(|h| {
-        let cmd = h
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let cmd = h.get("command").and_then(|v| v.as_str()).unwrap_or("");
         !cmd.trim_start().starts_with("locus hook ")
     });
 
