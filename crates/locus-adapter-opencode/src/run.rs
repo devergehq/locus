@@ -8,6 +8,10 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Seconds before the hard timeout at which the parent sends SIGTERM (Unix)
+/// to give the agent a chance to wrap up and summarize.
+const TIMEOUT_GRACE_PERIOD_SECONDS: u64 = 120;
+
 use locus_core::{
     DelegationMode, DelegationRequest, DelegationResult, DelegationStatus, ExecutionMode,
     LocusError, Platform,
@@ -203,12 +207,13 @@ pub fn run_delegation_with_bin(
         Ok(TimedOutput::TimedOut { stdout, stderr }) => {
             let mut artifacts = write_artifacts(request, &stdout, &stderr)?;
             let raw_output_path = artifacts.first().cloned();
+            let partial_summary = summarize_timeout(&stdout, raw_output_path.as_ref());
             let mut result = DelegationResult::failure(
                 request,
                 DelegationStatus::TimedOut,
                 format!(
-                    "OpenCode delegation timed out after {} seconds",
-                    request.timeout_seconds
+                    "OpenCode delegation timed out after {} seconds. {}",
+                    request.timeout_seconds, partial_summary
                 ),
                 duration_ms,
             );
@@ -227,9 +232,14 @@ pub fn run_delegation_with_bin(
 
 fn build_delegated_prompt(request: &DelegationRequest) -> String {
     format!(
-        "Locus delegated task. Mode: read_only. Backend: {}. Task kind: {}.\n\nDo not edit files, write files, delete files, commit changes, or mutate persistent project state. Return a compact final answer with summary, findings, evidence, risks, and files referenced.\n\nTask:\n{}",
+        "Locus delegated task. Mode: read_only. Backend: {}. Task kind: {}.\n\
+         TIME BUDGET: {} seconds total.\n\
+         IMPORTANT: Monitor your elapsed time. If you are within {} minutes of the time limit, STOP your current work immediately, summarize what you have found or accomplished so far, and return your results. Do not let the task time out silently — always provide a summary of progress.\n\n\
+         Do not edit files, write files, delete files, commit changes, or mutate persistent project state. Return a compact final answer with summary, findings, evidence, risks, and files referenced.\n\nTask:\n{}",
         request.backend.as_str(),
         request.task_kind.as_str(),
+        request.timeout_seconds,
+        TIMEOUT_GRACE_PERIOD_SECONDS / 60,
         request.prompt
     )
 }
@@ -280,6 +290,12 @@ fn run_command_with_timeout(
     });
 
     let start = Instant::now();
+    let grace_period = Duration::from_secs(TIMEOUT_GRACE_PERIOD_SECONDS);
+    // Soft deadline is when we ask the process politely to finish (SIGTERM on Unix).
+    // Hard deadline is when we forcefully terminate (SIGKILL).
+    let soft_timeout = timeout.saturating_sub(grace_period);
+    let mut soft_termination_sent = false;
+
     let exit_code: Option<i32>;
     let timed_out: bool;
     loop {
@@ -290,7 +306,23 @@ fn run_command_with_timeout(
                 break;
             }
             None => {
-                if start.elapsed() >= timeout {
+                let elapsed = start.elapsed();
+
+                // Send soft termination signal once when we hit the soft timeout.
+                if !soft_termination_sent && elapsed >= soft_timeout && soft_timeout > Duration::ZERO {
+                    soft_termination_sent = true;
+                    #[cfg(unix)]
+                    {
+                        // Try SIGTERM first to give the agent a chance to wrap up.
+                        let pid = child.id() as i32;
+                        unsafe {
+                            let _ = libc::kill(pid, libc::SIGTERM);
+                        }
+                    }
+                    // On non-Unix we fall through to the hard kill below at the full timeout.
+                }
+
+                if elapsed >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
                     exit_code = None;
@@ -357,6 +389,21 @@ fn summarize_failure(code: Option<i32>, stderr: &[u8], stdout: &[u8]) -> String 
     };
 
     format!("OpenCode exited with status {:?}: {}", code, detail)
+}
+
+fn summarize_timeout(stdout: &[u8], raw_output_path: Option<&PathBuf>) -> String {
+    let text = String::from_utf8_lossy(stdout).trim().to_string();
+    if text.is_empty() {
+        return format_artifact_summary(
+            "Partial output may be available",
+            raw_output_path,
+        );
+    }
+    let compact = compact_text(&text, 1200);
+    format!(
+        "Partial output excerpt: {}",
+        compact
+    )
 }
 
 fn format_artifact_summary(prefix: &str, raw_output_path: Option<&PathBuf>) -> String {
@@ -641,6 +688,17 @@ mod tests {
                 panic!("child timed out — pipe deadlock is back")
             }
         }
+    }
+
+    #[test]
+    fn delegated_prompt_includes_timeout_and_wrap_up_instructions() {
+        let request = sample_request();
+        let prompt = build_delegated_prompt(&request);
+
+        assert!(prompt.contains(&format!("TIME BUDGET: {} seconds total", request.timeout_seconds)));
+        assert!(prompt.contains("within 2 minutes of the time limit"));
+        assert!(prompt.contains("STOP your current work immediately"));
+        assert!(prompt.contains("summarize what you have found"));
     }
 
     #[test]
