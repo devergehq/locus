@@ -345,6 +345,44 @@ See [`FUTURE_GAPS.md`](FUTURE_GAPS.md) for capabilities intentionally deferred, 
 
 ---
 
+## Acknowledgements
+
+Locus is heavily inspired by [Daniel Miessler's Personal AI Infrastructure](https://github.com/danielmiessler/Personal_AI_Infrastructure) (PAI). I started using PAI v4 and found the core ideas — the component system, the Algorithm, and the skill-based approach — to be excellent. Locus is not a fork of PAI; it is a different take on the same problem space, built from scratch in Rust with a fundamentally different architecture and philosophy.
+
+### What Locus took from PAI
+
+- The **component/skill system** — composable, file-based capabilities that the Algorithm loads on demand.
+- The **7-phase Algorithm** — OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN, with ISC criteria and the Splitting Test.
+- Many **skill workflows** and **prompting patterns** that were refined in PAI and ported or adapted for Locus.
+
+### What Locus changed
+
+| PAI approach | Locus approach |
+|---|---|
+| Tightly coupled to Claude Code (files live in `~/.claude/`) | Platform-agnostic; lives in `~/.locus/` with minimal, reversible adapters |
+| Character-based agent personas (anthropomorphized backstories) | Trait-based agent composition (expertise × stance × approach), backed by research showing personas harm reasoning |
+| Teller system for voice interaction (11labs) | Removed — no voice system |
+| Positioned as a "personal assistant" | Positioned as a structured workflow overlay — not an assistant, but a framework |
+| TypeScript, Python, Shell, Vue, JavaScript | Rust (98%) + Shell (status line only). Single binary, no runtime dependencies |
+| No upgrade/uninstall tooling | Full CLI for init, upgrade, sync, doctor, and clean removal |
+| Deep integration into platform directories | Clean separation: platform configs are backed up, merged, and restorable |
+
+### Credits inherited from PAI
+
+Daniel Miessler credited the following people and projects in PAI, and their work indirectly shaped Locus too:
+
+- **Anthropic** — for Claude Code, which is the reason any of this exists.
+- **IndieDevDan** — for videos on meta-prompting and custom agents that inspired parts of the PAI skill system.
+- **Fayman Source / Google Cloud / TTS Provider** — for Linux audio support and voice system integrations in PAI.
+- **Matt Espinoza** — for extensive testing, ideas, and feedback on the PAI 2.3 release and roadmap.
+
+### Direct Locus credits
+
+- **Daniel Miessler** — for open-sourcing PAI and documenting the ideas that Locus builds on. PAI proved that structured AI workflows are valuable; Locus tries to make them portable, maintainable, and platform-agnostic.
+- **The Rust community** — for a language and ecosystem that makes single-binary, cross-platform CLI tools practical.
+
+---
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
