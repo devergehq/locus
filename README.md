@@ -1,61 +1,223 @@
 # Locus
 
-**Agentic AI workflow execution framework.**
+> An agentic AI workflow execution framework that sits between you and your AI coding tool.
+> It provides structure, skills, and persistent memory — without locking you to any platform.
 
-Locus is a platform-agnostic layer that sits between you and your AI coding tool of choice. It provides the Algorithm (a phased decomposition for structured AI execution), skills (composable, multi-mode capabilities), agents (specialised roles for delegation), and persistent memory — without being tied to any single AI platform.
-
-Supported platforms:
-
-- **Claude Code** — via `locus platform add claude-code`
-- **OpenCode** — via `locus platform add opencode`
-
-Locus is installed as a single Rust binary. Skills, agents, protocols, and the Algorithm specification live under `~/.locus/`. The adapter for each platform writes only the minimum files needed to bootstrap Locus into that platform's native integration points — never more.
+**Status:** Early. Core features work (init, platform adapters, skills, agents, delegation, hooks), but APIs and conventions may still shift. Built primarily for the maintainer and early adopters who want structured AI workflows.
 
 ---
 
-## Installation
+## What it is
 
-### From source
+Locus is a single Rust binary that installs a structured workflow framework into `~/.locus/`. It does not replace your AI coding tool — it augments it with:
 
-```
-cargo install --path crates/locus-cli
-```
+1. **The Algorithm** — A 7-phase decomposition (OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN) that any AI agent can follow. The Algorithm spec lives in `~/.locus/algorithm/` and is embedded into your platform's system prompt.
+2. **Skills** — Composable, multi-mode capabilities (research, council, red-team, first-principles, etc.) defined in `SKILL.md` files. Skills are loaded on demand — nothing is injected into platform subdirectories.
+3. **Agents** — Trait-composed agent roles (not character-based personas). Compose an agent from expertise, stance, and approach traits on the fly.
+4. **Persistent memory** — Checkpoints, learnings, and project memory stored in `~/.locus/data/` and syncable via git.
+5. **Platform adapters** — Minimal, non-destructive integration with Claude Code and OpenCode. Backs up existing config, merges settings, and restores on removal.
 
-### Prebuilt binaries
+## What it isn't
 
-Download the latest release for your platform from the [releases page](https://github.com/devergehq/locus/releases). The shell installer (`install.sh`) places the `locus` binary in `~/.local/bin/` by default.
+- **Not an AI coding tool.** It does not generate code or chat with you. It structures the workflow *around* your AI tool.
+- **Not a plugin or extension.** It lives outside your editor/IDE and communicates via platform hooks.
+- **Not platform-specific.** While adapters exist for Claude Code and OpenCode, the framework itself is platform-agnostic.
+- **Not commercial software.** MIT licensed, free forever.
 
-### PATH requirement
+## Who it's for
 
-**`locus` must be on your `PATH`.** Platform adapters configure hooks that call `locus hook <event>` — if the binary isn't resolvable, hooks will silently fail.
+People who:
 
-After installation, confirm with:
+- Use Claude Code, OpenCode, or similar AI coding tools regularly.
+- Want consistent, structured execution from their AI (phased decomposition, verifiable criteria, explicit verification).
+- Run multi-agent workflows (debate, red-team, iterative depth) and need trait-based agent composition.
+- Want their AI workflow memory, skills, and configurations to persist across machines.
 
-```
-which locus
-```
-
-If that prints nothing, add the install directory to your shell's `PATH`. For the shell installer default:
-
-```
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-(Add the line to `~/.zshrc`, `~/.bashrc`, or your shell's equivalent so it persists.)
+If you just want to chat with an AI and don't care about structured workflows, Locus adds no value.
 
 ---
 
 ## Quick start
 
-```
+```sh
+# 1. Install Locus
+cargo install --path crates/locus-cli
+
+# 2. Initialise the framework
 locus init
+
+# 3. Connect your AI platform
 locus platform add claude-code   # or: locus platform add opencode
+
+# 4. Validate everything
 locus doctor
 ```
 
-`locus init` scaffolds `~/.locus/` with the Algorithm, skills, agents, and protocols. `locus platform add <platform>` wires Locus into that platform's global config directory (e.g., `~/.claude/CLAUDE.md` + `~/.claude/settings.json` for Claude Code). `locus doctor` validates the installation.
+After `locus init`, your `~/.locus/` directory contains the Algorithm, skills, agents, protocols, and an empty data directory. After `locus platform add`, your platform's system prompt is updated to bootstrap Locus on every session.
 
-Any pre-existing platform system prompt file (e.g., an existing `~/.claude/CLAUDE.md` or `~/.config/opencode/AGENTS.md`) is backed up to `<filename>.pre-locus` before being replaced. `settings.json` and `opencode.json` are **merged** — user settings and non-Locus hooks are preserved.
+---
+
+## Installation
+
+### From source (recommended for now)
+
+Requires [Rust](https://rustup.rs/) (stable toolchain).
+
+```sh
+git clone https://github.com/devergehq/locus.git
+cd locus
+cargo install --path crates/locus-cli
+```
+
+This places the `locus` binary in `~/.cargo/bin/`. Ensure that directory is on your `PATH`:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+> **Important:** `locus` must be on your `PATH`. Platform adapters configure hooks that call `locus hook <event>` — if the binary isn't resolvable, hooks silently fail.
+
+### Prebuilt binaries (not yet available)
+
+Locus does not currently publish prebuilt releases. The release infrastructure (`cargo-dist`) is configured but not yet active. See [Distribution](#distribution) below.
+
+---
+
+## Platform adapters
+
+Locus connects to your AI coding tool via a **platform adapter**. Adapters are minimal and non-destructive:
+
+- **Claude Code** — writes to `~/.claude/CLAUDE.md` and merges `~/.claude/settings.json`
+- **OpenCode** — writes to `~/.config/opencode/AGENTS.md` and merges `~/.config/opencode/opencode.json`
+
+### Adding an adapter
+
+```sh
+locus platform add claude-code
+```
+
+Pre-existing config files are backed up to `<filename>.pre-locus` before being modified. User settings and non-Locus hooks are preserved.
+
+### Removing an adapter
+
+```sh
+locus platform remove claude-code
+```
+
+This removes Locus entries from the adapter's config. Restore a pre-Locus backup manually if needed:
+
+```sh
+mv ~/.claude/CLAUDE.md.pre-locus ~/.claude/CLAUDE.md
+```
+
+### Listing platforms
+
+```sh
+locus platform list
+```
+
+Shows detection status: installed, config-only, CLI-only, or not installed.
+
+---
+
+## Commands
+
+### Core workflow
+
+```sh
+locus init                    # Scaffold ~/.locus/ and detect platforms
+locus doctor                  # Validate installation
+locus status                  # Dashboard: version, platforms, skills, data size
+```
+
+### Platform management
+
+```sh
+locus platform list
+locus platform add <name>     # claude-code | opencode
+locus platform remove <name>
+```
+
+### Skills
+
+```sh
+locus skill list              # List available skills
+locus skill info <id>         # Show skill detail (e.g., research, council)
+```
+
+Skills live in `~/.locus/skills/<id>/SKILL.md`. They define workflows, required capabilities, and execution patterns. The Algorithm loads skills on demand — nothing is pre-loaded into every session.
+
+### Agent composition
+
+```sh
+locus agent list-traits       # Show all available traits
+locus agent compose --traits "security,skeptical,thorough" \
+                     --role "Auth reviewer" \
+                     --task "Review the login flow for injection risks"
+```
+
+Traits are defined in `~/.locus/agents/traits.yaml` across three axes:
+
+- **Expertise** — architecture, implementation, testing, security, research, design, product, data, infrastructure
+- **Stance** — skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge
+- **Approach** — thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative
+
+Use `--output json` for a structured object instead of a plain prompt string.
+
+### Delegation
+
+```sh
+locus delegate run --backend opencode \
+                   --task-kind research \
+                   --dir /path/to/project \
+                   --prompt "Research this topic" \
+                   --dry-run
+```
+
+Runs a bounded task through an external backend (e.g., OpenCode). Used by skills like Council and RedTeam to spawn parallel agents. See `locus delegate --help` for full options.
+
+### Maintenance
+
+```sh
+locus sync                    # Commit and push ~/.locus/data/ via git
+locus upgrade                 # Check for updates from GitHub releases
+locus update-content          # Sync bundled algorithm/skills/agents from binary
+```
+
+### Hooks (invoked by platforms)
+
+```sh
+locus hook session-start
+locus hook pre-compact
+locus hook stop
+```
+
+These are called by Claude Code and OpenCode via their hook systems. You do not run them manually.
+
+---
+
+## The Algorithm in 60 seconds
+
+The Locus Algorithm is a 7-phase structured decomposition that any AI agent can apply to non-trivial tasks:
+
+1. **OBSERVE** — Understand the request deeply. Define Ideal State Criteria (ISC): atomic, verifiable, binary pass/fail goals.
+2. **THINK** — Pressure-test the plan. Identify riskiest assumptions, run a premortem, check prerequisites.
+3. **PLAN** — Validate prerequisites and establish execution order. Sequence dependencies.
+4. **BUILD** — Prepare everything needed before execution. Invoke capabilities, do research, scaffold.
+5. **EXECUTE** — Perform the actual work. Mark criteria as satisfied immediately when they pass.
+6. **VERIFY** — Confirm every criterion is actually met — not assumed. Add evidence.
+7. **LEARN** — Extract insights. Persist learnings to disk so future executions improve.
+
+The full specification lives at `~/.locus/algorithm/v1.1.md` after `locus init`.
+
+Key concepts:
+
+- **ISC (Ideal State Criteria)** — Every task must have atomic, verifiable criteria. No compound criteria (no "and").
+- **Splitting Test** — If a criterion contains "and", "with", or crosses domain boundaries, split it.
+- **Phantom Capability Rule** — Every capability selected must be actually invoked via tool call. Text-only invocation is theatre.
+- **Effort levels** — Minimal (<1 min), Standard (<5 min), Extended (<15 min), Advanced (<30 min), Deep (<60 min), Comprehensive (<120 min). Each has a minimum ISC count.
+
+The Algorithm is embedded into your platform's system prompt so every AI session follows it automatically.
 
 ---
 
@@ -65,91 +227,124 @@ After `locus init`:
 
 ```
 ~/.locus/
-├── algorithm/          # Algorithm specification
-├── skills/             # Composable skill definitions (SKILL.md per skill)
-├── agents/             # Agent role definitions
+├── algorithm/          # Algorithm specification (v1.1.md)
+├── skills/             # Skill definitions (SKILL.md per skill)
+│   ├── council/
+│   ├── creative/
+│   ├── first-principles/
+│   ├── iterative-depth/
+│   ├── red-team/
+│   ├── research/
+│   ├── science/
+│   └── ...
+├── agents/             # Agent traits and archetypes
+│   ├── traits.yaml
+│   └── *.md
 ├── protocols/          # Context management, degradation, memory schema
 ├── data/               # User data (memory, checkpoints, learnings)
+│   ├── memory/
+│   ├── learning/
+│   └── state/
 └── locus.yaml          # Canonical configuration
 ```
 
 After `locus platform add claude-code`:
 
-- `~/.claude/CLAUDE.md` — Locus bootstrap with the Algorithm embedded
-- `~/.claude/settings.json` — merged Locus hook entries (SessionStart, PreCompact, Stop, PreToolUse, PostToolUse, UserPromptSubmit, Notification)
+- `~/.claude/CLAUDE.md` — Locus bootstrap with Algorithm embedded
+- `~/.claude/settings.json` — merged Locus hook entries
 
 After `locus platform add opencode`:
 
-- `~/.config/opencode/AGENTS.md` — Locus bootstrap with the Algorithm embedded
-- `~/.config/opencode/opencode.json` — merged `instructions` pointing at Locus
+- `~/.config/opencode/AGENTS.md` — Locus bootstrap with Algorithm embedded
+- `~/.config/opencode/opencode.json` — merged instructions
 
-**Nothing is written to `~/.claude/skills/`, `~/.claude/agents/`, `.opencode/`, or any other platform subdirectory.** All Locus content stays in `~/.locus/`; the Algorithm loads skills and agents on demand via the platform's Read tool.
+**Nothing is written to platform subdirectories like `~/.claude/skills/` or `.opencode/`.** All Locus content stays in `~/.locus/`.
 
 ---
 
 ## Removal
 
-Locus is non-destructive. To remove:
+Locus is non-destructive:
 
-```
-locus platform remove claude-code
-rm -rf ~/.locus
+```sh
+locus platform remove claude-code   # Remove adapter
+locus platform remove opencode      # Remove adapter
+rm -rf ~/.locus                     # Delete all Locus data
 ```
 
-If the adapter backed up an existing file, restore it:
+Restore pre-Locus backups if needed:
 
-```
+```sh
 mv ~/.claude/CLAUDE.md.pre-locus ~/.claude/CLAUDE.md
 ```
 
 ---
 
-## Commands
+## Architecture
 
-| Command                         | Purpose                                                |
-|---------------------------------|--------------------------------------------------------|
-| `locus init`                    | Scaffold `~/.locus/` and detect installed platforms    |
-| `locus platform list`           | Show supported platforms and detection status          |
-| `locus platform add <name>`     | Install the adapter for a platform                     |
-| `locus platform remove <name>`  | Remove the adapter from `locus.yaml`                   |
-| `locus skill list`              | List available skills                                  |
-| `locus skill info <id>`         | Show detail for a specific skill                       |
-| `locus agent compose --traits <csv>` | Compose an agent prompt from trait IDs            |
-| `locus agent list-traits`       | Enumerate all available traits                         |
-| `locus doctor`                  | Validate the installation                              |
-| `locus status`                  | One-shot installation and session summary              |
-| `locus sync`                    | Sync user data via git                                 |
-| `locus upgrade`                 | Update Locus itself from GitHub releases               |
-| `locus hook <event>`            | Platform hook handler — invoked by Claude Code etc.    |
+Locus is a Rust workspace with six crates:
 
-## Agents and trait composition
+| Crate | Purpose |
+|-------|---------|
+| `locus-cli` | Binary and CLI commands |
+| `locus-core` | Core types, traits, and interfaces |
+| `locus-adapter-claude` | Claude Code platform adapter |
+| `locus-adapter-opencode` | OpenCode platform adapter |
+| `locus-tools` | Shared utilities |
+| `locus-index` | Project indexing (stub — see Future) |
 
-Locus agents are **trait-composed**, not character-based. Research evidence (Zheng EMNLP 2024, Gupta ICLR 2024, Deshpande EMNLP Findings 2023, Liang MAD, Adaptive Heterogeneous Multi-Agent Debate) shows that named personalities either do not help reasoning or actively harm it — while functional trait stances produce measurable improvements in debate quality and reasoning diversity.
+Design principles:
 
-Traits are defined in `~/.locus/agents/traits.yaml` across three axes:
+- **Dependency inversion:** `locus-core` defines interfaces; adapter crates implement them. `locus-core` never depends on adapters.
+- **Exhaustive matching:** The `Platform` enum ensures every adapter and config generator handles all platforms. Adding a platform causes compiler errors everywhere it isn't handled.
+- **Honest degradation:** Features requiring unsupported platform capabilities are explicitly marked unavailable, never silently degraded.
 
-- **Expertise** — domain knowledge (architecture, implementation, testing, security, research, design, product, data, infrastructure)
-- **Stance** — how the agent reasons (skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge)
-- **Approach** — how the agent works (thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative)
+---
 
-Compose an agent prompt with any combination:
+## Distribution
 
-```
-locus agent compose --traits "security,skeptical,thorough" \
-                    --role "Auth reviewer" \
-                    --task "Review the login flow for injection risks"
-```
+Locus is currently **source-only**. Prebuilt binaries are not published.
 
-Use `--output json` for a structured object (traits, trait_names, keywords, prompt) instead of the plain prompt string.
+The release infrastructure is pre-configured via [`cargo-dist`](https://opensource.axo.dev/cargo-dist/) in `dist.toml`:
 
-Skills like Council, RedTeam, and IterativeDepth invoke `locus agent compose` internally to assemble trait-diverse agents for debate, attack, and multi-lens analysis — rather than using named characters with backstories.
+- Targets: macOS (Apple Silicon + Intel), Linux (x86_64 + ARM64)
+- Installers: shell script, Homebrew formula
+- CI: GitHub Actions
+
+To activate releases when ready:
+
+1. Install `cargo-dist`: `cargo install cargo-dist`
+2. Run `cargo dist init` to generate GitHub Actions workflow
+3. Create a Homebrew tap repo (e.g., `devergehq/homebrew-tap`)
+4. Push a git tag: `git tag v0.1.0 && git push origin v0.1.0`
+
+Until then, install from source.
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the short version:
+
+1. Open an issue first for anything non-trivial.
+2. Run `cargo check`, `cargo test`, and `cargo fmt`.
+3. Submit a PR with a clear description.
+
+Response times are side-project pace (days to weeks). If you need faster, please fork.
+
+---
 
 ## Future gaps
 
-See `FUTURE_GAPS.md` for a registry of capabilities intentionally deferred (with design intent preserved), including Rust-native project indexing (`locus-index`), eval framework, meta-prompting skill, and internal scaffolding tools (`create-skill`, `create-cli`).
+See [`FUTURE_GAPS.md`](FUTURE_GAPS.md) for capabilities intentionally deferred, including:
+
+- `locus-index` — Rust-native project indexing with tree-sitter and embeddings
+- `evals` skill — Prompt and agent evaluation framework
+- `browser` skill — Web browsing / scraping workflows
+- `create-skill` and `create-cli` internal scaffolding tools
 
 ---
 
 ## License
 
-Apache-2.0. See `Cargo.toml` for authorship.
+MIT. See [LICENSE](LICENSE).
