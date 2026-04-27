@@ -367,15 +367,6 @@ Locus is heavily inspired by [Daniel Miessler's Personal AI Infrastructure](http
 | No upgrade/uninstall tooling | Full CLI for init, upgrade, sync, doctor, and clean removal |
 | Deep integration into platform directories | Clean separation: platform configs are backed up, merged, and restorable |
 
-### Credits inherited from PAI
-
-Daniel Miessler credited the following people and projects in PAI, and their work indirectly shaped Locus too:
-
-- **Anthropic** — for Claude Code, which is the reason any of this exists.
-- **IndieDevDan** — for videos on meta-prompting and custom agents that inspired parts of the PAI skill system.
-- **Fayman Source / Google Cloud / TTS Provider** — for Linux audio support and voice system integrations in PAI.
-- **Matt Espinoza** — for extensive testing, ideas, and feedback on the PAI 2.3 release and roadmap.
-
 ### Direct Locus credits
 
 - **Daniel Miessler** — for open-sourcing PAI and documenting the ideas that Locus builds on. PAI proved that structured AI workflows are valuable; Locus tries to make them portable, maintainable, and platform-agnostic.
