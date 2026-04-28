@@ -158,9 +158,6 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
 }
 
 fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
-    // If the tool was a Write or Edit targeting a PRD.md file, sync its
-    // frontmatter and criteria counts into {data}/memory/state/work.json
-    // so `locus status` can report progress without re-parsing every PRD.
     let tool_name = event
         .get("tool_name")
         .and_then(|v| v.as_str())
@@ -176,11 +173,14 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    if !file_path.ends_with("/PRD.md") {
-        return Ok(());
+    if file_path.ends_with("/PRD.md") {
+        let _ = sync_prd_to_work_json(Path::new(file_path), data_dir);
     }
 
-    let _ = sync_prd_to_work_json(Path::new(file_path), data_dir);
+    if is_claude_memory_path(file_path) {
+        let _ = mirror_memory_to_locus(file_path, data_dir);
+    }
+
     Ok(())
 }
 
@@ -215,6 +215,202 @@ fn handle_stop(_event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusE
 fn handle_notification(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
     // No voice, no bells. Reserved for future platform-agnostic notifications.
     Ok(())
+}
+
+// ---------- Claude Code memory mirroring ----------
+
+fn is_claude_memory_path(path: &str) -> bool {
+    path.contains("/.claude/projects/") && path.contains("/memory/")
+}
+
+fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<(), LocusError> {
+    let path = Path::new(file_path);
+    let filename = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    if filename.is_empty() {
+        return Ok(());
+    }
+
+    let cwd = std::env::current_dir().map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to get CWD: {}", e),
+        path: PathBuf::new(),
+    })?;
+
+    let slug = match resolve_project_slug(&cwd, data_dir) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+
+    let project_dir = data_dir.join("projects").join(&slug);
+    std::fs::create_dir_all(&project_dir).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to create project dir: {}", e),
+        path: project_dir.clone(),
+    })?;
+
+    if filename == "MEMORY.md" {
+        merge_memory_index(path, &project_dir)?;
+    } else {
+        let dest = project_dir.join(filename);
+        std::fs::copy(file_path, &dest).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to mirror memory file: {}", e),
+            path: dest,
+        })?;
+    }
+
+    Ok(())
+}
+
+fn resolve_project_slug(cwd: &Path, data_dir: &Path) -> Result<String, LocusError> {
+    let home = dirs::home_dir();
+
+    let mut dir = Some(cwd.to_path_buf());
+    while let Some(d) = dir {
+        let marker = d.join(".locus-project");
+        if marker.exists() {
+            if let Ok(content) = std::fs::read_to_string(&marker) {
+                if let Some(name) = parse_locus_project_name(&content) {
+                    return Ok(name);
+                }
+            }
+        }
+        if home.as_ref() == Some(&d) {
+            break;
+        }
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+
+    let registry_path = data_dir.join("projects").join("_registry.json");
+    if registry_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&registry_path) {
+            if let Ok(reg) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(slug) = resolve_from_registry(&reg, cwd) {
+                    return Ok(slug);
+                }
+            }
+        }
+    }
+
+    Err(LocusError::Memory {
+        message: format!("Could not resolve Locus project for: {}", cwd.display()),
+    })
+}
+
+fn parse_locus_project_name(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let name = rest.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn resolve_from_registry(registry: &serde_json::Value, cwd: &Path) -> Option<String> {
+    let projects = registry.get("projects")?.as_object()?;
+    let cwd_str = cwd.to_string_lossy();
+
+    for (slug, project) in projects {
+        if let Some(paths) = project.get("paths").and_then(|v| v.as_array()) {
+            for path in paths {
+                if let Some(p) = path.as_str() {
+                    if cwd_str == p {
+                        return Some(slug.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    for (slug, project) in projects {
+        if let Some(patterns) = project.get("patterns").and_then(|v| v.as_array()) {
+            for pattern in patterns {
+                if let Some(p) = pattern.as_str() {
+                    if simple_glob_match(p, &cwd_str) {
+                        return Some(slug.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Matches `**/segment/**` style globs by checking if path contains the inner segment.
+fn simple_glob_match(pattern: &str, path: &str) -> bool {
+    let inner = pattern
+        .trim_start_matches("**/")
+        .trim_end_matches("/**")
+        .trim_end_matches("/*")
+        .trim_end_matches("*");
+    if inner.is_empty() {
+        return false;
+    }
+    path.contains(inner)
+}
+
+/// Appends entries from a Claude Code MEMORY.md into the Locus project MEMORY.md,
+/// skipping any entries whose link target already exists in the Locus index.
+fn merge_memory_index(source_path: &Path, project_dir: &Path) -> Result<(), LocusError> {
+    let source_content =
+        std::fs::read_to_string(source_path).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to read source MEMORY.md: {}", e),
+            path: source_path.to_path_buf(),
+        })?;
+
+    let target_path = project_dir.join("MEMORY.md");
+    let target_content = std::fs::read_to_string(&target_path).unwrap_or_default();
+
+    let existing_refs: std::collections::HashSet<String> = target_content
+        .lines()
+        .filter_map(extract_link_target)
+        .collect();
+
+    let new_entries: Vec<&str> = source_content
+        .lines()
+        .filter(|line| {
+            extract_link_target(line)
+                .map(|link| !existing_refs.contains(&link))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if new_entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut result = target_content.trim_end().to_string();
+    if !result.is_empty() {
+        result.push('\n');
+    }
+    for entry in &new_entries {
+        result.push_str(entry);
+        result.push('\n');
+    }
+
+    std::fs::write(&target_path, result).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to write MEMORY.md: {}", e),
+        path: target_path,
+    })?;
+
+    Ok(())
+}
+
+fn extract_link_target(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("- [") {
+        return None;
+    }
+    let open = trimmed.find("](")?;
+    let rest = &trimmed[open + 2..];
+    let close = rest.find(')')?;
+    Some(rest[..close].to_string())
 }
 
 // ---------- shared helpers ----------
@@ -512,5 +708,216 @@ mod tests {
         });
 
         assert!(native_agent_delegation_denial(&event).is_none());
+    }
+
+    #[test]
+    fn is_claude_memory_path_detects_memory_writes() {
+        assert!(is_claude_memory_path(
+            "/Users/test/.claude/projects/-Users-test-myproject/memory/feedback_testing.md"
+        ));
+        assert!(is_claude_memory_path(
+            "/Users/test/.claude/projects/-Users-test-myproject/memory/MEMORY.md"
+        ));
+        assert!(!is_claude_memory_path(
+            "/Users/test/.claude/projects/-Users-test-myproject/some_other_file.md"
+        ));
+        assert!(!is_claude_memory_path(
+            "/Users/test/.locus/data/memory/work/slug/PRD.md"
+        ));
+    }
+
+    #[test]
+    fn parse_locus_project_name_extracts_name() {
+        assert_eq!(
+            parse_locus_project_name("name: allele\ndisplay: Allele\n"),
+            Some("allele".to_string())
+        );
+        assert_eq!(
+            parse_locus_project_name("---\nname: the-long-burn\n---\n"),
+            Some("the-long-burn".to_string())
+        );
+        assert_eq!(parse_locus_project_name("no name here\n"), None);
+        assert_eq!(parse_locus_project_name("name: \n"), None);
+    }
+
+    #[test]
+    fn resolve_from_registry_matches_exact_paths() {
+        let reg = serde_json::json!({
+            "projects": {
+                "allele": {
+                    "paths": ["/Users/test/allele"],
+                    "patterns": []
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_from_registry(&reg, Path::new("/Users/test/allele")),
+            Some("allele".to_string())
+        );
+        assert_eq!(
+            resolve_from_registry(&reg, Path::new("/Users/test/other")),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_from_registry_matches_patterns() {
+        let reg = serde_json::json!({
+            "projects": {
+                "allele": {
+                    "paths": [],
+                    "patterns": ["**/.allele/workspaces/allele/**"]
+                }
+            }
+        });
+
+        assert_eq!(
+            resolve_from_registry(&reg, Path::new("/Users/test/.allele/workspaces/allele/abc123")),
+            Some("allele".to_string())
+        );
+        assert_eq!(
+            resolve_from_registry(&reg, Path::new("/Users/test/unrelated")),
+            None
+        );
+    }
+
+    #[test]
+    fn resolve_project_slug_finds_marker_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("deep").join("nested");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            tmp.path().join("deep").join(".locus-project"),
+            "name: my-project\n",
+        )
+        .unwrap();
+
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        assert_eq!(
+            resolve_project_slug(&project_dir, &data_dir).unwrap(),
+            "my-project"
+        );
+    }
+
+    #[test]
+    fn extract_link_target_parses_memory_index_lines() {
+        assert_eq!(
+            extract_link_target("- [My Title](my_file.md) — description"),
+            Some("my_file.md".to_string())
+        );
+        assert_eq!(
+            extract_link_target("- [Title](path/to/file.md)"),
+            Some("path/to/file.md".to_string())
+        );
+        assert_eq!(extract_link_target("some random text"), None);
+        assert_eq!(extract_link_target("# Heading"), None);
+    }
+
+    #[test]
+    fn merge_memory_index_appends_new_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        // Existing Locus MEMORY.md
+        std::fs::write(
+            project_dir.join("MEMORY.md"),
+            "- [Existing](existing.md) — already here\n",
+        )
+        .unwrap();
+
+        // Claude Code MEMORY.md with one existing and one new entry
+        let source = tmp.path().join("source_memory.md");
+        std::fs::write(
+            &source,
+            "- [Existing](existing.md) — already here\n- [New Entry](new_entry.md) — just added\n",
+        )
+        .unwrap();
+
+        merge_memory_index(&source, &project_dir).unwrap();
+
+        let result = std::fs::read_to_string(project_dir.join("MEMORY.md")).unwrap();
+        assert!(result.contains("existing.md"));
+        assert!(result.contains("new_entry.md"));
+        // existing.md should appear only once
+        assert_eq!(result.matches("existing.md").count(), 1);
+    }
+
+    #[test]
+    fn merge_memory_index_creates_target_if_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let source = tmp.path().join("source_memory.md");
+        std::fs::write(&source, "- [Entry](entry.md) — new\n").unwrap();
+
+        merge_memory_index(&source, &project_dir).unwrap();
+
+        let result = std::fs::read_to_string(project_dir.join("MEMORY.md")).unwrap();
+        assert!(result.contains("entry.md"));
+    }
+
+    #[test]
+    fn merge_memory_index_noop_when_all_entries_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let existing = "- [A](a.md) — first\n- [B](b.md) — second\n";
+        std::fs::write(project_dir.join("MEMORY.md"), existing).unwrap();
+
+        let source = tmp.path().join("source.md");
+        std::fs::write(&source, "- [A](a.md) — first\n").unwrap();
+
+        merge_memory_index(&source, &project_dir).unwrap();
+
+        let result = std::fs::read_to_string(project_dir.join("MEMORY.md")).unwrap();
+        assert_eq!(result, existing);
+    }
+
+    #[test]
+    fn mirror_copies_memory_file_to_locus_project() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Set up project dir with .locus-project marker
+        let work_dir = tmp.path().join("workspace");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        std::fs::write(work_dir.join(".locus-project"), "name: test-proj\n").unwrap();
+
+        // Set up data dir
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(data_dir.join("projects")).unwrap();
+
+        // Simulate a Claude Code memory file
+        let claude_mem_dir = tmp.path().join(".claude").join("projects").join("encoded").join("memory");
+        std::fs::create_dir_all(&claude_mem_dir).unwrap();
+        let mem_file = claude_mem_dir.join("feedback_testing.md");
+        std::fs::write(&mem_file, "---\nname: test feedback\ntype: feedback\n---\n\nContent here.\n").unwrap();
+
+        // Temporarily change CWD for the test
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&work_dir).unwrap();
+
+        let result = mirror_memory_to_locus(mem_file.to_str().unwrap(), &data_dir);
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert!(result.is_ok());
+        let mirrored = data_dir.join("projects").join("test-proj").join("feedback_testing.md");
+        assert!(mirrored.exists());
+        let content = std::fs::read_to_string(mirrored).unwrap();
+        assert!(content.contains("Content here."));
+    }
+
+    #[test]
+    fn simple_glob_match_handles_common_patterns() {
+        assert!(simple_glob_match("**/.allele/workspaces/allele/**", "/Users/test/.allele/workspaces/allele/abc"));
+        assert!(simple_glob_match("**/the-long-burn", "/Users/test/the-long-burn"));
+        assert!(!simple_glob_match("**/.allele/workspaces/allele/**", "/Users/test/other/path"));
+        assert!(!simple_glob_match("", "/any/path"));
     }
 }
