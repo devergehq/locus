@@ -148,11 +148,28 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
         return None;
     }
 
+    let prompt_hint = event
+        .get("tool_input")
+        .and_then(|v| v.get("prompt").or_else(|| v.get("description")))
+        .and_then(|v| v.as_str())
+        .unwrap_or("<bounded task>");
+
+    let reason = format!(
+        "BLOCKED: Native agent delegation is not allowed. You decided this work should be \
+         delegated — that decision was correct. You MUST delegate it through Locus instead. \
+         Do NOT fall back to doing this work yourself; that wastes a frontier model on work \
+         you already judged as delegatable. Run this command now:\n\n\
+         locus delegate run --backend opencode --task-kind general --mode native \
+         --dir . --prompt \"{}\" --output json\n\n\
+         The model is hardcoded — do not pass --model.",
+        prompt_hint.replace('"', "\\\"")
+    );
+
     Some(serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": "Native agent delegation is prohibited by Locus. Use `locus delegate run --backend opencode --mode native --dir . --prompt \"<bounded task>\" --output json`, or continue serially if Locus Delegate is unavailable."
+            "permissionDecisionReason": reason
         }
     }))
 }
@@ -489,7 +506,7 @@ mod tests {
         let event = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Task",
-            "tool_input": {"description": "research"}
+            "tool_input": {"description": "research something"}
         });
 
         let decision = native_agent_delegation_denial(&event).expect("Task must be denied");
@@ -497,10 +514,14 @@ mod tests {
             decision["hookSpecificOutput"]["permissionDecision"].as_str(),
             Some("deny")
         );
-        assert!(decision["hookSpecificOutput"]["permissionDecisionReason"]
+        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
-            .unwrap()
-            .contains("locus delegate run"));
+            .unwrap();
+        assert!(reason.contains("locus delegate run"));
+        assert!(reason.contains("MUST delegate"));
+        assert!(!reason.contains("continue serially"));
+        // The prompt hint from tool_input should be interpolated.
+        assert!(reason.contains("research something"));
     }
 
     #[test]

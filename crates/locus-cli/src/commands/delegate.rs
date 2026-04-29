@@ -170,28 +170,15 @@ fn build_request(
     })
 }
 
+const DELEGATION_MODEL: &str = "openai/gpt-5.5";
+
 fn resolve_model(
-    cli_model: Option<&str>,
-    defaults: Option<&DelegationDefaults>,
-    backend: &DelegationBackend,
-    task_kind: &DelegationTaskKind,
+    _cli_model: Option<&str>,
+    _defaults: Option<&DelegationDefaults>,
+    _backend: &DelegationBackend,
+    _task_kind: &DelegationTaskKind,
 ) -> Result<String, LocusError> {
-    if let Some(m) = cli_model.map(str::trim).filter(|s| !s.is_empty()) {
-        return Ok(m.to_string());
-    }
-    if let Some(default) = defaults {
-        return Ok(default.model.clone());
-    }
-    Err(LocusError::Config {
-        message: format!(
-            "No --model provided and no delegation default configured for ({}, {}). Either pass --model or set delegation.defaults.{}.{}.model in ~/.locus/locus.yaml.",
-            backend.as_str(),
-            task_kind.as_str(),
-            backend.as_str(),
-            task_kind.as_str()
-        ),
-        path: None,
-    })
+    Ok(DELEGATION_MODEL.to_string())
 }
 
 fn resolve_optional(cli_value: Option<String>, default_value: Option<String>) -> Option<String> {
@@ -1002,51 +989,27 @@ mod tests {
     }
 
     #[test]
-    fn build_request_resolves_model_from_config_when_cli_omits_it() {
-        let mut args = sample_args();
-        args.model = None;
-        args.agent = None;
-        args.variant = None;
-
-        let config = config_with_research_default("openai/gpt-5.4-mini");
-        let request = build_request(args, &config).unwrap();
-
-        assert_eq!(request.model, "openai/gpt-5.4-mini");
-        assert_eq!(request.agent.as_deref(), Some("default-agent"));
-        assert_eq!(request.variant.as_deref(), Some("low"));
-    }
-
-    #[test]
-    fn build_request_errors_when_no_model_and_no_default() {
-        let mut args = sample_args();
-        args.model = None;
-
-        let err = build_request(args, &empty_config()).unwrap_err();
-        let message = err.to_string();
-        assert!(message.contains("No --model provided"));
-        assert!(message.contains("delegation.defaults.opencode.research"));
-    }
-
-    #[test]
-    fn build_request_cli_model_overrides_config_default() {
+    fn build_request_always_uses_hardcoded_model() {
         let args = sample_args();
-        let config = config_with_research_default("openai/gpt-5.4-mini");
-        let request = build_request(args, &config).unwrap();
-
+        let request = build_request(args, &empty_config()).unwrap();
         assert_eq!(request.model, "openai/gpt-5.5");
-        // CLI agent/variant also win since they were Some in sample_args.
-        assert_eq!(request.agent.as_deref(), Some("research"));
-        assert_eq!(request.variant.as_deref(), Some("high"));
     }
 
     #[test]
-    fn build_request_treats_empty_model_string_as_unset() {
+    fn build_request_ignores_cli_model_override() {
         let mut args = sample_args();
-        args.model = Some("   ".into());
+        args.model = Some("openai/gpt-4o".into());
+        let request = build_request(args, &empty_config()).unwrap();
+        assert_eq!(request.model, "openai/gpt-5.5");
+    }
+
+    #[test]
+    fn build_request_ignores_config_model_default() {
+        let mut args = sample_args();
+        args.model = None;
         let config = config_with_research_default("openai/gpt-5.4-mini");
         let request = build_request(args, &config).unwrap();
-
-        assert_eq!(request.model, "openai/gpt-5.4-mini");
+        assert_eq!(request.model, "openai/gpt-5.5");
     }
 
     #[test]
