@@ -187,11 +187,11 @@ enum DelegateCommands {
         #[arg(long, value_enum)]
         task_kind: commands::delegate::DelegateTaskKindArg,
 
-        /// Provider/model identifier, e.g. openai/gpt-5.5.
+        /// DEPRECATED — ignored. The delegation model is hardcoded.
         ///
-        /// Optional when `delegation.defaults.<backend>.<task_kind>.model` is
-        /// set in `~/.locus/locus.yaml`. The CLI flag wins when both are set.
-        #[arg(long)]
+        /// Do not pass this flag; any value is silently overridden.
+        /// The hardcoded model is logged to stderr if this flag is used.
+        #[arg(long, hide = true)]
         model: Option<String>,
 
         /// Workspace directory for the delegated backend.

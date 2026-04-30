@@ -158,7 +158,22 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
         "BLOCKED: Native agent delegation is not allowed. You decided this work should be \
          delegated — that decision was correct. You MUST delegate it through Locus instead. \
          Do NOT fall back to doing this work yourself; that wastes a frontier model on work \
-         you already judged as delegatable. Run this command now:\n\n\
+         you already judged as delegatable.\n\n\
+         IMPORTANT — compose-then-delegate workflow:\n\
+         If this delegation involves research, investigation, council, red-team, or any \
+         specialist cognitive work, you MUST compose a trait-based prompt first using \
+         `locus agent compose`, then pass the result to `locus delegate run`. Read the \
+         relevant agent definition from ~/.locus/agents/ to find the canonical trait bundle. \
+         Example:\n\n\
+         PROMPT=$(locus agent compose \\\n  \
+         --traits \"research,systematic,empirical\" \\\n  \
+         --role \"Research analyst\" \\\n  \
+         --task \"<your task description>\" \\\n  \
+         --output prompt)\n\n\
+         locus delegate run --backend opencode --task-kind research --mode native \
+         --dir . --prompt \"$PROMPT\" --output json\n\n\
+         For simple bounded tasks (grep, summarize, classify), you may call delegate run \
+         directly:\n\n\
          locus delegate run --backend opencode --task-kind general --mode native \
          --dir . --prompt \"{}\" --output json\n\n\
          The model is hardcoded — do not pass --model.",

@@ -173,11 +173,17 @@ fn build_request(
 const DELEGATION_MODEL: &str = "openai/gpt-5.5";
 
 fn resolve_model(
-    _cli_model: Option<&str>,
+    cli_model: Option<&str>,
     _defaults: Option<&DelegationDefaults>,
     _backend: &DelegationBackend,
     _task_kind: &DelegationTaskKind,
 ) -> Result<String, LocusError> {
+    if let Some(passed) = cli_model {
+        eprintln!(
+            "locus: --model '{}' ignored — delegation model is hardcoded to '{}'",
+            passed, DELEGATION_MODEL
+        );
+    }
     Ok(DELEGATION_MODEL.to_string())
 }
 
