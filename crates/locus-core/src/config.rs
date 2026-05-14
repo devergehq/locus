@@ -54,6 +54,11 @@ pub struct LocusConfig {
 /// is the task kind's snake_case name (e.g. `research`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DelegationConfig {
+    /// Master switch. When false, native platform delegation (Agent/Task tools)
+    /// is allowed through and `locus delegate run` redirection is skipped.
+    #[serde(default)]
+    pub enabled: bool,
+
     /// Per-backend, per-task-kind defaults.
     #[serde(default)]
     pub defaults: HashMap<String, HashMap<String, DelegationDefaults>>,
@@ -369,6 +374,7 @@ paths:
   data: /custom/data/path
 
 delegation:
+  enabled: true
   defaults:
     opencode:
       research:
@@ -378,6 +384,7 @@ delegation:
         model: openai/gpt-5.4-mini
 "#;
         let config: LocusConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.delegation.enabled);
         assert_eq!(config.platforms.len(), 2);
         assert_eq!(config.algorithm.default_effort, EffortLevel::Extended);
         assert!(!config.algorithm.auto_checkpoint);
@@ -407,6 +414,7 @@ delegation:
     fn delegation_section_defaults_when_absent() {
         let yaml = "platforms: [open-code]";
         let config: LocusConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.delegation.enabled);
         assert!(config.delegation.defaults.is_empty());
         assert!(config.delegation.lookup("opencode", "research").is_none());
     }
