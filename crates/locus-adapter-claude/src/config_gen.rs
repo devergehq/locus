@@ -113,6 +113,24 @@ Any agent-style delegation MUST go through `locus delegate run`. Do not use plat
 
 If `locus delegate run` is unavailable or failing, do not fall back to native Task/Agent delegation. Continue serially or ask the user how to proceed.
 
+### Delegation Denial Compliance (CRITICAL)
+
+When a hook denies a native Agent or Task tool call, the denial message contains the exact `locus delegate run` command to execute instead. You MUST execute that command immediately via Bash. Specifically:
+
+- **Do NOT** fall back to doing the work yourself ("I'll just read the files directly", "Let me handle this in the current session")
+- **Do NOT** say "since I can't delegate, I'll do it manually" — that defeats the entire purpose of delegation
+- **Do** copy the `locus delegate run` command from the denial message and run it via Bash
+- The denial means "use this other tool", not "give up on delegation"
+
+This is the single most common compliance failure. If you catch yourself about to do delegated work inline after a denial, stop and run `locus delegate run` instead.
+
+## Memory
+
+Locus maintains its own project memory at `{home}/data/projects/`. When reading or writing memories:
+
+- **Read from both**: check `{home}/data/projects/` (Locus canonical store) AND `~/.claude/projects/*/memory/` (Claude Code native). Locus is authoritative when they conflict.
+- **Write to both**: Claude Code's native memory system is mirrored automatically by hooks, but always verify Locus has the memory too. If writing something important, write it to the Locus project directory directly.
+
 ## Locus Delegate
 
 For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. Native subagents stay prohibited: they are other Claudes sharing the orchestrator budget, while Locus Delegate runs out-of-process and returns a compact JSON envelope so the raw exploration never enters this context.

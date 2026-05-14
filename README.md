@@ -166,15 +166,59 @@ Use `--output json` for a structured object instead of a plain prompt string.
 
 ### Delegation
 
+Delegation lets Locus redirect work from your primary AI tool to a cheaper, out-of-process backend — keeping the orchestrator's context clean and costs down.
+
+**How it works:** When delegation is enabled, Locus hooks intercept native agent/task tool calls (e.g., Claude Code's `Agent` or `Task` tools) and block them. The AI is told to run `locus delegate run` instead, which shells out to the configured backend (currently OpenCode) and returns a compact JSON result envelope. The raw exploration never enters the orchestrator's context window.
+
+**Enabling delegation:**
+
+Add the `delegation` section to `~/.locus/locus.yaml`:
+
+```yaml
+delegation:
+  enabled: true
+  defaults:
+    opencode:
+      research:
+        model: openai/gpt-5.5
+      code_exploration:
+        model: openai/gpt-5.5
+      general:
+        model: openai/gpt-5.5
+```
+
+- `enabled: true` — activates the hook that blocks native agent delegation and redirects to `locus delegate run`. When `false` (the default), native platform delegation is allowed through unmodified.
+- `defaults` — per-backend, per-task-kind model defaults. The outer key is the backend (`opencode`), the inner key is the task kind (`research`, `code_exploration`, `general`). The `model` field sets the provider/model identifier passed to the backend.
+
+After changing `locus.yaml`, no rebuild or platform re-add is needed — the hooks read the config at runtime.
+
+**Running a delegation manually:**
+
 ```sh
 locus delegate run --backend opencode \
                    --task-kind research \
                    --dir /path/to/project \
                    --prompt "Research this topic" \
-                   --dry-run
+                   --output json
 ```
 
-Runs a bounded task through an external backend (e.g., OpenCode). Used by skills like Council and RedTeam to spawn parallel agents. See `locus delegate --help` for full options.
+The `--model` flag overrides the config default for a single invocation. If neither `--model` nor a config default is set, Locus falls back to `openai/gpt-5.5`.
+
+**Task kinds:**
+
+| Kind | When to use |
+|------|-------------|
+| `research` | Web/docs research, comparison sweeps, "what's the state of X" |
+| `code-exploration` | Read-only codebase mapping, file enumeration, architecture surveys |
+| `general` | Everything else |
+
+**Disabling delegation:**
+
+Set `enabled: false` in `locus.yaml` (or remove the `delegation` section entirely). Native Agent/Task tools will pass through without interception.
+
+**Prerequisites:** Delegation currently requires [OpenCode](https://opencode.ai) installed and configured with API keys for the target model provider. Other backends may be added in the future.
+
+See `locus delegate --help` for full options, and `locus delegate ls` / `locus delegate prune` for managing delegation artifacts.
 
 ### Maintenance
 

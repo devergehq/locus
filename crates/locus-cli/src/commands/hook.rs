@@ -131,11 +131,28 @@ fn handle_user_prompt_submit(_event: &serde_json::Value, _data_dir: &Path) -> Re
 }
 
 fn handle_pre_tool_use(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    if let Some(decision) = native_agent_delegation_denial(event) {
-        return write_stdout_json(&decision);
+    if is_delegation_enabled() {
+        if let Some(decision) = native_agent_delegation_denial(event) {
+            return write_stdout_json(&decision);
+        }
     }
 
     Ok(())
+}
+
+fn is_delegation_enabled() -> bool {
+    let locus_home = if let Ok(env_home) = std::env::var("LOCUS_HOME") {
+        PathBuf::from(env_home)
+    } else {
+        match dirs::home_dir() {
+            Some(h) => h.join(".locus"),
+            None => return false,
+        }
+    };
+    let path = locus_home.join("locus.yaml");
+    locus_core::LocusConfig::from_file(&path)
+        .map(|cfg| cfg.delegation.enabled)
+        .unwrap_or(false)
 }
 
 fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Value> {
@@ -148,17 +165,36 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
         return None;
     }
 
-    let prompt_hint = event
-        .get("tool_input")
+    let tool_input = event.get("tool_input");
+
+    let prompt_hint = tool_input
         .and_then(|v| v.get("prompt").or_else(|| v.get("description")))
         .and_then(|v| v.as_str())
         .unwrap_or("<bounded task>");
 
+    let subagent_type = tool_input
+        .and_then(|v| v.get("subagent_type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let task_kind = match subagent_type.to_lowercase().as_str() {
+        "explore" => "code-exploration",
+        "general-purpose" => "general",
+        _ if prompt_hint.to_lowercase().contains("research") => "research",
+        _ if prompt_hint.to_lowercase().contains("explor") => "code-exploration",
+        _ => "general",
+    };
+
     let reason = format!(
-        "BLOCKED: Native agent delegation is not allowed. You decided this work should be \
-         delegated — that decision was correct. You MUST delegate it through Locus instead. \
-         Do NOT fall back to doing this work yourself; that wastes a frontier model on work \
-         you already judged as delegatable.\n\n\
+        "BLOCKED: Native agent delegation is not allowed — Locus delegation is enabled. \
+         You decided this work should be delegated — that decision was correct. \
+         You MUST delegate it through Locus instead by running the command below. \
+         \n\n\
+         CRITICAL: Do NOT fall back to doing this work yourself. Do NOT say \
+         \"I'll just read the files directly\" or \"Let me do this in the current session.\" \
+         That defeats the purpose of delegation (keeping the orchestrator context clean) \
+         and wastes a frontier model on work you already judged as delegatable. \
+         \n\n\
          IMPORTANT — compose-then-delegate workflow:\n\
          If this delegation involves research, investigation, council, red-team, or any \
          specialist cognitive work, you MUST compose a trait-based prompt first using \
@@ -174,9 +210,9 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
          --dir . --prompt \"$PROMPT\" --output json\n\n\
          For simple bounded tasks (grep, summarize, classify), you may call delegate run \
          directly:\n\n\
-         locus delegate run --backend opencode --task-kind general --mode native \
-         --dir . --prompt \"{}\" --output json\n\n\
-         The model is hardcoded — do not pass --model.",
+         locus delegate run --backend opencode --task-kind {} --mode native \
+         --dir . --prompt \"{}\" --output json",
+        task_kind,
         prompt_hint.replace('"', "\\\"")
     );
 
@@ -210,7 +246,29 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
     }
 
     if is_claude_memory_path(file_path) {
-        let _ = mirror_memory_to_locus(file_path, data_dir);
+        let mirror_result = mirror_memory_to_locus(file_path, data_dir);
+
+        let ctx = match &mirror_result {
+            Ok(()) => format!(
+                "Memory file was automatically mirrored to Locus project directory. \
+                 When reading memories, always check both ~/.claude/projects/*/memory/ \
+                 AND ~/.locus/data/projects/*/. Locus is the canonical store."
+            ),
+            Err(e) => format!(
+                "WARNING: Memory file at {} could NOT be mirrored to Locus: {}. \
+                 Locus is the canonical memory store. Please also write this memory \
+                 to the appropriate Locus project directory under ~/.locus/data/projects/.",
+                file_path, e
+            ),
+        };
+
+        let out = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": ctx
+            }
+        });
+        return write_stdout_json(&out);
     }
 
     Ok(())
@@ -325,9 +383,25 @@ fn resolve_project_slug(cwd: &Path, data_dir: &Path) -> Result<String, LocusErro
         }
     }
 
-    Err(LocusError::Memory {
-        message: format!("Could not resolve Locus project for: {}", cwd.display()),
-    })
+    Ok(derive_slug_from_path(cwd))
+}
+
+fn derive_slug_from_path(cwd: &Path) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    let relative = cwd.strip_prefix(&home).unwrap_or(cwd);
+    let parts: Vec<&str> = relative
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .filter(|s| !s.starts_with('.'))
+        .collect();
+    let slug = if parts.is_empty() {
+        "unknown".to_string()
+    } else {
+        parts.join("-").to_lowercase()
+    };
+    slug.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .collect()
 }
 
 fn parse_locus_project_name(content: &str) -> Option<String> {
@@ -730,9 +804,27 @@ mod tests {
             .unwrap();
         assert!(reason.contains("locus delegate run"));
         assert!(reason.contains("MUST delegate"));
-        assert!(!reason.contains("continue serially"));
-        // The prompt hint from tool_input should be interpolated.
+        assert!(reason.contains("Do NOT fall back"));
         assert!(reason.contains("research something"));
+        assert!(reason.contains("--task-kind research"));
+    }
+
+    #[test]
+    fn pre_tool_use_maps_explore_agent_to_code_exploration() {
+        let event = serde_json::json!({
+            "tool_name": "Agent",
+            "tool_input": {
+                "subagent_type": "Explore",
+                "prompt": "find all API endpoints",
+                "description": "explore codebase"
+            }
+        });
+
+        let decision = native_agent_delegation_denial(&event).unwrap();
+        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("--task-kind code-exploration"));
     }
 
     #[test]
@@ -947,6 +1039,33 @@ mod tests {
         assert!(mirrored.exists());
         let content = std::fs::read_to_string(mirrored).unwrap();
         assert!(content.contains("Content here."));
+    }
+
+    #[test]
+    fn derive_slug_from_path_strips_dotfiles_and_lowercases() {
+        let slug = derive_slug_from_path(Path::new("/Users/test/Sites/clients/my-project"));
+        assert!(slug.contains("my-project"));
+        assert!(!slug.contains("Users"));
+
+        let slug2 = derive_slug_from_path(Path::new("/Users/test/.allele/workspaces/locus/abc123"));
+        assert!(slug2.contains("workspaces"));
+        assert!(slug2.contains("locus"));
+        assert!(!slug2.contains(".allele"));
+    }
+
+    #[test]
+    fn resolve_project_slug_falls_back_to_derived_slug() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("deep").join("nested");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(data_dir.join("projects")).unwrap();
+
+        let result = resolve_project_slug(&project_dir, &data_dir);
+        assert!(result.is_ok(), "Should fall back to derived slug");
+        let slug = result.unwrap();
+        assert!(slug.contains("nested") || slug.contains("deep"));
     }
 
     #[test]

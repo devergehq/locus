@@ -170,21 +170,23 @@ fn build_request(
     })
 }
 
-const DELEGATION_MODEL: &str = "openai/gpt-5.5";
+const FALLBACK_MODEL: &str = "openai/gpt-5.5";
 
 fn resolve_model(
     cli_model: Option<&str>,
-    _defaults: Option<&DelegationDefaults>,
+    defaults: Option<&DelegationDefaults>,
     _backend: &DelegationBackend,
     _task_kind: &DelegationTaskKind,
 ) -> Result<String, LocusError> {
-    if let Some(passed) = cli_model {
-        eprintln!(
-            "locus: --model '{}' ignored — delegation model is hardcoded to '{}'",
-            passed, DELEGATION_MODEL
-        );
+    if let Some(m) = cli_model.filter(|s| !s.trim().is_empty()) {
+        return Ok(m.to_string());
     }
-    Ok(DELEGATION_MODEL.to_string())
+    if let Some(d) = defaults {
+        if !d.model.trim().is_empty() {
+            return Ok(d.model.clone());
+        }
+    }
+    Ok(FALLBACK_MODEL.to_string())
 }
 
 fn resolve_optional(cli_value: Option<String>, default_value: Option<String>) -> Option<String> {
@@ -721,7 +723,7 @@ mod tests {
         );
         let mut outer = HashMap::new();
         outer.insert("opencode".to_string(), inner);
-        DelegationConfig { defaults: outer }
+        DelegationConfig { enabled: true, defaults: outer }
     }
 
     #[test]
@@ -995,27 +997,37 @@ mod tests {
     }
 
     #[test]
-    fn build_request_always_uses_hardcoded_model() {
-        let args = sample_args();
-        let request = build_request(args, &empty_config()).unwrap();
-        assert_eq!(request.model, "openai/gpt-5.5");
-    }
-
-    #[test]
-    fn build_request_ignores_cli_model_override() {
+    fn build_request_uses_cli_model_when_provided() {
         let mut args = sample_args();
         args.model = Some("openai/gpt-4o".into());
         let request = build_request(args, &empty_config()).unwrap();
-        assert_eq!(request.model, "openai/gpt-5.5");
+        assert_eq!(request.model, "openai/gpt-4o");
     }
 
     #[test]
-    fn build_request_ignores_config_model_default() {
+    fn build_request_uses_config_default_when_no_cli_model() {
         let mut args = sample_args();
         args.model = None;
         let config = config_with_research_default("openai/gpt-5.4-mini");
         let request = build_request(args, &config).unwrap();
+        assert_eq!(request.model, "openai/gpt-5.4-mini");
+    }
+
+    #[test]
+    fn build_request_falls_back_to_hardcoded_model() {
+        let mut args = sample_args();
+        args.model = None;
+        let request = build_request(args, &empty_config()).unwrap();
         assert_eq!(request.model, "openai/gpt-5.5");
+    }
+
+    #[test]
+    fn build_request_cli_model_overrides_config() {
+        let mut args = sample_args();
+        args.model = Some("openai/gpt-4o".into());
+        let config = config_with_research_default("openai/gpt-5.4-mini");
+        let request = build_request(args, &config).unwrap();
+        assert_eq!(request.model, "openai/gpt-4o");
     }
 
     #[test]
