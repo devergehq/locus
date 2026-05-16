@@ -131,6 +131,48 @@ Locus maintains its own project memory at `{home}/data/projects/`. When reading 
 - **Read from both**: check `{home}/data/projects/` (Locus canonical store) AND `~/.claude/projects/*/memory/` (Claude Code native). Locus is authoritative when they conflict.
 - **Write to both**: Claude Code's native memory system is mirrored automatically by hooks, but always verify Locus has the memory too. If writing something important, write it to the Locus project directory directly.
 
+## Agent Composition
+
+Locus composes agent prompts from trait IDs. Use `locus agent compose` to build a trait-composed prompt, then pass it to `locus delegate run --prompt`.
+
+**CLI reference — `locus agent compose`:**
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--traits <IDS>` | Yes | Comma-separated trait IDs (e.g. `"security,skeptical,thorough"`) |
+| `--role <ROLE>` | No | Role statement prepended to prompt (`"You are <role>."`) |
+| `--task <TASK>` | No | Task statement appended to prompt (`"Your task: <task>"`) |
+| `--output <MODE>` | No | `prompt` (default, plain text) or `json` (structured object) |
+
+**Available traits (by axis):**
+
+- **Expertise:** architecture, implementation, testing, security, research, design, product, data, infrastructure
+- **Stance:** skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge
+- **Approach:** thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative
+
+Pick 2-4 traits across axes. One expertise + one stance + one approach is the standard pattern.
+
+**Compose-then-delegate workflow:**
+
+```bash
+# 1. Compose the agent prompt
+PROMPT=$(locus agent compose \
+  --traits "research,skeptical,systematic" \
+  --role "Security researcher" \
+  --task "Investigate auth token storage patterns in this codebase")
+
+# 2. Delegate the composed agent
+locus delegate run \
+  --backend opencode \
+  --task-kind code-exploration \
+  --mode native \
+  --dir . \
+  --prompt "$PROMPT" \
+  --output json
+```
+
+For parallel dispatch, issue multiple compose+delegate pairs as separate Bash tool calls in one assistant message.
+
 ## Locus Delegate
 
 For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. Native subagents stay prohibited: they are other Claudes sharing the orchestrator budget, while Locus Delegate runs out-of-process and returns a compact JSON envelope so the raw exploration never enters this context.
@@ -148,21 +190,24 @@ For bounded read-only work that would otherwise burn the orchestrator's context 
 - Tasks that depend on context already loaded in this session
 - Anything that needs a tool the backend doesn't have (e.g. a specific MCP server)
 
-**Invocation:**
+**CLI reference — `locus delegate run`:**
 
-```bash
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir <workspace> \
-  --prompt "<bounded task>" \
-  --output json
-```
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--backend <BACKEND>` | Yes | — | Backend to use (`opencode`) |
+| `--task-kind <KIND>` | Yes | — | `research`, `code-exploration`, or `general` |
+| `--dir <DIR>` | Yes | — | Workspace directory for the delegated backend |
+| `--prompt <PROMPT>` | Yes | — | Task prompt (or composed agent prompt from `locus agent compose`) |
+| `--mode <MODE>` | No | `native` | `native` (no Algorithm) or `algorithmic` (loads Algorithm — rarely wanted) |
+| `--output <MODE>` | No | `json` | `json` (machine-readable) or `human` (readable status) |
+| `--context-file <PATH>` | No | — | Attach a file as context (repeatable for multiple files) |
+| `--agent <NAME>` | No | — | Backend agent/profile name |
+| `--timeout-seconds <N>` | No | `1200` | Maximum execution time (20 min default) |
+| `--dry-run` | No | — | Print request JSON without invoking the backend |
 
-Use `--task-kind code-exploration` for codebase mapping and `--task-kind general` for everything else. The model is hardcoded — do not pass `--model`.
+Use `--task-kind code-exploration` for codebase mapping, `--task-kind research` for web/doc research, and `--task-kind general` for everything else. The model is hardcoded — do not pass `--model`.
 
-**`--mode native` is the default and almost always what you want.** It runs the delegated session with no Locus orchestration scaffolding loaded — the delegated model just reads the prompt and produces the requested output, no `OBSERVE → THINK → PLAN` phases, no Mode Classification. Use `--mode algorithmic` *only* in the rare case the delegated session itself needs to orchestrate (you almost never want this; the orchestrator is *this* session, not the delegate). Algorithmic mode loads the full Locus Algorithm into the delegate, making it act like a second orchestrator — which usually means the delegate burns its turn writing phase scaffolding instead of doing the work. If you omit `--mode`, you get native.
+**`--mode native` is the default and almost always what you want.** It runs the delegated session with no Locus orchestration scaffolding loaded — the delegated model just reads the prompt and produces the requested output, no `OBSERVE → THINK → PLAN` phases, no Mode Classification. Use `--mode algorithmic` *only* in the rare case the delegated session itself needs to orchestrate (you almost never want this; the orchestrator is *this* session, not the delegate).
 
 **Result envelope:**
 
