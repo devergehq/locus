@@ -249,11 +249,24 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
         let mirror_result = mirror_memory_to_locus(file_path, data_dir);
 
         let ctx = match &mirror_result {
-            Ok(()) => format!(
-                "Memory file was automatically mirrored to Locus project directory. \
-                 When reading memories, always check both ~/.claude/projects/*/memory/ \
-                 AND ~/.locus/data/projects/*/. Locus is the canonical store."
-            ),
+            Ok(result) => {
+                if let Some(entries_added) = result.entries_added {
+                    format!(
+                        "Mirrored {} to Locus: {} ({} new entries merged). \
+                         Locus is the canonical store.",
+                        result.filename,
+                        result.destination.display(),
+                        entries_added
+                    )
+                } else {
+                    format!(
+                        "Mirrored {} to Locus: {}. \
+                         Locus is the canonical store.",
+                        result.filename,
+                        result.destination.display()
+                    )
+                }
+            }
             Err(e) => format!(
                 "WARNING: Memory file at {} could NOT be mirrored to Locus: {}. \
                  Locus is the canonical memory store. Please also write this memory \
@@ -309,11 +322,17 @@ fn handle_notification(_event: &serde_json::Value, _data_dir: &Path) -> Result<(
 
 // ---------- Claude Code memory mirroring ----------
 
+struct MirrorResult {
+    filename: String,
+    destination: PathBuf,
+    entries_added: Option<usize>,
+}
+
 fn is_claude_memory_path(path: &str) -> bool {
     path.contains("/.claude/projects/") && path.contains("/memory/")
 }
 
-fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<(), LocusError> {
+fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<MirrorResult, LocusError> {
     let path = Path::new(file_path);
     let filename = path
         .file_name()
@@ -321,7 +340,11 @@ fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<(), LocusE
         .unwrap_or("");
 
     if filename.is_empty() {
-        return Ok(());
+        return Ok(MirrorResult {
+            filename: String::new(),
+            destination: PathBuf::new(),
+            entries_added: None,
+        });
     }
 
     let cwd = std::env::current_dir().map_err(|e| LocusError::Filesystem {
@@ -331,7 +354,13 @@ fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<(), LocusE
 
     let slug = match resolve_project_slug(&cwd, data_dir) {
         Ok(s) => s,
-        Err(_) => return Ok(()),
+        Err(_) => {
+            return Ok(MirrorResult {
+                filename: filename.to_string(),
+                destination: PathBuf::new(),
+                entries_added: None,
+            });
+        }
     };
 
     let project_dir = data_dir.join("projects").join(&slug);
@@ -341,16 +370,24 @@ fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<(), LocusE
     })?;
 
     if filename == "MEMORY.md" {
-        merge_memory_index(path, &project_dir)?;
+        let entries_added = merge_memory_index(path, &project_dir)?;
+        Ok(MirrorResult {
+            filename: filename.to_string(),
+            destination: project_dir.join("MEMORY.md"),
+            entries_added: Some(entries_added),
+        })
     } else {
         let dest = project_dir.join(filename);
         std::fs::copy(file_path, &dest).map_err(|e| LocusError::Filesystem {
             message: format!("Failed to mirror memory file: {}", e),
-            path: dest,
+            path: dest.clone(),
         })?;
+        Ok(MirrorResult {
+            filename: filename.to_string(),
+            destination: dest,
+            entries_added: None,
+        })
     }
-
-    Ok(())
 }
 
 fn resolve_project_slug(cwd: &Path, data_dir: &Path) -> Result<String, LocusError> {
@@ -463,7 +500,7 @@ fn simple_glob_match(pattern: &str, path: &str) -> bool {
 
 /// Appends entries from a Claude Code MEMORY.md into the Locus project MEMORY.md,
 /// skipping any entries whose link target already exists in the Locus index.
-fn merge_memory_index(source_path: &Path, project_dir: &Path) -> Result<(), LocusError> {
+fn merge_memory_index(source_path: &Path, project_dir: &Path) -> Result<usize, LocusError> {
     let source_content =
         std::fs::read_to_string(source_path).map_err(|e| LocusError::Filesystem {
             message: format!("Failed to read source MEMORY.md: {}", e),
@@ -487,8 +524,10 @@ fn merge_memory_index(source_path: &Path, project_dir: &Path) -> Result<(), Locu
         })
         .collect();
 
+    let count = new_entries.len();
+
     if new_entries.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
 
     let mut result = target_content.trim_end().to_string();
@@ -505,7 +544,7 @@ fn merge_memory_index(source_path: &Path, project_dir: &Path) -> Result<(), Locu
         path: target_path,
     })?;
 
-    Ok(())
+    Ok(count)
 }
 
 fn extract_link_target(line: &str) -> Option<String> {
