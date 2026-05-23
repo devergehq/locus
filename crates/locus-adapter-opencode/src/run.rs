@@ -322,27 +322,35 @@ pub fn run_delegation_with_bin(
             let mut artifacts = write_artifacts(request, &stdout, &stderr)?;
             let raw_output_path = artifacts.first().cloned();
 
-            if code == Some(0) {
-                // OpenCode sometimes exits 0 even when the only stdout event
-                // was a fatal error (e.g. ProviderModelNotFoundError). Don't
-                // claim success when the JSONL stream contains an error event
-                // — surface the error message so the caller can act on it.
-                if let Some(error_message) = parse::extract_error_message(&stdout) {
-                    let mut result = DelegationResult::failure(
-                        request,
-                        DelegationStatus::Failure,
-                        format!("OpenCode reported an error: {}", error_message),
-                        duration_ms,
-                    );
-                    result.artifacts.append(&mut artifacts);
-                    result.raw_output_path = raw_output_path;
-                    return Ok(result);
-                }
+            // Error events in the JSONL stream are authoritative — they
+            // override any exit code (OpenCode sometimes exits 0 on fatal
+            // errors like ProviderModelNotFoundError).
+            if let Some(error_message) = parse::extract_error_message(&stdout) {
+                let mut result = DelegationResult::failure(
+                    request,
+                    DelegationStatus::Failure,
+                    format!("OpenCode reported an error: {}", error_message),
+                    duration_ms,
+                );
+                result.artifacts.append(&mut artifacts);
+                result.raw_output_path = raw_output_path;
+                return Ok(result);
+            }
 
-                let parsed = parse::extract_final_answer(&stdout).map(|answer| {
-                    let sections = parse::extract_sections(&answer);
-                    (answer, sections)
-                });
+            // Extract the final answer before checking the exit code.
+            // OpenCode can be terminated by a signal after writing a
+            // complete JSONL session (e.g. SIGPIPE, or the parent's
+            // soft-timeout SIGTERM after the model finished but before
+            // the process reaped). In that case `status.code()` is
+            // `None` on Unix, but the output is perfectly valid. A
+            // parseable final answer is a stronger success signal than
+            // the exit code.
+            let parsed = parse::extract_final_answer(&stdout).map(|answer| {
+                let sections = parse::extract_sections(&answer);
+                (answer, sections)
+            });
+
+            if parsed.is_some() || code == Some(0) {
                 let summary = match &parsed {
                     Some((answer, sections)) => sections
                         .summary
@@ -1100,6 +1108,83 @@ mod tests {
                 .contains("Model not found: openai/gpt-5.5"),
             "error message should surface, got {:?}",
             result.error
+        );
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// Regression: OpenCode writes informational messages to stderr (e.g.
+    /// SQLite migration) and the process exits via signal (code = None).
+    /// The delegation must still succeed when the JSONL stream contains a
+    /// valid final answer.
+    #[cfg(unix)]
+    #[test]
+    fn signal_exit_with_valid_jsonl_is_success() {
+        use std::io::Write;
+        let request = sample_request();
+        let script_path = request.artifact_dir.join("fake-opencode-signal.sh");
+        fs::create_dir_all(&request.artifact_dir).unwrap();
+        let mut script = fs::File::create(&script_path).unwrap();
+        write!(
+            script,
+            "#!/bin/sh\n\
+             printf '%s\\n' '{{\"type\":\"text\",\"part\":{{\"text\":\"**Summary**\\nTask completed.\\n\\n**Findings**\\n- Found item one\"}}}}'\n\
+             echo 'Performing one time database migration...' >&2\n\
+             echo 'sqlite-migration:done' >&2\n\
+             echo 'Database migration complete.' >&2\n\
+             kill -TERM $$\n",
+        )
+        .unwrap();
+        drop(script);
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", script_path.to_str().unwrap()])
+            .output();
+
+        let result = run_delegation_with_bin(&request, script_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            result.status,
+            DelegationStatus::Success,
+            "signal exit with valid JSONL must be Success, got {:?} with error {:?}",
+            result.status,
+            result.error
+        );
+        assert!(
+            result.summary.contains("Task completed"),
+            "summary should come from JSONL final answer, got {:?}",
+            result.summary
+        );
+        assert!(result.error.is_none());
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// Non-zero exit with valid JSONL should still succeed — the model
+    /// completed its work even if the process wrapper returned an error.
+    #[test]
+    fn nonzero_exit_with_valid_jsonl_is_success() {
+        use std::io::Write;
+        let request = sample_request();
+        let script_path = request.artifact_dir.join("fake-opencode-nonzero.sh");
+        fs::create_dir_all(&request.artifact_dir).unwrap();
+        let mut script = fs::File::create(&script_path).unwrap();
+        write!(
+            script,
+            "#!/bin/sh\n\
+             printf '%s\\n' '{{\"type\":\"text\",\"part\":{{\"text\":\"**Summary**\\nDone.\"}}}}'\n\
+             exit 1\n",
+        )
+        .unwrap();
+        drop(script);
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", script_path.to_str().unwrap()])
+            .output();
+
+        let result = run_delegation_with_bin(&request, script_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            result.status,
+            DelegationStatus::Success,
+            "non-zero exit with valid JSONL must be Success, got {:?}",
+            result.status
         );
         let _ = fs::remove_dir_all(&request.artifact_dir);
     }
