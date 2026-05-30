@@ -101,29 +101,42 @@ Combine the three perspectives:
 - **Unique contributions** — what each methodology surfaced that the others did not
 - **Contradictions** — where they disagree (flag)
 
-### Step 4 — Verify all URLs (mandatory)
+### Step 4 — Adversarial claim verification (mandatory)
 
-Apply `UrlVerificationProtocol.md` — verify every URL before returning results. Failed verifications remove the citation; do not manufacture replacements.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the synthesised findings, then dispatch 3 adversarial verifiers per claim via `locus delegate run`.
 
-### Step 5 — Return results
+For Standard mode, expect 5-10 claims from the three-researcher synthesis. Dispatch all votes (15-30 delegates) in a single message for parallel execution. Wall-clock cost: ~15-30s additional.
+
+Claims that survive verification go into "Verified Findings." Claims that are killed go into "Refuted Claims" with the verifier's evidence. Both sections are mandatory in the output.
+
+### Step 5 — Verify all URLs (mandatory)
+
+Apply `UrlVerificationProtocol.md` — verify every URL in surviving claims before returning results. Failed verifications remove the citation; do not manufacture replacements.
+
+### Step 6 — Return results
 
 ```markdown
 ## Research: <topic>
 
 ### Summary
-<1-2 paragraph synthesis>
+<1-2 paragraph synthesis — based only on verified findings>
 
-### Findings
-1. <finding> — [verified citation]
-2. ...
+### Verified Findings (survived adversarial review)
+1. <claim> — vote: 3-0 survive · [source] · high confidence
+2. <claim> — vote: 2-1 survive · [source] · medium confidence
+...
+
+### Refuted Claims (for transparency)
+- "<claim>" — vote: 1-2 refuted · reason: <verifier evidence>
+- "<claim>" — vote: 0-3 refuted · reason: <counter-evidence>
 
 ### Points of agreement (high confidence)
-- <point> — surfaced by all three researchers
+- <point> — surfaced by all three researchers AND survived verification
 
 ### Unique contributions
-- **From academic search:** <distinctive finding>
-- **From multi-angle decomposition:** <distinctive finding>
-- **From investigative triangulation:** <distinctive finding>
+- **From academic search:** <distinctive verified finding>
+- **From multi-angle decomposition:** <distinctive verified finding>
+- **From investigative triangulation:** <distinctive verified finding>
 
 ### Contradictions
 - <where sources disagreed, flagged>
@@ -139,4 +152,4 @@ Apply `UrlVerificationProtocol.md` — verify every URL before returning results
 
 ## Speed target
 
-~15-30 seconds for delegated parallel execution.
+~30-60 seconds for delegated parallel execution (15-30s research + 15-30s verification).

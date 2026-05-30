@@ -62,17 +62,29 @@ locus delegate run \
 
 The returned JSON envelope has `summary`, `findings`, `evidence`, `files_referenced`. Use those directly.
 
-### Step 4 — Verify URLs
+### Step 4 — Adversarial claim verification
 
-Per `UrlVerificationProtocol.md` — even for a single result. One hallucinated URL is still catastrophic.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the findings, then dispatch 3 adversarial verifiers per claim via `locus delegate run`. Even Quick mode produces claims worth pressure-testing — a single unchecked wrong answer is worse than a slower correct one.
 
-### Step 5 — Return
+For Quick mode, expect 2-4 claims. Dispatch all votes (6-12 delegates) in a single message for parallel execution. Wall-clock cost: ~15s additional.
+
+### Step 5 — Verify URLs
+
+Per `UrlVerificationProtocol.md` — on surviving claims only. One hallucinated URL is still catastrophic.
+
+### Step 6 — Return
 
 ```markdown
 ## Research (Quick): <question>
 
 ### Answer
 <direct answer to the question>
+
+### Verified Findings (survived adversarial review)
+1. <claim> — vote: N-M survive · [source] · confidence
+
+### Refuted Claims (for transparency)
+- "<claim>" — vote: N-M refuted · reason
 
 ### Source
 - <verified URL>
@@ -86,7 +98,7 @@ Per `UrlVerificationProtocol.md` — even for a single result. One hallucinated 
 
 ## Speed target
 
-~10-15 seconds.
+~25-30 seconds (15s research + 15s verification).
 
 ## Escalation
 
