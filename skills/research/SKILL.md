@@ -28,7 +28,9 @@ requires:
 
 Multi-depth research framework that scales from quick single-pass lookups to extensive multi-agent parallel investigation and iterative deep investigation.
 
-**Mandatory protocol:** `UrlVerificationProtocol.md`. Every URL returned must be verified — research agents hallucinate URLs, and a single broken link is a catastrophic failure.
+**Mandatory protocols:**
+- `UrlVerificationProtocol.md` — every URL returned must be verified. Research agents hallucinate URLs, and a single broken link is a catastrophic failure.
+- `AdversarialVerificationProtocol.md` — every falsifiable claim is pressure-tested by 3 adversarial verifiers before inclusion. Methodology diversity ensures coverage; adversarial verification ensures validity. Both are required across all modes.
 
 ## Execution model
 
@@ -39,6 +41,7 @@ The orchestrator (this Claude session) is responsible for:
 - Deciding agent count (1 for Quick, 3 for Standard, 12 for Extensive, 1×N passes for Deep)
 - Composing per-agent prompts (via `locus agent compose --traits ... --role ... --task ...`)
 - Synthesising returned envelopes (convergence, contradictions, gaps)
+- Extracting falsifiable claims and dispatching adversarial verification (3 votes per claim)
 - Verifying every URL before returning results
 
 The work itself — running searches, reading sources, drafting findings, citing — runs in a delegated OpenCode process per `locus delegate run --backend opencode --task-kind research`. The orchestrator never does the raw research itself; it dispatches and synthesises.
@@ -78,16 +81,16 @@ See the `agents/*-researcher.md` files for the trait bundles each archetype uses
 ## Mode summary
 
 ### Quick
-Single researcher, single query. ~10-15 seconds. Best for factual lookups, API documentation, well-scoped questions.
+Single researcher, single query, adversarial verification on extracted claims. ~25-30 seconds. Best for factual lookups, API documentation, well-scoped questions.
 
 ### Standard (default)
-3 methodology-diverse researchers in parallel (typically: academic + multi-angle + investigative). ~15-30 seconds. Best for most research requests.
+3 methodology-diverse researchers in parallel (typically: academic + multi-angle + investigative), adversarial verification on synthesised claims. ~30-60 seconds. Best for most research requests.
 
 ### Extensive
-12 researchers — 3-way parallel expansion across 4 methodology types. ~60-90 seconds. Best when the question has multiple facets and confidence matters.
+12 researchers — 3-way parallel expansion across 4 methodology types, adversarial verification on cross-sub-query claims. ~90-120 seconds. Best when the question has multiple facets and confidence matters.
 
 ### Deep
-Iterative deep-investigation researcher, persistent vault across sessions. 3-60 minutes depending on scope. Best for landscape mapping and complex domains where single-pass is insufficient.
+Iterative deep-investigation researcher, persistent vault across sessions, per-entity adversarial verification. 3-60 minutes depending on scope. Best for landscape mapping and complex domains where single-pass is insufficient.
 
 ## Degradation
 
@@ -101,13 +104,14 @@ Iterative deep-investigation researcher, persistent vault across sessions. 3-60 
 
 Every research output ends with:
 
-- **Findings** — numbered, each with a citation
-- **Confidence** — where evidence is strong vs weak
+- **Verified Findings** — numbered, each with citation and adversarial vote tally (e.g., "3-0 survive")
+- **Refuted Claims** — claims killed by adversarial verification, with the refutation evidence (transparency is mandatory)
+- **Confidence** — where evidence is strong vs weak, informed by both methodology convergence and verification vote tallies
 - **Contradictions** — where sources disagree, flagged
 - **Gaps** — what couldn't be found
 - **Sources** — verified URLs only; every one passed the UrlVerificationProtocol
 
-Never cite a URL you have not verified resolves.
+Never cite a URL you have not verified resolves. Never include a claim that has not survived adversarial verification.
 
 ## Integration
 

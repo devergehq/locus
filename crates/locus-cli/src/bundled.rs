@@ -23,6 +23,10 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             include_str!("../../../skills/research/UrlVerificationProtocol.md"),
         ),
         (
+            "skills/research/AdversarialVerificationProtocol.md".into(),
+            include_str!("../../../skills/research/AdversarialVerificationProtocol.md"),
+        ),
+        (
             "skills/research/Workflows/Standard.md".into(),
             include_str!("../../../skills/research/Workflows/Standard.md"),
         ),
@@ -282,6 +286,10 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
         (
             "agents/deep-investigation-researcher.md".into(),
             include_str!("../../../agents/deep-investigation-researcher.md"),
+        ),
+        (
+            "agents/adversarial-verifier.md".into(),
+            include_str!("../../../agents/adversarial-verifier.md"),
         ),
         // Protocols
         (

@@ -83,31 +83,43 @@ For each sub-query, consolidate the 4 researcher outputs:
 
 Now across all 3 sub-queries — does the full picture produce a coherent answer? Where does one sub-query's finding inform another?
 
-### Step 6 — URL verification
+### Step 6 — Adversarial claim verification (mandatory)
 
-All 12 researchers' URLs must pass `UrlVerificationProtocol.md`. Drop any that fail.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the cross-sub-query synthesis, then dispatch 3 adversarial verifiers per claim via `locus delegate run`.
 
-### Step 7 — Return
+For Extensive mode, expect 10-20 claims across the three sub-queries. Dispatch all votes (30-60 delegates) in batches if needed to stay within platform concurrency limits. Wall-clock cost: ~15-30s additional per batch.
+
+Claims that survive verification go into "Verified Findings" under each sub-query. Claims killed go into "Refuted Claims" with the verifier's evidence.
+
+### Step 7 — URL verification
+
+All surviving claims' URLs must pass `UrlVerificationProtocol.md`. Drop any that fail.
+
+### Step 8 — Return
 
 ```markdown
 ## Research (Extensive): <question>
 
 ### Summary
-<2-3 paragraph synthesis of the full picture>
+<2-3 paragraph synthesis of the full picture — based only on verified findings>
 
 ### Sub-query 1: <name>
-**Findings:**
-- <point> (sources: academic, investigative — high confidence)
-- <point> (source: contrarian only — flag)
+**Verified Findings:**
+- <claim> — vote: 3-0 survive · sources: academic, investigative · high confidence
+- <claim> — vote: 2-1 survive · source: contrarian · medium confidence
 - ...
 
 ### Sub-query 2: <name>
-**Findings:**
+**Verified Findings:**
 ...
 
 ### Sub-query 3: <name>
-**Findings:**
+**Verified Findings:**
 ...
+
+### Refuted Claims (for transparency)
+- "<claim>" (sub-query 1) — vote: 1-2 refuted · reason: <verifier evidence>
+- "<claim>" (sub-query 3) — vote: 0-3 refuted · reason: <counter-evidence>
 
 ### Cross-cutting insights
 <what the full picture reveals that no single sub-query would>
@@ -119,13 +131,13 @@ All 12 researchers' URLs must pass `UrlVerificationProtocol.md`. Drop any that f
 <what none of the 12 researchers could find>
 
 ### Verified sources
-- 12 researchers × N citations each, all verified. Listed here.
+- 12 researchers × N citations each, verified claims only. Listed here.
 ```
 
 ## Speed target
 
-~60-90 seconds total for 12 parallel delegations (bound by the slowest).
+~90-120 seconds total (60-90s research + 15-30s verification, bound by the slowest).
 
 ## Fallback
 
-If `locus delegate run` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). ~2-3 minutes total in fallback.
+If `locus delegate run` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). Verification runs as a separate wave after all research completes. ~3-4 minutes total in fallback.

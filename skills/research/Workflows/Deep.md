@@ -93,9 +93,10 @@ Per iteration:
      --output json
    ```
 
-4. **Orchestrator writes the dossier** to `entities/<entity-slug>.md` from the envelope's `summary` + `findings` + `evidence`. Verify every URL via `UrlVerificationProtocol.md` before writing.
-5. **Orchestrator updates the scoring rubric** — what did this iteration reveal that changes priorities? Write to `landscape.md`.
-6. **Orchestrator updates the iteration log** with what was done, what was learned, what the next iteration should do.
+4. **Adversarial claim verification** — per `AdversarialVerificationProtocol.md`, extract falsifiable claims from the entity's findings and dispatch 3 adversarial verifiers per claim via `locus delegate run`. Claims that survive go into the dossier; claims that are killed are logged in the dossier's "Refuted" section with evidence. For Deep mode, expect 3-5 claims per entity deep-dive.
+5. **Orchestrator writes the dossier** to `entities/<entity-slug>.md` from the envelope's `summary` + verified `findings` + `evidence` + refuted claims. Verify every URL via `UrlVerificationProtocol.md` before writing.
+6. **Orchestrator updates the scoring rubric** — what did this iteration reveal that changes priorities? Did any refuted claims change the entity's significance? Write to `landscape.md`.
+7. **Orchestrator updates the iteration log** with what was done, what was learned, what claims survived/were killed, and what the next iteration should do.
 
 ### Advanced mode — parallel deep-dives
 
