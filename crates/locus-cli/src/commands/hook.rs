@@ -132,7 +132,7 @@ fn handle_user_prompt_submit(_event: &serde_json::Value, _data_dir: &Path) -> Re
 
 fn handle_pre_tool_use(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
     if is_delegation_enabled() {
-        if let Some(decision) = native_agent_delegation_denial(event) {
+        if let Some(decision) = native_delegation_denial(event) {
             return write_stdout_json(&decision);
         }
     }
@@ -155,11 +155,15 @@ fn is_delegation_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Value> {
+fn native_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Value> {
     let tool_name = event
         .get("tool_name")
         .and_then(|v| v.as_str())
         .unwrap_or("");
+
+    if matches!(tool_name, "Workflow" | "workflow") {
+        return Some(workflow_denial(event));
+    }
 
     if !matches!(tool_name, "Task" | "Agent" | "TeamCreate" | "task" | "agent") {
         return None;
@@ -223,6 +227,63 @@ fn native_agent_delegation_denial(event: &serde_json::Value) -> Option<serde_jso
             "permissionDecisionReason": reason
         }
     }))
+}
+
+fn workflow_denial(event: &serde_json::Value) -> serde_json::Value {
+    let tool_input = event.get("tool_input");
+
+    let description = tool_input
+        .and_then(|v| v.get("description"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let has_script = tool_input
+        .and_then(|v| v.get("script").or_else(|| v.get("scriptPath")).or_else(|| v.get("name")))
+        .is_some();
+
+    let script_hint = if has_script {
+        format!(
+            " The workflow{} would have spawned multiple subagents in parallel — \
+             this burns significant tokens and bypasses Locus's orchestration entirely.",
+            if description.is_empty() {
+                String::new()
+            } else {
+                format!(" (\"{}\")", description)
+            }
+        )
+    } else {
+        String::new()
+    };
+
+    let reason = format!(
+        "BLOCKED: Dynamic workflow orchestration is not allowed — Locus manages all \
+         orchestration through the Algorithm.{}\n\n\
+         The Workflow tool spawns dozens of native subagents that burn massive tokens, \
+         bypass the Algorithm's phased execution, and produce unstructured results that \
+         cannot be checkpointed or learned from.\n\n\
+         Instead, do one of the following:\n\n\
+         1. **For multi-source research or comparison tasks:** delegate individual \
+         subtasks via `locus delegate run`, issuing multiple Bash calls in parallel \
+         for concurrent execution. Each delegation returns a compact JSON envelope.\n\n\
+         2. **For complex multi-step work:** use the Algorithm's phased execution \
+         (OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN) which provides \
+         structured decomposition, checkpointing, and learning.\n\n\
+         3. **For parallel investigations:** compose trait-based agents with \
+         `locus agent compose` and dispatch multiple `locus delegate run` calls \
+         simultaneously as separate Bash tool calls in one message.\n\n\
+         Do NOT re-attempt the Workflow tool. Do NOT try to work around this by \
+         using a different tool name or approach to launch native multi-agent \
+         orchestration.",
+        script_hint
+    );
+
+    serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason
+        }
+    })
 }
 
 fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
@@ -833,7 +894,7 @@ mod tests {
             "tool_input": {"description": "research something"}
         });
 
-        let decision = native_agent_delegation_denial(&event).expect("Task must be denied");
+        let decision = native_delegation_denial(&event).expect("Task must be denied");
         assert_eq!(
             decision["hookSpecificOutput"]["permissionDecision"].as_str(),
             Some("deny")
@@ -859,7 +920,7 @@ mod tests {
             }
         });
 
-        let decision = native_agent_delegation_denial(&event).unwrap();
+        let decision = native_delegation_denial(&event).unwrap();
         let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
             .unwrap();
@@ -874,7 +935,49 @@ mod tests {
             "tool_input": {"command": "locus delegate run --backend opencode"}
         });
 
-        assert!(native_agent_delegation_denial(&event).is_none());
+        assert!(native_delegation_denial(&event).is_none());
+    }
+
+    #[test]
+    fn pre_tool_use_denies_workflow_tool() {
+        let event = serde_json::json!({
+            "tool_name": "Workflow",
+            "tool_input": {
+                "description": "Compare frameworks",
+                "script": "export const meta = { name: 'compare', description: 'test' }; ..."
+            }
+        });
+
+        let decision = native_delegation_denial(&event).expect("Workflow must be denied");
+        assert_eq!(
+            decision["hookSpecificOutput"]["permissionDecision"].as_str(),
+            Some("deny")
+        );
+        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("BLOCKED"));
+        assert!(reason.contains("Dynamic workflow orchestration"));
+        assert!(reason.contains("Algorithm"));
+        assert!(reason.contains("locus delegate run"));
+        assert!(reason.contains("Compare frameworks"));
+    }
+
+    #[test]
+    fn pre_tool_use_denies_workflow_without_script() {
+        let event = serde_json::json!({
+            "tool_name": "Workflow",
+            "tool_input": {
+                "name": "saved-workflow"
+            }
+        });
+
+        let decision = native_delegation_denial(&event).expect("Workflow must be denied");
+        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(reason.contains("BLOCKED"));
+        assert!(reason.contains("spawns dozens of native subagents"));
     }
 
     #[test]
