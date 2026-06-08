@@ -5,11 +5,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use std::collections::BTreeMap;
+
+use chrono::{Local, TimeZone};
 use clap::ValueEnum;
-use locus_adapter_opencode::run::run_delegation;
+use locus_adapter_opencode::run::{parse::extract_token_usage, run_delegation};
 use locus_core::{
     DelegationBackend, DelegationConfig, DelegationDefaults, DelegationMode, DelegationRequest,
-    DelegationTaskKind, ExecutionMode, LocusConfig, LocusError,
+    DelegationTaskKind, ExecutionMode, LocusConfig, LocusError, TokenUsage,
 };
 use serde::Serialize;
 
@@ -271,6 +274,19 @@ fn print_human_result(result: &locus_core::DelegationResult) -> Result<(), Locus
     output::field("Backend", result.backend.as_str());
     output::field("Model", &result.model);
     output::field("Summary", &result.summary);
+    if let Some(usage) = &result.usage {
+        output::field(
+            "Tokens",
+            &format!(
+                "{} total ({} input, {} output, {} reasoning, {} cache read)",
+                format_number(usage.total_tokens),
+                format_number(usage.input_tokens),
+                format_number(usage.output_tokens),
+                format_number(usage.reasoning_tokens),
+                format_number(usage.cache_read_tokens),
+            ),
+        );
+    }
     if let Some(path) = &result.raw_output_path {
         output::field("Raw output", &path.display().to_string());
     }
@@ -543,6 +559,193 @@ fn delete_entry(path: &Path, keep_stdout: bool, id: &str) -> Result<u64, LocusEr
     }
 
     Ok(freed)
+}
+
+/// Arguments for `locus delegate usage`.
+#[derive(Debug, Clone)]
+pub struct UsageArgs {
+    pub since: String,
+    pub root: Option<PathBuf>,
+    pub output: DelegateOutput,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DayUsage {
+    date: String,
+    delegation_count: u64,
+    #[serde(flatten)]
+    tokens: TokenUsage,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UsageReport {
+    root: PathBuf,
+    since: String,
+    days: Vec<DayUsage>,
+    total: TokenUsage,
+    total_delegations: u64,
+}
+
+/// Show token usage across delegations, grouped by day.
+pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
+    let cutoff = parse_duration(&args.since)?;
+    let root = args.root.unwrap_or_else(default_delegations_root);
+    let now = SystemTime::now();
+    let cutoff_epoch = now
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(cutoff.as_secs());
+
+    let mut day_map: BTreeMap<String, DayUsage> = BTreeMap::new();
+    let mut total = TokenUsage::default();
+    let mut total_delegations: u64 = 0;
+
+    if root.exists() {
+        let entries = fs::read_dir(&root).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to read delegations root: {}", e),
+            path: root.clone(),
+        })?;
+
+        for item in entries {
+            let dir_entry = item.map_err(|e| LocusError::Filesystem {
+                message: format!("Failed to read entry: {}", e),
+                path: root.clone(),
+            })?;
+
+            if !dir_entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                continue;
+            }
+
+            let name = dir_entry.file_name().to_string_lossy().into_owned();
+            let Some(ts_ms) = name.strip_prefix("delegate-").and_then(|s| s.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            let ts_sec = ts_ms / 1000;
+            if ts_sec < cutoff_epoch {
+                continue;
+            }
+
+            let jsonl_path = dir_entry.path().join(format!("{}-opencode-stdout.jsonl", name));
+            let usage = if jsonl_path.exists() {
+                let data = fs::read(&jsonl_path).unwrap_or_default();
+                extract_token_usage(&data)
+            } else {
+                None
+            };
+
+            let date = format_epoch_date(ts_sec);
+            total_delegations += 1;
+
+            if let Some(u) = &usage {
+                total.input_tokens += u.input_tokens;
+                total.output_tokens += u.output_tokens;
+                total.reasoning_tokens += u.reasoning_tokens;
+                total.cache_read_tokens += u.cache_read_tokens;
+                total.cache_write_tokens += u.cache_write_tokens;
+                total.total_tokens += u.total_tokens;
+                total.cost_usd += u.cost_usd;
+            }
+
+            let day = day_map.entry(date.clone()).or_insert_with(|| DayUsage {
+                date,
+                delegation_count: 0,
+                tokens: TokenUsage::default(),
+            });
+            day.delegation_count += 1;
+            if let Some(u) = usage {
+                day.tokens.input_tokens += u.input_tokens;
+                day.tokens.output_tokens += u.output_tokens;
+                day.tokens.reasoning_tokens += u.reasoning_tokens;
+                day.tokens.cache_read_tokens += u.cache_read_tokens;
+                day.tokens.cache_write_tokens += u.cache_write_tokens;
+                day.tokens.total_tokens += u.total_tokens;
+                day.tokens.cost_usd += u.cost_usd;
+            }
+        }
+    }
+
+    let days: Vec<DayUsage> = day_map.into_values().collect();
+    let report = UsageReport {
+        root,
+        since: args.since,
+        days,
+        total,
+        total_delegations,
+    };
+
+    match args.output {
+        DelegateOutput::Json => print_json(&report),
+        DelegateOutput::Human => print_human_usage(&report),
+    }
+}
+
+fn format_epoch_date(epoch_secs: u64) -> String {
+    Local
+        .timestamp_opt(epoch_secs as i64, 0)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn format_number(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn print_human_usage(report: &UsageReport) -> Result<(), LocusError> {
+    output::print_header();
+    output::section("Delegation Token Usage");
+    output::field("Root", &report.root.display().to_string());
+    output::field("Period", &format!("last {}", report.since));
+
+    if report.days.is_empty() {
+        output::info("No delegations found in the specified period.");
+        return Ok(());
+    }
+
+    for day in &report.days {
+        let label = format!(
+            "{}  ({} delegation{})",
+            day.date,
+            day.delegation_count,
+            if day.delegation_count == 1 { "" } else { "s" }
+        );
+        let detail = format!(
+            "{} total  |  {} input, {} output, {} reasoning, {} cache read",
+            format_number(day.tokens.total_tokens),
+            format_number(day.tokens.input_tokens),
+            format_number(day.tokens.output_tokens),
+            format_number(day.tokens.reasoning_tokens),
+            format_number(day.tokens.cache_read_tokens),
+        );
+        output::list_item(&label, &detail);
+    }
+
+    output::section("Total");
+    output::field(
+        "Delegations",
+        &format!("{}", report.total_delegations),
+    );
+    output::field("Input tokens", &format_number(report.total.input_tokens));
+    output::field("Output tokens", &format_number(report.total.output_tokens));
+    output::field(
+        "Reasoning tokens",
+        &format_number(report.total.reasoning_tokens),
+    );
+    output::field(
+        "Cache read tokens",
+        &format_number(report.total.cache_read_tokens),
+    );
+    output::field("Total tokens", &format_number(report.total.total_tokens));
+
+    Ok(())
 }
 
 /// Parse a duration spec like `7d`, `12h`, `30m`, `45s`.

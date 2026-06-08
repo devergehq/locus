@@ -274,6 +274,22 @@ enum DelegateCommands {
         #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Human)]
         output: commands::delegate::DelegateOutput,
     },
+
+    /// Show token usage across delegations, grouped by day.
+    Usage {
+        /// Only include delegations newer than this duration (e.g. 7d, 30d).
+        /// Defaults to 7d.
+        #[arg(long, default_value = "7d")]
+        since: String,
+
+        /// Override the delegations root directory.
+        #[arg(long)]
+        root: Option<PathBuf>,
+
+        /// Output mode.
+        #[arg(long, value_enum, default_value_t = commands::delegate::DelegateOutput::Human)]
+        output: commands::delegate::DelegateOutput,
+    },
 }
 
 #[derive(Subcommand)]
@@ -384,6 +400,15 @@ fn main() {
                 all,
                 apply,
                 keep_stdout,
+                root,
+                output,
+            }),
+            DelegateCommands::Usage {
+                since,
+                root,
+                output,
+            } => commands::delegate::usage(commands::delegate::UsageArgs {
+                since,
                 root,
                 output,
             }),

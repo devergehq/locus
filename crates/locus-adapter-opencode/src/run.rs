@@ -321,6 +321,7 @@ pub fn run_delegation_with_bin(
         }) => {
             let mut artifacts = write_artifacts(request, &stdout, &stderr)?;
             let raw_output_path = artifacts.first().cloned();
+            let usage = parse::extract_token_usage(&stdout);
 
             // Error events in the JSONL stream are authoritative — they
             // override any exit code (OpenCode sometimes exits 0 on fatal
@@ -334,6 +335,7 @@ pub fn run_delegation_with_bin(
                 );
                 result.artifacts.append(&mut artifacts);
                 result.raw_output_path = raw_output_path;
+                result.usage = usage;
                 return Ok(result);
             }
 
@@ -370,6 +372,7 @@ pub fn run_delegation_with_bin(
                 }
                 result.artifacts.append(&mut artifacts);
                 result.raw_output_path = raw_output_path;
+                result.usage = usage;
                 Ok(result)
             } else {
                 let message = summarize_failure(code, &stderr, &stdout);
@@ -381,12 +384,14 @@ pub fn run_delegation_with_bin(
                 );
                 result.artifacts.append(&mut artifacts);
                 result.raw_output_path = raw_output_path;
+                result.usage = usage;
                 Ok(result)
             }
         }
         Ok(TimedOutput::TimedOut { stdout, stderr }) => {
             let mut artifacts = write_artifacts(request, &stdout, &stderr)?;
             let raw_output_path = artifacts.first().cloned();
+            let usage = parse::extract_token_usage(&stdout);
             let partial_summary = summarize_timeout(&stdout, raw_output_path.as_ref());
             let mut result = DelegationResult::failure(
                 request,
@@ -399,6 +404,7 @@ pub fn run_delegation_with_bin(
             );
             result.artifacts.append(&mut artifacts);
             result.raw_output_path = raw_output_path;
+            result.usage = usage;
             Ok(result)
         }
         Err(e) => Ok(DelegationResult::failure(
@@ -612,9 +618,10 @@ fn elapsed_ms(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-pub(crate) mod parse {
+pub mod parse {
     //! JSONL event parsing for OpenCode `--format json` output.
 
+    use locus_core::TokenUsage;
     use serde_json::Value;
 
     /// Parsed markdown sections from a delegated final answer.
@@ -670,6 +677,69 @@ pub(crate) mod parse {
             }
         }
         None
+    }
+
+    /// Aggregate token usage across all `step_finish` events in an OpenCode JSONL
+    /// stdout stream. Returns `None` when no events contain token data.
+    pub fn extract_token_usage(stdout: &[u8]) -> Option<TokenUsage> {
+        let raw = std::str::from_utf8(stdout).ok()?;
+        let mut usage = TokenUsage::default();
+        let mut found = false;
+
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if value.get("type").and_then(Value::as_str) != Some("step_finish") {
+                continue;
+            }
+            let Some(tokens) = value.pointer("/part/tokens") else {
+                continue;
+            };
+            if tokens.get("total").is_none() {
+                continue;
+            }
+            found = true;
+            usage.input_tokens += tokens
+                .get("input")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.output_tokens += tokens
+                .get("output")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.reasoning_tokens += tokens
+                .get("reasoning")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.cache_read_tokens += tokens
+                .pointer("/cache/read")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.cache_write_tokens += tokens
+                .pointer("/cache/write")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.total_tokens += tokens
+                .get("total")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            usage.cost_usd += value
+                .pointer("/part/cost")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+        }
+
+        if found {
+            Some(usage)
+        } else {
+            None
+        }
     }
 
     /// Pull the model's final answer text from an OpenCode JSONL stdout stream.
@@ -1302,5 +1372,70 @@ mod tests {
             sections.files_referenced,
             vec!["src/lib.rs", "src/main.rs"]
         );
+    }
+
+    #[test]
+    fn parse_extracts_token_usage_from_smoke_fixture() {
+        let usage = parse::extract_token_usage(SMOKE_FIXTURE.as_bytes())
+            .expect("smoke fixture should yield token usage");
+
+        assert!(usage.total_tokens > 0);
+        assert!(usage.input_tokens > 0);
+        assert!(usage.output_tokens > 0);
+        assert_eq!(
+            usage.total_tokens,
+            usage.input_tokens
+                + usage.output_tokens
+                + usage.reasoning_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens,
+        );
+    }
+
+    #[test]
+    fn parse_token_usage_sums_across_steps() {
+        let stdout = concat!(
+            r#"{"type":"step_finish","part":{"tokens":{"total":100,"input":50,"output":30,"reasoning":10,"cache":{"read":10,"write":0}},"cost":0}}"#,
+            "\n",
+            r#"{"type":"step_finish","part":{"tokens":{"total":200,"input":80,"output":60,"reasoning":20,"cache":{"read":40,"write":0}},"cost":0}}"#,
+            "\n",
+        );
+        let usage = parse::extract_token_usage(stdout.as_bytes()).unwrap();
+        assert_eq!(usage.input_tokens, 130);
+        assert_eq!(usage.output_tokens, 90);
+        assert_eq!(usage.reasoning_tokens, 30);
+        assert_eq!(usage.cache_read_tokens, 50);
+        assert_eq!(usage.total_tokens, 300);
+    }
+
+    #[test]
+    fn parse_token_usage_returns_none_for_empty_stream() {
+        assert!(parse::extract_token_usage(b"").is_none());
+        assert!(parse::extract_token_usage(b"\n\n").is_none());
+    }
+
+    #[test]
+    fn parse_token_usage_skips_events_without_tokens() {
+        let stdout = concat!(
+            r#"{"type":"text","part":{"text":"hello"}}"#,
+            "\n",
+            r#"{"type":"step_finish","part":{"reason":"stop"}}"#,
+            "\n",
+        );
+        assert!(parse::extract_token_usage(stdout.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn parse_token_usage_handles_missing_fields_gracefully() {
+        let stdout = concat!(
+            r#"{"type":"step_finish","part":{"tokens":{"total":50,"input":50}}}"#,
+            "\n",
+        );
+        let usage = parse::extract_token_usage(stdout.as_bytes()).unwrap();
+        assert_eq!(usage.input_tokens, 50);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.reasoning_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.total_tokens, 50);
     }
 }

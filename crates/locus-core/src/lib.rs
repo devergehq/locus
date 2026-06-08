@@ -41,7 +41,7 @@ pub use capabilities::CapabilityManifest;
 pub use config::{DelegationConfig, DelegationDefaults, LocusConfig};
 pub use delegation::{
     DelegationBackend, DelegationMode, DelegationRequest, DelegationResult, DelegationStatus,
-    DelegationTaskKind, ExecutionMode,
+    DelegationTaskKind, ExecutionMode, TokenUsage,
 };
 pub use error::LocusError;
 pub use events::{EventKind, HookEvent, LifecycleEvent};

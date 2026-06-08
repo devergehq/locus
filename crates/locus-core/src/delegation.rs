@@ -152,8 +152,28 @@ impl DelegationRequest {
     }
 }
 
+/// Token usage from a delegated execution.
+///
+/// Fields are cumulative across all steps in the session. The `input_tokens`
+/// count excludes cached tokens — those are tracked separately in
+/// `cache_read_tokens`. The relationship is:
+/// `total_tokens = input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_write_tokens`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub total_tokens: u64,
+    /// Provider-reported cost in USD, if available. Zero when the provider
+    /// does not report cost.
+    #[serde(default)]
+    pub cost_usd: f64,
+}
+
 /// Stable output contract for delegated execution.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DelegationResult {
     /// Unique request identifier.
     pub id: String,
@@ -185,6 +205,9 @@ pub struct DelegationResult {
     pub raw_output_path: Option<PathBuf>,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
+    /// Token usage aggregated across all steps, when available.
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
     /// Structured error message for failures.
     #[serde(default)]
     pub error: Option<String>,
@@ -206,6 +229,7 @@ impl DelegationResult {
             artifacts: Vec::new(),
             raw_output_path: None,
             duration_ms,
+            usage: None,
             error: None,
         }
     }
@@ -230,6 +254,7 @@ impl DelegationResult {
             artifacts: Vec::new(),
             raw_output_path: None,
             duration_ms,
+            usage: None,
             error: Some(message),
         }
     }
