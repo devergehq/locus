@@ -292,6 +292,31 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
+    let project_dir = event
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+
+    if tool_name == "Bash" {
+        // PRD frontmatter is routinely edited via sed/perl -i, which bypasses
+        // the Write/Edit path below. Resync any recently-touched PRD so
+        // work.json can't go stale.
+        let command = event
+            .get("tool_input")
+            .and_then(|v| v.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if command.contains("PRD.md") || command.contains("memory/work") {
+            // No project_dir here: the sweep touches PRDs owned by any
+            // session, and stamping them with THIS session's cwd would
+            // mis-attribute them. Only the direct Write/Edit path below —
+            // where the editing session owns the PRD — records it.
+            let _ = resync_recent_prds(data_dir, None, 600);
+        }
+        return Ok(());
+    }
+
     if tool_name != "Write" && tool_name != "Edit" {
         return Ok(());
     }
@@ -303,7 +328,13 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
         .unwrap_or("");
 
     if file_path.ends_with("/PRD.md") {
-        let _ = sync_prd_to_work_json(Path::new(file_path), data_dir);
+        let _ = sync_prd_to_work_json(Path::new(file_path), data_dir, project_dir.as_deref());
+    } else if let Some(prd) = prd_for_work_file(file_path) {
+        // Any other file under memory/work/<slug>/ changed — re-parse that
+        // slug's PRD so cached progress tracks the system of record.
+        if prd.exists() {
+            let _ = sync_prd_to_work_json(&prd, data_dir, project_dir.as_deref());
+        }
     }
 
     if is_claude_memory_path(file_path) {
@@ -680,9 +711,69 @@ fn has_matching_learning_file(prd_dir: &Path, learning_dir: &Path) -> bool {
     false
 }
 
+/// Resolve the PRD.md governing any file under a `memory/work/<slug>/` tree.
+/// Returns None for paths outside a work directory.
+fn prd_for_work_file(file_path: &str) -> Option<PathBuf> {
+    let marker = "/memory/work/";
+    let idx = file_path.find(marker)?;
+    let after = &file_path[idx + marker.len()..];
+    let slug = after.split('/').next()?;
+    if slug.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(&file_path[..idx])
+            .join("memory")
+            .join("work")
+            .join(slug)
+            .join("PRD.md"),
+    )
+}
+
+/// Re-parse every PRD under `{data}/memory/work/` modified within the last
+/// `max_age_secs`, refreshing its work.json entry. Called after Bash commands
+/// that touch PRDs (sed/perl -i edits never fire the Write/Edit path). The
+/// mtime gate keeps this a cheap readdir+stat sweep. Callers should pass
+/// `project_dir: None` — see the call site in handle_post_tool_use.
+fn resync_recent_prds(
+    data_dir: &Path,
+    project_dir: Option<&Path>,
+    max_age_secs: u64,
+) -> Result<(), LocusError> {
+    let work_dir = data_dir.join("memory").join("work");
+    let entries = match std::fs::read_dir(&work_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()),
+    };
+    let now = std::time::SystemTime::now();
+    for e in entries.flatten() {
+        let prd = e.path().join("PRD.md");
+        let mtime = match std::fs::metadata(&prd).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let recent = now
+            .duration_since(mtime)
+            .map(|d| d.as_secs() <= max_age_secs)
+            .unwrap_or(true); // mtime in the future — clock skew, treat as recent
+        if recent {
+            let _ = sync_prd_to_work_json(&prd, data_dir, project_dir);
+        }
+    }
+    Ok(())
+}
+
 /// Parse a PRD.md's YAML frontmatter and criteria checkboxes, then write or
 /// update the corresponding entry in `{data}/memory/state/work.json`.
-pub(crate) fn sync_prd_to_work_json(prd_path: &Path, data_dir: &Path) -> Result<(), LocusError> {
+///
+/// `project_dir` records where the session was working when the PRD was
+/// created; once set it is preserved across resyncs so a drifted shell cwd
+/// can't repoint the entry.
+pub(crate) fn sync_prd_to_work_json(
+    prd_path: &Path,
+    data_dir: &Path,
+    project_dir: Option<&Path>,
+) -> Result<(), LocusError> {
     let content = std::fs::read_to_string(prd_path).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to read PRD: {}", e),
         path: prd_path.to_path_buf(),
@@ -712,17 +803,6 @@ pub(crate) fn sync_prd_to_work_json(prd_path: &Path, data_dir: &Path) -> Result<
         .filter(|l| l.trim_start().starts_with("- [x] ISC-"))
         .count();
 
-    let entry = serde_json::json!({
-        "slug": slug,
-        "task": fm.get("task").and_then(|v| v.as_str()).unwrap_or(""),
-        "phase": fm.get("phase").and_then(|v| v.as_str()).unwrap_or(""),
-        "effort": fm.get("effort").and_then(|v| v.as_str()).unwrap_or(""),
-        "mode": fm.get("mode").and_then(|v| v.as_str()).unwrap_or(""),
-        "progress": format!("{}/{}", done, total),
-        "updated": fm.get("updated").and_then(|v| v.as_str()).unwrap_or(""),
-        "path": prd_path.display().to_string(),
-    });
-
     let state_dir = data_dir.join("memory").join("state");
     std::fs::create_dir_all(&state_dir).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to create state dir: {}", e),
@@ -742,6 +822,32 @@ pub(crate) fn sync_prd_to_work_json(prd_path: &Path, data_dir: &Path) -> Result<
     if !registry.is_object() {
         registry = serde_json::json!({ "sessions": {} });
     }
+
+    // Preserve the project_dir recorded at creation; only fill it when absent.
+    let existing_project_dir = registry
+        .get("sessions")
+        .and_then(|s| s.get(&slug))
+        .and_then(|e| e.get("project_dir"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let recorded_project_dir = existing_project_dir
+        .or_else(|| project_dir.map(|p| p.display().to_string()));
+
+    let mut entry = serde_json::json!({
+        "slug": slug,
+        "task": fm.get("task").and_then(|v| v.as_str()).unwrap_or(""),
+        "phase": fm.get("phase").and_then(|v| v.as_str()).unwrap_or(""),
+        "effort": fm.get("effort").and_then(|v| v.as_str()).unwrap_or(""),
+        "mode": fm.get("mode").and_then(|v| v.as_str()).unwrap_or(""),
+        "progress": format!("{}/{}", done, total),
+        "updated": fm.get("updated").and_then(|v| v.as_str()).unwrap_or(""),
+        "path": prd_path.display().to_string(),
+    });
+    if let Some(pd) = recorded_project_dir {
+        entry["project_dir"] = serde_json::Value::String(pd);
+    }
+
     let sessions = registry
         .as_object_mut()
         .unwrap()
@@ -826,7 +932,8 @@ mod tests {
         )
         .unwrap();
 
-        sync_prd_to_work_json(&prd_path, tmp.path()).unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/myproject")))
+            .unwrap();
 
         let work_json = std::fs::read_to_string(
             tmp.path().join("memory").join("state").join("work.json"),
@@ -840,6 +947,125 @@ mod tests {
         assert_eq!(entry["effort"], "advanced");
         assert_eq!(entry["mode"], "algorithm");
         assert_eq!(entry["progress"], "1/2");
+        assert_eq!(entry["project_dir"], "/Users/test/myproject");
+    }
+
+    #[test]
+    fn sync_prd_preserves_project_dir_across_resyncs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work_slug_dir = tmp.path().join("memory").join("work").join("myslug");
+        std::fs::create_dir_all(&work_slug_dir).unwrap();
+        let prd_path = work_slug_dir.join("PRD.md");
+
+        std::fs::write(
+            &prd_path,
+            "---\nslug: myslug\nphase: observe\n---\n\n- [ ] ISC-1: first\n",
+        )
+        .unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/project-a")))
+            .unwrap();
+
+        // Resync from a drifted cwd (e.g. shell cd'd into the data dir) must
+        // not repoint project_dir, but must refresh phase/progress.
+        std::fs::write(
+            &prd_path,
+            "---\nslug: myslug\nphase: complete\n---\n\n- [x] ISC-1: first\n",
+        )
+        .unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/somewhere/else")))
+            .unwrap();
+
+        let work_json = std::fs::read_to_string(
+            tmp.path().join("memory").join("state").join("work.json"),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
+        let entry = &v["sessions"]["myslug"];
+        assert_eq!(entry["project_dir"], "/Users/test/project-a");
+        assert_eq!(entry["phase"], "complete");
+        assert_eq!(entry["progress"], "1/1");
+    }
+
+    #[test]
+    fn sync_prd_omits_project_dir_when_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work_slug_dir = tmp.path().join("memory").join("work").join("myslug");
+        std::fs::create_dir_all(&work_slug_dir).unwrap();
+        let prd_path = work_slug_dir.join("PRD.md");
+        std::fs::write(&prd_path, "---\nslug: myslug\nphase: observe\n---\n").unwrap();
+
+        sync_prd_to_work_json(&prd_path, tmp.path(), None).unwrap();
+
+        let work_json = std::fs::read_to_string(
+            tmp.path().join("memory").join("state").join("work.json"),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
+        assert!(v["sessions"]["myslug"].get("project_dir").is_none());
+    }
+
+    #[test]
+    fn prd_for_work_file_resolves_sibling_files() {
+        assert_eq!(
+            prd_for_work_file("/Users/test/.locus/data/memory/work/myslug/notes.md"),
+            Some(PathBuf::from(
+                "/Users/test/.locus/data/memory/work/myslug/PRD.md"
+            ))
+        );
+        assert_eq!(
+            prd_for_work_file("/Users/test/.locus/data/memory/work/myslug/PRD.md"),
+            Some(PathBuf::from(
+                "/Users/test/.locus/data/memory/work/myslug/PRD.md"
+            ))
+        );
+        assert_eq!(prd_for_work_file("/Users/test/project/src/main.rs"), None);
+        assert_eq!(prd_for_work_file("/Users/test/.locus/data/memory/work/"), None);
+    }
+
+    #[test]
+    fn resync_recent_prds_refreshes_modified_prds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work_slug_dir = tmp.path().join("memory").join("work").join("myslug");
+        std::fs::create_dir_all(&work_slug_dir).unwrap();
+        let prd_path = work_slug_dir.join("PRD.md");
+
+        std::fs::write(
+            &prd_path,
+            "---\nslug: myslug\nphase: observe\n---\n\n- [ ] ISC-1: first\n",
+        )
+        .unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), None).unwrap();
+
+        // Simulate a `sed -i` style edit: mutate the file directly, then run
+        // the Bash-triggered sweep — no Write/Edit hook involved.
+        std::fs::write(
+            &prd_path,
+            "---\nslug: myslug\nphase: execute\n---\n\n- [x] ISC-1: first\n",
+        )
+        .unwrap();
+        resync_recent_prds(tmp.path(), None, 600).unwrap();
+
+        let work_json = std::fs::read_to_string(
+            tmp.path().join("memory").join("state").join("work.json"),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
+        let entry = &v["sessions"]["myslug"];
+        assert_eq!(entry["phase"], "execute");
+        assert_eq!(entry["progress"], "1/1");
+        // The sweep must not fabricate a project_dir for legacy entries…
+        assert!(entry.get("project_dir").is_none());
+
+        // …and must keep one that was recorded at creation.
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/owner")))
+            .unwrap();
+        resync_recent_prds(tmp.path(), None, 600).unwrap();
+        let v: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(v["sessions"]["myslug"]["project_dir"], "/Users/test/owner");
     }
 
     #[test]

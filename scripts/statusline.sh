@@ -31,6 +31,7 @@ input=$(cat)
 # ─── Parse stdin JSON ────────────────────────────────────────────────────────
 eval "$(printf '%s' "$input" | jq -r '
   "cwd=" + (.workspace.current_dir // .cwd // "." | @sh) + "\n" +
+  "proj_dir=" + (.workspace.project_dir // "" | @sh) + "\n" +
   "model=" + (.model.display_name // "claude" | @sh) + "\n" +
   "ctx_pct=" + (.context_window.used_percentage // 0 | tostring)
 ' 2>/dev/null)"
@@ -38,15 +39,20 @@ eval "$(printf '%s' "$input" | jq -r '
 cwd="${cwd:-.}"
 model="${model:-claude}"
 ctx_pct="${ctx_pct:-0}"
-dir_name=$(basename "$cwd")
+
+# Pin line 1 to the project directory, not the shell's drifting cwd. The Bash
+# tool's persistent shell can cd anywhere (e.g. into ~/.locus/data), which
+# would otherwise flip the basename and git branch to the wrong repo.
+proj_dir="${proj_dir:-$cwd}"
+dir_name=$(basename "$proj_dir")
 
 # ─── Git branch + dirty ──────────────────────────────────────────────────────
 branch=""
-if git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
-    branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null \
-             || git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
-    if ! git -C "$cwd" diff --quiet 2>/dev/null \
-       || ! git -C "$cwd" diff --cached --quiet 2>/dev/null; then
+if git -C "$proj_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    branch=$(git -C "$proj_dir" symbolic-ref --short HEAD 2>/dev/null \
+             || git -C "$proj_dir" rev-parse --short HEAD 2>/dev/null)
+    if ! git -C "$proj_dir" diff --quiet 2>/dev/null \
+       || ! git -C "$proj_dir" diff --cached --quiet 2>/dev/null; then
         branch="${branch}*"
     fi
 fi
@@ -146,14 +152,55 @@ if [ -f "$USAGE_CACHE" ]; then
     fi
 fi
 
-# ─── Active PRD (if one matches this cwd) ────────────────────────────────────
+# ─── Active PRD ──────────────────────────────────────────────────────────────
+# work.json only locates the active PRD; progress/phase are read live from the
+# PRD.md frontmatter (the system of record). work.json values are a cache that
+# goes stale when the PRD is edited via Bash (sed/perl -i) — never trust them
+# when the file is readable.
+#
+# Matching: entries carrying project_dir are matched against this session's
+# project dir (equality or slash-boundary prefix either way). Legacy entries
+# without project_dir keep the old path-startswith-cwd behaviour.
 prd_seg=""
 if [ -f "$WORK_JSON" ]; then
-    prd_seg=$(jq -r --arg cwd "$cwd" '
-        [.sessions // {} | to_entries[] | select(.value.path | startswith($cwd))]
-        | sort_by(.value.updated) | reverse | .[0]
-        | if . == null then "" else "PRD: " + .value.slug + " " + .value.progress end
+    # project_dir matches (rank 1) always beat legacy path matches (rank 0):
+    # the legacy rule matches any PRD whose path sits under the cwd, which is
+    # every PRD when the shell drifts near $HOME.
+    candidates=$(jq -r --arg proj "$proj_dir" --arg cwd "$cwd" '
+        [.sessions // {} | to_entries[] | .value
+         | (.project_dir // "") as $pd
+         | (if $pd != "" and (($proj == $pd)
+                              or ($proj | startswith($pd + "/"))
+                              or ($pd | startswith($proj + "/"))) then 1
+            elif $pd == "" and (.path // "" | startswith($cwd)) then 0
+            else null
+            end) as $rank
+         | select($rank != null)
+         | . + {_rank: $rank}]
+        | sort_by([._rank, (.updated // "")]) | reverse | .[:5][]
+        | [(.slug // ""), (.path // ""), (.progress // ""), (.phase // "")]
+        | @tsv
     ' "$WORK_JSON" 2>/dev/null)
+
+    while IFS=$'\t' read -r c_slug c_path c_progress c_phase; do
+        [ -z "$c_slug" ] && continue
+        live_progress="" live_phase="" prd_mtime=0
+        if [ -n "$c_path" ] && [ -f "$c_path" ]; then
+            fm=$(awk 'NR>1 && /^---/{exit} {print}' "$c_path" 2>/dev/null)
+            live_progress=$(printf '%s\n' "$fm" | awk -F': *' '$1=="progress"{print $2; exit}')
+            live_phase=$(printf '%s\n' "$fm" | awk -F': *' '$1=="phase"{print $2; exit}')
+            prd_mtime=$(get_mtime "$c_path")
+        fi
+        p_progress="${live_progress:-$c_progress}"
+        p_phase="${live_phase:-$c_phase}"
+        # Finished work shouldn't linger all session: hide complete PRDs unless
+        # touched in the last 30 minutes.
+        if [ "$p_phase" = "complete" ] && [ $((now - prd_mtime)) -gt 1800 ]; then
+            continue
+        fi
+        prd_seg="PRD: ${c_slug} ${p_progress}"
+        break
+    done <<< "$candidates"
 fi
 
 # ─── Compose two lines ───────────────────────────────────────────────────────
