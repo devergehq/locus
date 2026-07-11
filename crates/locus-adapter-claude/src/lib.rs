@@ -156,6 +156,7 @@ mod tests {
         assert!(content.contains("## Locus Delegate"));
         assert!(content.contains("locus delegate run"));
         assert!(content.contains("--backend opencode"));
+        assert!(content.contains("--model openai/gpt-5.6-sol"));
         assert!(content.contains("prohibited for Locus delegation"));
         assert!(content.contains("read-only"));
         assert!(content.contains("summary"));

@@ -144,6 +144,7 @@ Default command shape:
 ```bash
 locus delegate run \
   --backend opencode \
+  --model openai/gpt-5.6-sol \
   --task-kind <research|code-exploration|general> \
   --mode native \
   --dir . \

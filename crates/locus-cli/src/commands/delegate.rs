@@ -173,7 +173,7 @@ fn build_request(
     })
 }
 
-const FALLBACK_MODEL: &str = "openai/gpt-5.5";
+const FALLBACK_MODEL: &str = "openai/gpt-5.6-sol";
 
 fn resolve_model(
     cli_model: Option<&str>,
@@ -1221,7 +1221,7 @@ mod tests {
         let mut args = sample_args();
         args.model = None;
         let request = build_request(args, &empty_config()).unwrap();
-        assert_eq!(request.model, "openai/gpt-5.5");
+        assert_eq!(request.model, "openai/gpt-5.6-sol");
     }
 
     #[test]

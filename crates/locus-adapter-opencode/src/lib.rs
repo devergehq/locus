@@ -143,6 +143,8 @@ mod tests {
         assert!(content.contains("OBSERVE"));
         assert!(content.contains("VERIFY"));
         assert!(content.contains("LEARN"));
+        assert!(content.contains("--backend opencode"));
+        assert!(content.contains("--model openai/gpt-5.6-sol"));
     }
 
     #[test]

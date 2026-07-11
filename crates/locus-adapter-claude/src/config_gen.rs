@@ -164,6 +164,7 @@ PROMPT=$(locus agent compose \
 # 2. Delegate the composed agent
 locus delegate run \
   --backend opencode \
+  --model openai/gpt-5.6-sol \
   --task-kind code-exploration \
   --mode native \
   --dir . \
@@ -195,6 +196,7 @@ For bounded read-only work that would otherwise burn the orchestrator's context 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--backend <BACKEND>` | Yes | — | Backend to use (`opencode`) |
+| `--model <MODEL>` | No | `openai/gpt-5.6-sol` | Provider-qualified model identifier |
 | `--task-kind <KIND>` | Yes | — | `research`, `code-exploration`, or `general` |
 | `--dir <DIR>` | Yes | — | Workspace directory for the delegated backend |
 | `--prompt <PROMPT>` | Yes | — | Task prompt (or composed agent prompt from `locus agent compose`) |
@@ -205,7 +207,7 @@ For bounded read-only work that would otherwise burn the orchestrator's context 
 | `--timeout-seconds <N>` | No | `1200` | Maximum execution time (20 min default) |
 | `--dry-run` | No | — | Print request JSON without invoking the backend |
 
-Use `--task-kind code-exploration` for codebase mapping, `--task-kind research` for web/doc research, and `--task-kind general` for everything else. The model is hardcoded — do not pass `--model`.
+Use `--task-kind code-exploration` for codebase mapping, `--task-kind research` for web/doc research, and `--task-kind general` for everything else. Use `--model openai/gpt-5.6-sol` for the standard delegate model.
 
 **`--mode native` is the default and almost always what you want.** It runs the delegated session with no Locus orchestration scaffolding loaded — the delegated model just reads the prompt and produces the requested output, no `OBSERVE → THINK → PLAN` phases, no Mode Classification. Use `--mode algorithmic` *only* in the rare case the delegated session itself needs to orchestrate (you almost never want this; the orchestrator is *this* session, not the delegate).
 
