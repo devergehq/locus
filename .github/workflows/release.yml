@@ -1,0 +1,125 @@
+name: Release
+
+# Cut a release by pushing a version tag that matches the workspace version in
+# Cargo.toml, e.g.:
+#
+#   scripts/release.sh 0.2.0     # bumps Cargo.toml, commits, tags v0.2.0, pushes
+#
+# This workflow then builds the `locus` binary for macOS (arm64 + x64),
+# Linux (x64 + arm64) and Windows (x64), packages each as
+# `locus-<target-triple>.tar.gz` (+ .sha256), and publishes them to a GitHub
+# Release for the tag.
+#
+# Asset naming and archive format are deliberately chosen to remain compatible
+# with `locus upgrade` (the self_update crate), which:
+#   * selects the release asset whose filename CONTAINS the Rust target triple,
+#   * extracts .tar.gz archives (the only format enabled via tar + flate2),
+#   * looks for the binary named `locus` (unix) / `locus.exe` (windows) inside.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Guard: the pushed tag MUST match the version in Cargo.toml. If it does not,
+  # fail immediately so we never ship a binary whose baked-in version disagrees
+  # with the release tag (which would break `locus upgrade`).
+  # ---------------------------------------------------------------------------
+  verify:
+    name: Verify tag matches Cargo.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          cargo_ver="$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="locus-cli"))')"
+          echo "tag version:        $tag"
+          echo "Cargo.toml version: $cargo_ver"
+          if [ "$tag" != "$cargo_ver" ]; then
+            echo "::error::Tag v$tag does not match Cargo.toml version $cargo_ver."
+            echo "::error::Bump the workspace version first (see scripts/release.sh)."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Build the binary natively on each target's own runner (no cross-compiling),
+  # package it, and upload the assets to the GitHub Release for this tag.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.target }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build locus
+        run: cargo build --release --locked --package locus-cli --target ${{ matrix.target }}
+
+      # Package on every OS with bash (GitHub Windows runners ship bash), so the
+      # archive layout is identical everywhere: a single top-level binary named
+      # `locus` (unix) or `locus.exe` (windows), which is what self_update wants.
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bindir="target/${target}/release"
+          archive="locus-${target}.tar.gz"
+
+          if [[ "$target" == *windows* ]]; then
+            bin="locus.exe"
+          else
+            bin="locus"
+          fi
+
+          tar -czf "$archive" -C "$bindir" "$bin"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+
+          echo "Built asset:"
+          ls -l "$archive" "${archive}.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            locus-${{ matrix.target }}.tar.gz
+            locus-${{ matrix.target }}.tar.gz.sha256
+          fail_on_unmatched_files: true
