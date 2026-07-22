@@ -1,5 +1,6 @@
 /target
-Cargo.lock
+# Cargo.lock IS committed: Locus ships as an installed binary, so the exact
+# dependency versions must be pinned for reproducible release builds.
 session-*.md
 AGENTS.md
 AGENTS.old.md

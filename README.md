@@ -77,9 +77,45 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 > **Important:** `locus` must be on your `PATH`. Platform adapters configure hooks that call `locus hook <event>` — if the binary isn't resolvable, hooks silently fail.
 
-### Prebuilt binaries (not yet available)
+### Prebuilt binaries
 
-Locus does not currently publish prebuilt releases. The release infrastructure (`cargo-dist`) is configured but not yet active. See [Distribution](#distribution) below.
+Every tagged release publishes prebuilt `locus` binaries on the
+[Releases page](https://github.com/devergehq/locus/releases) for:
+
+| Platform | Architecture | Asset |
+|----------|--------------|-------|
+| macOS | Apple Silicon | `locus-aarch64-apple-darwin.tar.gz` |
+| macOS | Intel | `locus-x86_64-apple-darwin.tar.gz` |
+| Linux | x86_64 | `locus-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux | ARM64 | `locus-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows | x86_64 | `locus-x86_64-pc-windows-msvc.tar.gz` |
+
+Download the archive for your platform, extract the `locus` binary (each archive
+ships a matching `.sha256` to verify the download), and put it somewhere on your
+`PATH`:
+
+```sh
+# macOS (Apple Silicon) example
+curl -LO https://github.com/devergehq/locus/releases/latest/download/locus-aarch64-apple-darwin.tar.gz
+tar -xzf locus-aarch64-apple-darwin.tar.gz
+mv locus ~/.local/bin/    # any directory on your PATH
+locus doctor
+```
+
+On Windows, `tar` is built into modern PowerShell/Command Prompt, so the same
+`tar -xzf` works; move `locus.exe` onto your `PATH`.
+
+### Staying up to date
+
+Once you have any `locus` binary installed, upgrade in place — no re-download needed:
+
+```sh
+locus upgrade          # fetch and install the latest release
+locus upgrade --check  # just report whether a newer version exists
+```
+
+`locus upgrade` pulls the correct prebuilt asset for your platform from the
+GitHub Releases above and replaces the running binary.
 
 ---
 
@@ -347,22 +383,32 @@ Design principles:
 
 ## Distribution
 
-Locus is currently **source-only**. Prebuilt binaries are not published.
+Releases are built automatically by GitHub Actions
+([`.github/workflows/release.yml`](.github/workflows/release.yml)) whenever a
+version tag (`v*`) is pushed. Each tag produces a GitHub Release with a
+`.tar.gz` (+ `.sha256`) for every supported platform, named by Rust target
+triple so that `locus upgrade` can find the right one.
 
-The release infrastructure is pre-configured via [`cargo-dist`](https://opensource.axo.dev/cargo-dist/) in `dist.toml`:
+- Targets: macOS (Apple Silicon + Intel), Linux (x86_64 + ARM64), Windows (x86_64)
+- Built natively on each platform's own runner — no cross-compilation
+- Archive format is `.tar.gz` on every platform for compatibility with `locus upgrade`
 
-- Targets: macOS (Apple Silicon + Intel), Linux (x86_64 + ARM64)
-- Installers: shell script, Homebrew formula
-- CI: GitHub Actions
+### Cutting a release
 
-To activate releases when ready:
+The version in `Cargo.toml` is the source of truth; the git tag must match it.
+The helper script keeps them in sync in one step:
 
-1. Install `cargo-dist`: `cargo install cargo-dist`
-2. Run `cargo dist init` to generate GitHub Actions workflow
-3. Create a Homebrew tap repo (e.g., `devergehq/homebrew-tap`)
-4. Push a git tag: `git tag v0.1.0 && git push origin v0.1.0`
+```sh
+scripts/release.sh 0.2.0          # bump Cargo.toml, refresh Cargo.lock, commit, tag v0.2.0
+# then push to trigger the build:
+git push origin main && git push origin v0.2.0
 
-Until then, install from source.
+# or do it all at once:
+scripts/release.sh 0.2.0 --push
+```
+
+The workflow's `verify` job hard-fails if the pushed tag does not match the
+`Cargo.toml` version, so a mismatched release can never ship.
 
 ---
 
