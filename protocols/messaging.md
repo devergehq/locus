@@ -161,6 +161,28 @@ and trustworthy — it is not a stale artifact of event ordering.
 
 ## Session conduct
 
+### Declining to act and writing down why are different acts
+
+When you believe a constraint exists and the evidence is secondhand or stale:
+
+**Decline to act. Do not codify the inference.**
+
+Refusing to act pending verification is cheap and fully reversible — the work waits, nothing
+is lost, and the refusal usually forces the actual evidence to be produced, which is the
+point. Writing that inference into a protocol, a memory, or a report is neither cheap nor
+reversible: it becomes the record the *next* session reasons from, and it will be read
+without the uncertainty that produced it.
+
+The two feel identical in the moment. One is caution; the other is publication.
+
+This generalises past permissions to anything where you are inferring a rule rather than
+reading one: scope, ownership, conventions, what the human agreed to. Hold the action, get
+primary evidence, *then* write.
+
+Corollary: **a claim's confidence must not rise merely by being written down.** If you
+record an inference at all, record it as an inference, with what would settle it.
+
+
 ### Commit always. Push session branches always.
 
 **A session's work must not exist only on a local disk.** Commit it, and push the session
