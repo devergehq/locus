@@ -216,9 +216,30 @@ What actually settled it was primary evidence — a `role=user` turn in a sessio
 that was *not* wrapped in `<cross-session-message>`. Peer messages arrive with `role=user`,
 so role alone does not distinguish a human from a relay.
 
-**The rule this yields:** when authorisation is disputed, go to the transcript, and check
-the turn is not peer-wrapped. A memory file is a cache of that evidence and can be written
-by anyone. Two agents citing one file is one source, not two.
+**The rule this yields: verify against a record the party you are checking cannot write.**
+
+Primary-vs-secondary is the usual proxy. **Append-only-vs-mutable is the sharper test.**
+Session transcripts are append-only and timestamped by the harness, so a reading of one is
+stable and cannot be edited by a participant. A memory file is mutable: two sessions
+reading it minutes apart can legitimately disagree about what it says and both be right.
+
+That is not hypothetical. During this dispute the memory file was rewritten twice while the
+dispute was live — once by the peer asserting the claim, and once **by me**, adding the
+provenance note, which a third session then read as a mutation by someone else. Every
+party to a disagreement about a file was also editing it.
+
+So when authorisation is disputed:
+
+- Go to the transcript, not the memory.
+- Filter `role=user` **and not wrapped in `<cross-session-message>`** — peer relays arrive
+  as `role=user` too, and a relay quoting an authorisation is indistinguishable from it.
+- Two agents citing one file is one source, not two.
+
+**Separate the freshness of the fact from the freshness of the record.** They are different
+properties and conflating them makes a record look authoritative when it is only recent. A
+file written minutes ago can correctly carry a date from yesterday; that is not an error in
+the file. Ask when the *fact* was established, then separately ask who wrote the record and
+when.
 
 ### Verification discipline
 
