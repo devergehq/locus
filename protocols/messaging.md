@@ -129,35 +129,71 @@ verification rules below.
 
 ## Never infer a peer's state from `ListAgents`
 
-`ListAgents` reports idle/busy. Allele tracks six states. The collapse is lossy in one
-specific and dangerous way:
+`ListAgents` answers *"does this exist and can I address it"*. It never answers *"is this
+done"*. It reports idle/busy; allele tracks six states, and the collapse is lossy in one
+specific and dangerous way.
 
-| Allele state | Means | In `ListAgents` |
+**`allele.sessions.status(id)` returns:**
+
+```json
+{
+  "session_id": "1533ec41-8a02-4821-8b8b-83bb10bbf5c4",
+  "name": "Extra Tooling",
+  "project": "allele",
+  "state": "awaiting_input",
+  "state_age_secs": 2431,
+  "dispatched": true,
+  "depth": 1
+}
+```
+
+`state` is one of exactly: `running`, `response_ready`, `awaiting_input`, `idle`,
+`suspended`, `done`.
+
+| `state` | Means | In `ListAgents` |
 |---|---|---|
-| `Running` | actively working | busy |
-| `ResponseReady` | **finished a response turn** | idle |
-| `AwaitingInput` | **blocked on a permission prompt** | idle |
-| `Idle` | started, or ended | idle |
-| `Suspended` | no PTY attached | — |
-| `Done` | terminal | — |
+| `running` | actively working | busy |
+| `response_ready` | **finished a response turn** | idle |
+| `awaiting_input` | **blocked on a permission prompt** | idle |
+| `idle` | context reset, or ended | idle |
+| `suspended` | no PTY attached | — |
+| `done` | terminal | — |
 
 **A worker blocked on a permission prompt is indistinguishable from a finished one.**
-Silent, indefinite, and it looks like success.
+Silent, indefinite, and it looks like success. `sessions.create()` carries no
+permission-mode parameter, so a dispatched session inherits `permissions.defaultMode`; if
+that is ever stricter than `auto`, a fleet will sit blocked forever while every member
+reports idle.
 
-This is not hypothetical. `sessions.create()` carries no permission-mode parameter, so a
-dispatched session inherits `permissions.defaultMode` from global settings. If that is ever
-stricter than `auto`, dispatched sessions will sit in `AwaitingInput` forever — nobody
-watches a fleet of twenty, and an orchestrator polling `ListAgents` sees a well-behaved
-idle worker.
+**Rule: `response_ready` means finished. Never conclude a worker is done from `ListAgents`.**
 
-**Rule: check `sessions.status(id)`. Never conclude a worker is done from `ListAgents`.**
+`awaiting_input` cannot be overwritten by `response_ready`, so the signal is sticky and
+trustworthy — do not skip the check on the grounds that it might be stale.
 
-`AwaitingInput` cannot be overwritten by `ResponseReady` in allele, so the signal is sticky
-and trustworthy — it is not a stale artifact of event ordering.
+`state_age_secs` is time since the state last changed, not time since dispatch, and it
+resets when a suspended session resumes. Use it to distinguish *blocked* from *blocked for
+forty minutes* — the second is actionable, the first is only a state.
 
-`Idle` conflates "context was reset" with "session ended", so it is ambiguous. It does
-**not** mean "never received its prompt": `create()` does not return success until a
-`user_prompt_submit` event is observed, so a confirmed create cannot be a phantom.
+`idle` conflates "context was reset" with "session ended". It does **not** mean "never
+received its prompt": `create()` does not return until a `user_prompt_submit` event is
+observed, so a confirmed create cannot be a phantom.
+
+## Addresses that do not exist
+
+`sessions.create()` returns `{ session_id, name, project, state }`. **There is no address
+field and there never will be one** — refs are minted inside Claude Code and allele has no
+route to one. Resolve as described above, every time.
+
+**The returned `name` may differ from the one you asked for.** Uniqueness is enforced across
+every session allele has *ever* created, not merely those currently live, because a dead
+session is absent from `ListAgents` and its name is exactly the one that would collide and
+silently retarget. Use the name you were returned, never the one you requested.
+
+**`allele_not_running` is an error only your side can raise.** If allele is answering, it is
+running — so allele can never send it. Synthesise it on `connect()` failure and treat it as
+a typed error rather than a timeout. This is the whole reason the transport is a socket: a
+spool write always succeeds, so "not running", "busy" and "slow" become indistinguishable
+and a caller can only ever hang.
 
 ## Session conduct
 
