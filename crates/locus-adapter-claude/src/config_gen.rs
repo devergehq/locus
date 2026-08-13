@@ -51,6 +51,12 @@ pub struct ClaudeMdWrite {
 /// failure as the `delegation` skill: fully functional and unknown to every
 /// session. Enumerating removes the second source of truth.
 ///
+/// Worth knowing if this ever regresses: the symptom is not an error. An
+/// unadvertised trait presents as *"nobody ever uses that trait"*, never as
+/// *"that trait is broken"* — it validates and composes correctly the moment
+/// anyone names it. Someone investigating will go looking for a bug and find
+/// none, because there isn't one; the defect is an absence in the directive.
+///
 /// Axes are `BTreeMap`s, so ordering is already deterministic.
 fn enumerate_traits(locus_home: &Path) -> String {
     let path = locus_home.join("agents").join("traits.yaml");
