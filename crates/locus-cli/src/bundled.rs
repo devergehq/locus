@@ -368,22 +368,40 @@ mod drift_tests {
         );
     }
 
+    /// Every markdown file under skills/, not merely each SKILL.md. A skill's
+    /// supporting files (Workflows/, Philosophy.md, …) are loaded by the skill
+    /// itself, so omitting one installs a skill that half-works — which is
+    /// harder to notice than one that is missing outright.
     #[test]
-    fn every_repo_skill_is_bundled() {
+    fn every_repo_skill_file_is_bundled() {
         let bundled = bundled_paths();
-        let dir = repo_root().join("skills");
+        let root = repo_root();
+        let mut missing = Vec::new();
+        let mut stack = vec![root.join("skills")];
 
-        let missing: Vec<String> = std::fs::read_dir(&dir)
-            .expect("skills dir")
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.join("SKILL.md").is_file())
-            .filter_map(|p| {
-                let rel = format!("skills/{}/SKILL.md", p.file_name()?.to_str()?);
-                (!bundled.contains(&rel)).then_some(rel)
-            })
-            .collect();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("skills dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|x| x == "md") {
+                    let rel = path
+                        .strip_prefix(&root)
+                        .expect("under repo root")
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if !bundled.contains(&rel) {
+                        missing.push(rel);
+                    }
+                }
+            }
+        }
 
-        assert!(missing.is_empty(), "skills in-repo but not bundled: {missing:?}");
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "skill files exist in-repo but are not bundled, so `locus init` will \
+             install a partially-working skill: {missing:?}"
+        );
     }
 }

@@ -43,6 +43,47 @@ pub struct ClaudeMdWrite {
 ///
 /// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
 /// Regenerate with `locus platform add claude-code`.
+/// Enumerate the trait vocabulary from `{locus_home}/agents/traits.yaml`.
+///
+/// `locus agent compose` already validates against this file at runtime, so a
+/// new trait *works* the moment it is added. It was simply never *advertised* —
+/// the directive carried a hand-written copy of the vocabulary. That is the same
+/// failure as the `delegation` skill: fully functional and unknown to every
+/// session. Enumerating removes the second source of truth.
+///
+/// Axes are `BTreeMap`s, so ordering is already deterministic.
+fn enumerate_traits(locus_home: &Path) -> String {
+    let path = locus_home.join("agents").join("traits.yaml");
+
+    let Ok(traits) = locus_core::agents::Traits::from_file(&path) else {
+        return "<!-- traits.yaml not found or unparseable. Run `locus init` to install. -->"
+            .to_string();
+    };
+
+    let axis = |label: &str, m: &std::collections::BTreeMap<String, locus_core::agents::Trait>| {
+        (!m.is_empty()).then(|| {
+            format!(
+                "- **{label}:** {}",
+                m.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })
+    };
+
+    let rows: Vec<String> = [
+        axis("Expertise", &traits.expertise),
+        axis("Stance", &traits.stance),
+        axis("Approach", &traits.approach),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if rows.is_empty() {
+        return "<!-- No traits defined. -->".to_string();
+    }
+    rows.join("\n")
+}
+
 /// Enumerate `{locus_home}/skills/*/SKILL.md` into a comma-separated list.
 ///
 /// Hardcoding this list is how `delegation` came to exist on disk while no
@@ -155,6 +196,7 @@ pub fn generate_claude_md(locus_home: &Path) -> String {
 
     let protocol_index = enumerate_protocols(locus_home);
     let skill_list = enumerate_skills(locus_home);
+    let trait_list = enumerate_traits(locus_home);
 
     format!(
         r#"# Locus
@@ -252,9 +294,7 @@ Locus composes agent prompts from trait IDs. Use `locus agent compose` to build 
 
 **Available traits (by axis):**
 
-- **Expertise:** architecture, implementation, testing, security, research, design, product, data, infrastructure
-- **Stance:** skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge
-- **Approach:** thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative
+{traits}
 
 Pick 2-4 traits across axes. One expertise + one stance + one approach is the standard pattern.
 
@@ -353,6 +393,7 @@ for verification of specific URLs.
         algorithm = algorithm_content,
         protocols = protocol_index,
         skills = skill_list,
+        traits = trait_list,
     )
 }
 
@@ -874,5 +915,55 @@ mod skill_index_tests {
     fn missing_skills_directory_degrades_without_panicking() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(enumerate_skills(tmp.path()).contains("No skills directory"));
+    }
+}
+
+#[cfg(test)]
+mod trait_index_tests {
+    use super::*;
+
+    /// `compose` validates against traits.yaml at runtime, so a hand-written
+    /// copy in the directive could advertise a trait that does not exist, or
+    /// omit one that does. Both are silent.
+    #[test]
+    fn directive_offers_exactly_what_traits_yaml_defines() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let yaml = repo.join("agents/traits.yaml");
+        let traits = locus_core::agents::Traits::from_file(&yaml).expect("parse traits.yaml");
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::copy(&yaml, tmp.path().join("agents/traits.yaml")).unwrap();
+
+        let rendered = enumerate_traits(tmp.path());
+        for id in traits
+            .expertise
+            .keys()
+            .chain(traits.stance.keys())
+            .chain(traits.approach.keys())
+        {
+            assert!(rendered.contains(id.as_str()), "trait `{id}` is never offered");
+        }
+    }
+
+    #[test]
+    fn missing_traits_file_degrades_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(enumerate_traits(tmp.path()).contains("not found"));
+    }
+
+    #[test]
+    fn empty_axes_do_not_emit_a_bullet() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::write(
+            tmp.path().join("agents/traits.yaml"),
+            "version: \"1\"\nstance:\n  skeptical:\n    name: Skeptical\n    \
+             description: d\n    prompt_fragment: p\n",
+        )
+        .unwrap();
+        let out = enumerate_traits(tmp.path());
+        assert!(out.contains("Stance"), "got: {out}");
+        assert!(!out.contains("Expertise"), "empty axis emitted: {out}");
     }
 }
