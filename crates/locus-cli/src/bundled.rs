@@ -304,10 +304,86 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "protocols/memory-schema.md".into(),
             include_str!("../../../protocols/memory-schema.md"),
         ),
+        (
+            "protocols/messaging.md".into(),
+            include_str!("../../../protocols/messaging.md"),
+        ),
+        (
+            "protocols/orchestration.md".into(),
+            include_str!("../../../protocols/orchestration.md"),
+        ),
         // Scripts — statusline, etc. Installed executable.
         (
             "scripts/statusline.sh".into(),
             include_str!("../../../scripts/statusline.sh"),
         ),
     ]
+}
+
+#[cfg(test)]
+mod drift_tests {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("repo root")
+    }
+
+    fn bundled_paths() -> HashSet<String> {
+        super::bundled_files()
+            .into_iter()
+            .map(|(rel, _)| rel.replace('\\', "/"))
+            .collect()
+    }
+
+    /// `include_str!` is a compile-time macro, so the bundle list cannot be
+    /// enumerated at runtime — it has to be written by hand. This test is the
+    /// thing that stops a hand-written list drifting silently, which is exactly
+    /// how two protocols came to exist in-repo while never being installed.
+    #[test]
+    fn every_repo_protocol_is_bundled() {
+        let bundled = bundled_paths();
+        let dir = repo_root().join("protocols");
+
+        let missing: Vec<String> = std::fs::read_dir(&dir)
+            .expect("protocols dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "md"))
+            .filter_map(|p| {
+                let rel = format!("protocols/{}", p.file_name()?.to_str()?);
+                (!bundled.contains(&rel)).then_some(rel)
+            })
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "protocols exist in-repo but are not bundled, so `locus init` will \
+             never install them and no session will ever load them: {missing:?}\n\
+             Add an include_str! entry in bundled.rs for each."
+        );
+    }
+
+    #[test]
+    fn every_repo_skill_is_bundled() {
+        let bundled = bundled_paths();
+        let dir = repo_root().join("skills");
+
+        let missing: Vec<String> = std::fs::read_dir(&dir)
+            .expect("skills dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.join("SKILL.md").is_file())
+            .filter_map(|p| {
+                let rel = format!("skills/{}/SKILL.md", p.file_name()?.to_str()?);
+                (!bundled.contains(&rel)).then_some(rel)
+            })
+            .collect();
+
+        assert!(missing.is_empty(), "skills in-repo but not bundled: {missing:?}");
+    }
 }
