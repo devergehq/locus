@@ -79,6 +79,26 @@ pub fn run() -> Result<(), LocusError> {
         }
     }
 
+    let superseded = update_content::superseded_algorithm_versions(&home);
+    if superseded.is_empty() {
+        output::success(&format!(
+            "Algorithm — {} is the only spec installed",
+            locus_core::ALGORITHM_FILE
+        ));
+    } else {
+        for name in &superseded {
+            output::warn(&format!(
+                "  superseded Algorithm spec still installed: {} (current is {})",
+                name,
+                locus_core::ALGORITHM_FILE
+            ));
+        }
+        warnings.push(format!(
+            "{} superseded Algorithm spec(s) installed. Run `locus update-content`.",
+            superseded.len()
+        ));
+    }
+
     let platform_config_warnings = update_content::check_platform_configs(&home);
     for w in &platform_config_warnings {
         output::warn(w);

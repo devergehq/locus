@@ -2,32 +2,44 @@
 #
 # Cut a Locus release, the standard Rust way (Cargo.toml is the source of truth).
 #
-#   scripts/release.sh <version> [--push]
+#   scripts/release.sh <version> [--push]     # phase 1: prepare the bump
+#   scripts/release.sh --tag <version>        # phase 2: tag the merged commit
 #
-# Example:
-#   scripts/release.sh 0.2.0
+# Two phases, because `master` is protected and cannot be pushed to directly.
 #
-# What it does:
+# Phase 1 — prepare:
 #   1. Bumps [workspace.package] version in Cargo.toml to <version>.
 #   2. Refreshes Cargo.lock so the workspace crates match the new version.
-#   3. Commits the bump as "release: v<version>".
-#   4. Creates an annotated git tag "v<version>" on that commit.
-#   5. Prints the push command (or pushes for you with --push).
+#   3. Commits the bump as "release: v<version>" on a `chore/release-v<version>`
+#      branch, leaving your current branch untouched.
+#   4. Pushes that branch (with --push) and tells you to open a PR.
 #
-# Pushing the tag is what triggers .github/workflows/release.yml to build the
-# binaries and publish the GitHub Release. The version you pass here MUST be the
-# version the tag carries — the release workflow refuses to build on a mismatch.
+# It deliberately does NOT tag here. A squash merge rewrites the commit, so a
+# tag created now would point at a commit that never reaches master — and the
+# published binaries would be built from something that is not the release.
+#
+# Phase 2 — tag, after the PR merges:
+#   Verifies master carries the expected version, tags master's HEAD, pushes the
+#   tag. That push is what triggers .github/workflows/release.yml, which refuses
+#   to build if the tag and Cargo.toml disagree.
 
 set -euo pipefail
 
 die() { echo "error: $*" >&2; exit 1; }
 
 # --- args -------------------------------------------------------------------
+MODE="prepare"
+if [ "${1:-}" = "--tag" ]; then
+  MODE="tag"
+  shift
+fi
+
 VERSION="${1:-}"
 PUSH="no"
 [ "${2:-}" = "--push" ] && PUSH="yes"
 
-[ -n "$VERSION" ] || die "usage: scripts/release.sh <version> [--push]  (e.g. 0.2.0)"
+[ -n "$VERSION" ] || die "usage: scripts/release.sh <version> [--push]        (prepare)
+       scripts/release.sh --tag <version>         (tag after the PR merges)"
 echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "version must be semver X.Y.Z (got: $VERSION)"
 
@@ -36,6 +48,39 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 TAG="v$VERSION"
+
+# --- phase 2: tag an already-merged release commit --------------------------
+if [ "$MODE" = "tag" ]; then
+  git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+  git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already exists"
+
+  DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+  DEFAULT_BRANCH="${DEFAULT_BRANCH:-master}"
+
+  git fetch --quiet origin "$DEFAULT_BRANCH"
+  MERGED="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+
+  # The workflow compares the tag against Cargo.toml at the tagged commit, so
+  # check the same thing here rather than trusting the working tree.
+  MERGED_VER="$(git show "$MERGED:Cargo.toml" \
+    | awk '/^\[workspace.package\]/{f=1} f && /^version[[:space:]]*=/{gsub(/[^0-9.]/,"",$0); print; exit}')"
+  [ "$MERGED_VER" = "$VERSION" ] \
+    || die "origin/$DEFAULT_BRANCH is at version '$MERGED_VER', not $VERSION — has the release PR merged?"
+
+  git tag -a "$TAG" "$MERGED" -m "$TAG"
+  echo "tagged $TAG at $(git rev-parse --short "$MERGED") on $DEFAULT_BRANCH"
+
+  if [ "$PUSH" = "yes" ]; then
+    git push origin "$TAG"
+    echo "pushed $TAG — watch the release build under the repo's Actions tab."
+  else
+    echo
+    echo "Nothing pushed yet. To trigger the release build:"
+    echo
+    echo "    git push origin $TAG"
+  fi
+  exit 0
+fi
 
 # --- preconditions ----------------------------------------------------------
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
@@ -78,28 +123,34 @@ PY
 echo "refreshing Cargo.lock ..."
 cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
 
-# --- 3. commit + 4. tag -----------------------------------------------------
+# --- 3. commit on a release branch (master is protected) --------------------
+RELEASE_BRANCH="chore/release-$TAG"
+git rev-parse -q --verify "refs/heads/$RELEASE_BRANCH" >/dev/null \
+  && die "branch $RELEASE_BRANCH already exists"
+
+git checkout -q -b "$RELEASE_BRANCH"
 git add Cargo.toml Cargo.lock
 git commit -m "release: $TAG" >/dev/null
-git tag -a "$TAG" -m "$TAG"
-echo "committed and tagged $TAG"
+echo "committed the bump on $RELEASE_BRANCH"
 
-# --- 5. push (or tell the user how) -----------------------------------------
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+# No tag here — see the header. A squash merge rewrites this commit, so the tag
+# has to wait until the release commit is actually on the default branch.
+
+# --- 4. push the branch and explain phase 2 ---------------------------------
 if [ "$PUSH" = "yes" ]; then
-  echo "pushing branch $BRANCH and tag $TAG ..."
-  git push origin "$BRANCH"
-  git push origin "$TAG"
-  echo "done — watch the release build under the repo's Actions tab."
-else
-  cat <<EOF
-
-Created commit + tag locally. Nothing has been pushed yet.
-To trigger the release build, push both the branch and the tag:
-
-    git push origin $BRANCH
-    git push origin $TAG
-
-(or re-run with --push to do that automatically next time.)
-EOF
+  git push -q -u origin "$RELEASE_BRANCH"
+  echo "pushed $RELEASE_BRANCH"
 fi
+
+cat <<EOF
+
+Next:
+  1. Open a PR from $RELEASE_BRANCH and merge it.$([ "$PUSH" = "yes" ] || echo "
+     (push it first: git push -u origin $RELEASE_BRANCH)")
+  2. Tag the merged commit and trigger the build:
+
+         scripts/release.sh --tag $VERSION --push
+
+Nothing is tagged yet, deliberately — the tag must point at the commit that
+lands on the default branch, not at this local one.
+EOF
