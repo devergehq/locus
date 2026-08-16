@@ -55,8 +55,8 @@ parallelism, specialisation, isolation, or an independent perspective.
 
 All agent-style delegation MUST use the **allele MCP**. Do not use platform-native Task,
 Agent, or Team tools — they burn this session's context, inherit its framing, and are
-invisible to the human. If the allele MCP is unavailable, continue serially or ask the
-user; do not fall back to native subagents.
+invisible to the human. If the allele MCP is unavailable, fall back to
+`locus delegate run` (see below); never to native subagents.
 
 ## The lifecycle
 
@@ -171,6 +171,37 @@ can reach every other by name — but unstructured cross-talk drifts and launder
 accountability. Keep exchanges purposeful and attributable.
 
 Trigger phrases: "create an agent team", "swarm", "team of agents".
+
+## When allele is not available
+
+The allele MCP talks to a socket allele binds at startup. If the `allele_*` tools are not
+present, **allele is not running and this session is outside it** — a plain terminal,
+`claude.ai/code`, CI, or allele simply closed. That is a normal way to run Locus, not an
+error.
+
+**Fall back to `locus delegate run`, and say which mode you are in.**
+
+```bash
+locus agent compose --traits "..." --role "..." --task "..."   # unchanged
+locus delegate run --backend opencode --task-kind general --mode native \
+  --dir . --prompt "<composed prompt>" --output json
+```
+
+You lose the session — no workspace, no branch, no conversation, and it returns an envelope
+rather than replying. You keep delegation, which is the thing that matters. Say so once, in
+the shape `protocols/degradation.md` requires, rather than silently producing lesser work:
+
+```
+Dispatch normally creates real allele sessions. allele is not available here,
+so this is running through `locus delegate run` instead: read-only, no branch,
+and no way to ask the worker a follow-up question.
+```
+
+**Do not fall back to native Task/Agent subagents**, and do not abandon delegation. The
+guardrail names the mechanism; it is not a reason to do the work inline.
+
+Note `locus delegate run` is **not** a security boundary — see the warning in
+`orchestration.md`. It is the standalone path, not the safe one.
 
 ## What this is not
 

@@ -265,7 +265,27 @@ Available skills: {skills}.
 
 Any agent-style delegation MUST go through the **allele MCP** (`allele_sessions_create`). Do not use platform-native Task/Agent subagents for research, code exploration, council/red-team work, or any other delegated agent work. Native subagents burn orchestrator context, inherit this session's framing, and are invisible to the human.
 
-If the allele MCP is unavailable, do not fall back to native Task/Agent delegation. Continue serially or ask the user how to proceed.
+If the allele MCP is unavailable, fall back to `locus delegate run` — never to native Task/Agent delegation, and never to doing the work inline.
+
+### When allele is not available
+
+The allele MCP talks to a socket allele binds at startup. If the `allele_*` tools are not present, **allele is not running and this session is outside it** — a plain terminal, `claude.ai/code`, CI, or allele simply closed. That is a supported way to run Locus, not an error.
+
+```bash
+locus agent compose --traits "..." --role "..." --task "..."   # unchanged
+locus delegate run --backend opencode --task-kind general --mode native \
+  --dir . --prompt "<composed prompt>" --output json
+```
+
+You lose the session — no workspace, no branch, no conversation, and it returns a JSON envelope rather than replying. You keep delegation, which is what matters. Say which mode you are in rather than silently producing lesser work:
+
+```
+Dispatch normally creates real allele sessions. allele is not available here,
+so this is running through `locus delegate run` instead: read-only, no branch,
+and no way to ask the worker a follow-up question.
+```
+
+`locus delegate run` is the standalone path, not the safe one — it is not a security boundary (`bash: allow` sits beside `edit: deny`; see DEV-419).
 
 ### Delegation Denial Compliance (CRITICAL)
 

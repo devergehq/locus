@@ -175,18 +175,37 @@ mod tests {
         }
     }
 
-    /// The old mechanism must not linger anywhere in the directive. A session
-    /// told to use both will pick whichever it read last.
+    /// `locus delegate run` appears in the directive only as the standalone
+    /// fallback for sessions outside allele — never as the primary route. The
+    /// distinction is the whole point: a session told to use both as equals
+    /// will pick whichever it read last.
     #[test]
-    fn claude_md_no_longer_routes_to_locus_delegate_run() {
+    fn claude_md_names_delegate_run_only_as_the_fallback() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+
+        // The fallback must exist, or a session outside allele has no way to
+        // delegate at all and the guardrail becomes a dead end.
         assert!(
-            !content.contains("locus delegate run"),
-            "directive still routes delegation to `locus delegate run`"
+            content.contains("locus delegate run"),
+            "no standalone fallback — sessions outside allele cannot delegate"
         );
         assert!(
-            !content.contains("--backend opencode"),
-            "directive still carries the opencode backend flag"
+            content.contains("When allele is not available"),
+            "fallback is present but not framed as a fallback"
+        );
+
+        // It must be conditional on allele's absence, not offered as an
+        // alternative primary route.
+        assert!(
+            content.contains("allele is not running"),
+            "fallback must state the condition that triggers it"
+        );
+
+        // And the guardrail must still forbid the thing it always forbade.
+        assert!(
+            content.contains("never to native Task/Agent delegation")
+                || content.contains("Do not use platform-native Task/Agent"),
+            "native subagents must remain prohibited"
         );
     }
 
