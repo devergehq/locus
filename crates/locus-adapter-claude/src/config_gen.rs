@@ -43,6 +43,154 @@ pub struct ClaudeMdWrite {
 ///
 /// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
 /// Regenerate with `locus platform add claude-code`.
+/// Enumerate the trait vocabulary from `{locus_home}/agents/traits.yaml`.
+///
+/// `locus agent compose` already validates against this file at runtime, so a
+/// new trait *works* the moment it is added. It was simply never *advertised* —
+/// the directive carried a hand-written copy of the vocabulary. That is the same
+/// failure as the `delegation` skill: fully functional and unknown to every
+/// session. Enumerating removes the second source of truth.
+///
+/// Worth knowing if this ever regresses: the symptom is not an error. An
+/// unadvertised trait presents as *"nobody ever uses that trait"*, never as
+/// *"that trait is broken"* — it validates and composes correctly the moment
+/// anyone names it. Someone investigating will go looking for a bug and find
+/// none, because there isn't one; the defect is an absence in the directive.
+///
+/// Axes are `BTreeMap`s, so ordering is already deterministic.
+fn enumerate_traits(locus_home: &Path) -> String {
+    let path = locus_home.join("agents").join("traits.yaml");
+
+    let Ok(traits) = locus_core::agents::Traits::from_file(&path) else {
+        return "<!-- traits.yaml not found or unparseable. Run `locus init` to install. -->"
+            .to_string();
+    };
+
+    let axis = |label: &str, m: &std::collections::BTreeMap<String, locus_core::agents::Trait>| {
+        (!m.is_empty()).then(|| {
+            format!(
+                "- **{label}:** {}",
+                m.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })
+    };
+
+    let rows: Vec<String> = [
+        axis("Expertise", &traits.expertise),
+        axis("Stance", &traits.stance),
+        axis("Approach", &traits.approach),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    if rows.is_empty() {
+        return "<!-- No traits defined. -->".to_string();
+    }
+    rows.join("\n")
+}
+
+/// Enumerate `{locus_home}/skills/*/SKILL.md` into a comma-separated list.
+///
+/// Hardcoding this list is how `delegation` came to exist on disk while no
+/// session was ever told about it: the skill installed correctly and the
+/// directive never mentioned it. Enumeration removes the drift by construction.
+fn enumerate_skills(locus_home: &Path) -> String {
+    let dir = locus_home.join("skills");
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return "<!-- No skills directory found. Run `locus init` to install. -->".to_string();
+    };
+
+    let mut names: Vec<String> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("SKILL.md").is_file())
+        .filter_map(|p| Some(p.file_name()?.to_str()?.to_string()))
+        .collect();
+
+    if names.is_empty() {
+        return "<!-- No skills installed. -->".to_string();
+    }
+
+    names.sort();
+    names.join(", ")
+}
+
+/// One-line summary for a protocol file, for the CLAUDE.md index.
+///
+/// Prefers a `description:` field in YAML frontmatter; falls back to the first
+/// H1 heading. Both are optional — a protocol with neither is still indexed by
+/// filename, because being listed is what makes it discoverable and that must
+/// not depend on the author having known about this format.
+fn protocol_summary(content: &str) -> Option<String> {
+    if let Some(rest) = content.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---") {
+            for line in rest[..end].lines() {
+                if let Some(v) = line.strip_prefix("description:") {
+                    let v = v.trim().trim_matches('"').trim_matches('\'').trim();
+                    if !v.is_empty() {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    content
+        .lines()
+        .find_map(|l| l.strip_prefix("# "))
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+/// Enumerate `{locus_home}/protocols/*.md` into a markdown index.
+///
+/// Enumerated rather than hardcoded deliberately. A hardcoded list requires the
+/// author of a new protocol to know about and edit a Rust file in another crate,
+/// and the failure when they do not is *silence* — the protocol simply never
+/// loads. That is not hypothetical: the skills list in this same file drifted out
+/// of sync with `{locus_home}/skills/` and nobody noticed.
+///
+/// A missing or unreadable directory degrades to a note rather than failing the
+/// whole config generation, matching how a missing Algorithm is handled above.
+fn enumerate_protocols(locus_home: &Path) -> String {
+    let dir = locus_home.join("protocols");
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return "<!-- No protocols directory found. Run `locus init` to install. -->".to_string();
+    };
+
+    let mut rows: Vec<(String, Option<String>)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|p| {
+            let name = p.file_name()?.to_str()?.to_string();
+            let summary = std::fs::read_to_string(&p)
+                .ok()
+                .as_deref()
+                .and_then(protocol_summary);
+            Some((name, summary))
+        })
+        .collect();
+
+    if rows.is_empty() {
+        return "<!-- No protocols installed. -->".to_string();
+    }
+
+    // Sorted so regenerating without changing anything produces no diff.
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    rows.into_iter()
+        .map(|(name, summary)| match summary {
+            Some(s) => format!("- `{name}` — {s}"),
+            None => format!("- `{name}`"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn generate_claude_md(locus_home: &Path) -> String {
     let home = locus_home.display();
 
@@ -51,6 +199,10 @@ pub fn generate_claude_md(locus_home: &Path) -> String {
     let algorithm_path = locus_home.join("algorithm").join("v1.1.md");
     let algorithm_content = std::fs::read_to_string(&algorithm_path)
         .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
+
+    let protocol_index = enumerate_protocols(locus_home);
+    let skill_list = enumerate_skills(locus_home);
+    let trait_list = enumerate_traits(locus_home);
 
     format!(
         r#"# Locus
@@ -64,7 +216,9 @@ For trivial requests (single file, single action, no investigation needed), hand
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md` via the Read tool.
 When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/` via the Read tool, then delegate via `locus delegate run`.
-Protocols are at `{home}/protocols/`.
+Protocols are at `{home}/protocols/`. **Read one via the Read tool when its subject is in play** — do not load them all:
+
+{protocols}
 
 User data (learnings, research, work artifacts, checkpoints) is persisted to `{home}/data/`.
 
@@ -105,7 +259,7 @@ The Algorithm document defines effort levels (Minimal, Standard, Extended, Advan
 
 Skills are NOT registered as native Claude Code skills — Locus deliberately keeps the Algorithm as the sole orchestration layer. When OBSERVE's capability selection identifies a skill, use the Read tool to load its SKILL.md from `{home}/skills/<skill-id>/SKILL.md`.
 
-Available skills: research, first-principles, iterative-depth, council, red-team, creative, science, extract-wisdom, documents, security, media, parser.
+Available skills: {skills}.
 
 ## Delegation Guardrail
 
@@ -146,9 +300,7 @@ Locus composes agent prompts from trait IDs. Use `locus agent compose` to build 
 
 **Available traits (by axis):**
 
-- **Expertise:** architecture, implementation, testing, security, research, design, product, data, infrastructure
-- **Stance:** skeptical, empirical, rationalist, contrarian, adversarial, systems-thinking, analogical, constructive, pragmatic, affirmative, negative, judge
-- **Approach:** thorough, rapid, systematic, iterative, hypothesis-driven, exploratory, structured-output, narrative
+{traits}
 
 Pick 2-4 traits across axes. One expertise + one stance + one approach is the standard pattern.
 
@@ -245,6 +397,9 @@ for verification of specific URLs.
 "#,
         home = home,
         algorithm = algorithm_content,
+        protocols = protocol_index,
+        skills = skill_list,
+        traits = trait_list,
     )
 }
 
@@ -610,4 +765,211 @@ fn upsert_hook(
         "type": "command",
         "command": command
     }));
+}
+
+#[cfg(test)]
+mod protocol_index_tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        std::fs::write(dir.join(name), body).expect("write fixture");
+    }
+
+    #[test]
+    fn summary_prefers_frontmatter_description() {
+        let c = "---\nname: x\ndescription: How Locus does the thing\n---\n\n# Ignored Heading\n";
+        assert_eq!(
+            protocol_summary(c).as_deref(),
+            Some("How Locus does the thing")
+        );
+    }
+
+    #[test]
+    fn summary_strips_quotes_from_description() {
+        let c = "---\ndescription: \"Quoted summary\"\n---\n";
+        assert_eq!(protocol_summary(c).as_deref(), Some("Quoted summary"));
+    }
+
+    /// The existing protocols have no frontmatter. They must index anyway, or
+    /// adding the mechanism would silently require migrating every file.
+    #[test]
+    fn summary_falls_back_to_h1_when_no_frontmatter() {
+        let c = "# Context Management Protocol\n\nHow Locus manages context.\n";
+        assert_eq!(
+            protocol_summary(c).as_deref(),
+            Some("Context Management Protocol")
+        );
+    }
+
+    #[test]
+    fn summary_is_none_when_neither_present() {
+        assert_eq!(protocol_summary("just prose, no heading\n"), None);
+    }
+
+    #[test]
+    fn missing_directory_degrades_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = enumerate_protocols(tmp.path()); // no protocols/ subdir
+        assert!(out.contains("No protocols directory"), "got: {out}");
+    }
+
+    #[test]
+    fn empty_directory_degrades_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("protocols");
+        std::fs::create_dir(&dir).unwrap();
+        assert!(enumerate_protocols(tmp.path()).contains("No protocols installed"));
+    }
+
+    #[test]
+    fn indexes_markdown_and_excludes_everything_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("protocols");
+        std::fs::create_dir(&dir).unwrap();
+        write(&dir, "alpha.md", "# Alpha Protocol\n");
+        write(&dir, "notes.txt", "# Not A Protocol\n");
+        std::fs::create_dir(dir.join("subdir")).unwrap();
+
+        let out = enumerate_protocols(tmp.path());
+        assert!(out.contains("`alpha.md` — Alpha Protocol"), "got: {out}");
+        assert!(!out.contains("notes.txt"), "got: {out}");
+        assert!(!out.contains("subdir"), "got: {out}");
+    }
+
+    /// Regenerating without changing anything must not produce a diff, so the
+    /// order cannot depend on read_dir's arbitrary ordering.
+    #[test]
+    fn ordering_is_deterministic_not_filesystem_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("protocols");
+        std::fs::create_dir(&dir).unwrap();
+        for n in ["zulu.md", "alpha.md", "mike.md"] {
+            write(&dir, n, "# H\n");
+        }
+
+        let out = enumerate_protocols(tmp.path());
+        let order: Vec<&str> = out.lines().filter_map(|l| l.split('`').nth(1)).collect();
+        assert_eq!(order, vec!["alpha.md", "mike.md", "zulu.md"]);
+        assert_eq!(out, enumerate_protocols(tmp.path()), "not idempotent");
+    }
+
+    #[test]
+    fn file_without_summary_is_still_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("protocols");
+        std::fs::create_dir(&dir).unwrap();
+        write(&dir, "bare.md", "no heading here\n");
+        assert!(enumerate_protocols(tmp.path()).contains("- `bare.md`"));
+    }
+
+    /// The bug this whole change exists to fix: a protocol on disk that the
+    /// generated CLAUDE.md never mentions.
+    #[test]
+    fn generated_claude_md_names_every_installed_protocol() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("protocols");
+        std::fs::create_dir(&dir).unwrap();
+        write(&dir, "orchestration.md", "# Orchestration Protocol\n");
+        write(&dir, "messaging.md", "# Session Messaging Protocol\n");
+        write(&dir, "memory-schema.md", "# Memory Schema\n");
+
+        let md = generate_claude_md(tmp.path());
+        for f in ["orchestration.md", "messaging.md", "memory-schema.md"] {
+            assert!(md.contains(f), "generated CLAUDE.md never mentions {f}");
+        }
+        assert!(md.contains("do not load them all"), "missing on-demand guidance");
+    }
+}
+
+#[cfg(test)]
+mod skill_index_tests {
+    use super::*;
+
+    /// The `delegation` skill shipped on disk and was absent from the hardcoded
+    /// directive list, so no session knew it existed. Enumeration must not be
+    /// able to reproduce that.
+    #[test]
+    fn every_installed_skill_appears_in_the_directive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        for name in ["delegation", "research", "red-team"] {
+            let d = skills.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("SKILL.md"), "# skill\n").unwrap();
+        }
+
+        let md = generate_claude_md(tmp.path());
+        for name in ["delegation", "research", "red-team"] {
+            assert!(md.contains(name), "directive never mentions skill {name}");
+        }
+    }
+
+    #[test]
+    fn directory_without_skill_md_is_not_a_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skills = tmp.path().join("skills");
+        std::fs::create_dir_all(skills.join("stray")).unwrap();
+        let real = skills.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("SKILL.md"), "# s\n").unwrap();
+
+        let out = enumerate_skills(tmp.path());
+        assert_eq!(out, "real");
+    }
+
+    #[test]
+    fn missing_skills_directory_degrades_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(enumerate_skills(tmp.path()).contains("No skills directory"));
+    }
+}
+
+#[cfg(test)]
+mod trait_index_tests {
+    use super::*;
+
+    /// `compose` validates against traits.yaml at runtime, so a hand-written
+    /// copy in the directive could advertise a trait that does not exist, or
+    /// omit one that does. Both are silent.
+    #[test]
+    fn directive_offers_exactly_what_traits_yaml_defines() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let yaml = repo.join("agents/traits.yaml");
+        let traits = locus_core::agents::Traits::from_file(&yaml).expect("parse traits.yaml");
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::copy(&yaml, tmp.path().join("agents/traits.yaml")).unwrap();
+
+        let rendered = enumerate_traits(tmp.path());
+        for id in traits
+            .expertise
+            .keys()
+            .chain(traits.stance.keys())
+            .chain(traits.approach.keys())
+        {
+            assert!(rendered.contains(id.as_str()), "trait `{id}` is never offered");
+        }
+    }
+
+    #[test]
+    fn missing_traits_file_degrades_without_panicking() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(enumerate_traits(tmp.path()).contains("not found"));
+    }
+
+    #[test]
+    fn empty_axes_do_not_emit_a_bullet() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("agents")).unwrap();
+        std::fs::write(
+            tmp.path().join("agents/traits.yaml"),
+            "version: \"1\"\nstance:\n  skeptical:\n    name: Skeptical\n    \
+             description: d\n    prompt_fragment: p\n",
+        )
+        .unwrap();
+        let out = enumerate_traits(tmp.path());
+        assert!(out.contains("Stance"), "got: {out}");
+        assert!(!out.contains("Expertise"), "empty axis emitted: {out}");
+    }
 }
