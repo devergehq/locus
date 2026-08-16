@@ -56,7 +56,7 @@ A one-member "council" is not a debate — skip the skill and use First Principl
 
 ## Composing a Member Prompt
 
-Each member is spawned via `locus delegate run` with a prompt composed from their trait bundle:
+Each member is spawned via `allele_sessions_create` with a prompt composed from their trait bundle:
 
 ```
 locus agent compose --traits "architecture,systems-thinking,skeptical" \

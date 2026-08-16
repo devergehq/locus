@@ -47,6 +47,13 @@ fn web_search_enabled_from_env() -> bool {
 /// changing the env with `locus platform add opencode`.
 ///
 /// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
+/// Note on delegation: this directive still routes to `locus delegate run`,
+/// and that is deliberate rather than stale. The allele MCP is registered for
+/// Claude Code only (`~/.claude.json`), and this adapter configures no MCP
+/// servers, so an OpenCode session cannot call `allele_sessions_create`.
+/// `locus delegate run` is the only delegation mechanism available on this
+/// platform — see `protocols/degradation.md`. Do not "align" this with the
+/// Claude directive without first giving OpenCode a route to the MCP.
 pub fn generate_agents_md(locus_home: &Path) -> String {
     generate_agents_md_with(locus_home, web_search_enabled_from_env())
 }
@@ -526,4 +533,28 @@ pub struct NativeConfigWrite {
     pub agents_md_path: PathBuf,
     /// Path to the native opencode.json.
     pub config_path: PathBuf,
+}
+
+#[cfg(test)]
+mod platform_delegation_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// OpenCode has no route to the allele MCP, so `locus delegate run` is the
+    /// only delegation mechanism it has. This test exists to stop someone
+    /// migrating this directive to `allele_sessions_create` for consistency
+    /// with the Claude side and silently leaving OpenCode unable to delegate
+    /// at all.
+    #[test]
+    fn opencode_directive_keeps_locus_delegate_run() {
+        let md = generate_agents_md(Path::new("/home/test/.locus"));
+        assert!(
+            md.contains("locus delegate run"),
+            "OpenCode has no allele MCP; removing this leaves it no way to delegate"
+        );
+        assert!(
+            !md.contains("allele_sessions_create"),
+            "OpenCode cannot call the allele MCP — do not advertise it here"
+        );
+    }
 }

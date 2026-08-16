@@ -28,9 +28,9 @@ Three methodology-diverse researchers, each tuned to a different facet of the su
 2. **Investigative researcher** — subject's recent work, projects, public statements, controversies or reversals of position.
 3. **Contrarian researcher** — positions where the subject's view diverges from consensus or from their own past views.
 
-**The skill orchestrates; OpenCode does the research.** Dispatch all three `locus delegate run` Bash tool calls in a single assistant message — the platform tracks them as parallel tool uses and they execute concurrently.
+**The skill orchestrates; OpenCode does the research.** Dispatch all three `allele_sessions_create` Bash tool calls in a single assistant message — the platform tracks them as parallel tool uses and they execute concurrently.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the raw research happens out-of-context and only a compact envelope returns.
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the raw research happens out-of-context and only the report comes back.
 
 Substitute `<subject>` in each prompt with the subject's full name plus a one-line role descriptor (e.g., `"Jane Doe, computational biologist at MIT"`). Build each prompt with `locus agent compose` and dispatch all three blocks in a single assistant message:
 
@@ -40,13 +40,11 @@ ACADEMIC_PROMPT=$(locus agent compose \
   --role "Academic researcher" \
   --task "<subject>'s published work, papers, and intellectual lineage. Surface the specific positions they have argued in print, with citations.")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$ACADEMIC_PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this is the address>",
+  prompt:  $ACADEMIC_PROMPT
+)
 ```
 
 ```bash
@@ -55,13 +53,11 @@ INVESTIGATIVE_PROMPT=$(locus agent compose \
   --role "Investigative researcher" \
   --task "<subject>'s recent work, projects, public statements over the last 24 months. Flag controversies, reversals of position, or unfinished arguments.")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$INVESTIGATIVE_PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this is the address>",
+  prompt:  $INVESTIGATIVE_PROMPT
+)
 ```
 
 ```bash
@@ -70,16 +66,14 @@ CONTRARIAN_PROMPT=$(locus agent compose \
   --role "Contrarian researcher" \
   --task "Positions where <subject> diverges from consensus, or from their own earlier views. Identify the strongest critics of those positions and what those critics actually argue.")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$CONTRARIAN_PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this is the address>",
+  prompt:  $CONTRARIAN_PROMPT
+)
 ```
 
-Each call returns a JSON envelope on stdout with `summary`, `findings`, `evidence`, `risks`, `files_referenced`, and `raw_output_path`.
+Each worker replies with a report containing `summary`, `findings`, `evidence`, `risks`, `files_referenced`, and `raw_output_path`.
 
 **Failure handling:** if 2 of 3 succeed, generate questions from the 2 and flag the missing methodology in the output. If 0 of 3 succeed, report failure and offer to retry sequentially.
 

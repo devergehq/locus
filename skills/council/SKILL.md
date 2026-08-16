@@ -31,7 +31,7 @@ Multi-agent debate system where specialised agents discuss topics in structured 
 
 ## Execution model
 
-**The council skill is the orchestrator. Each member runs in OpenCode via `locus delegate run --mode native`.**
+**The council skill is the orchestrator. Each member runs in OpenCode via `allele_sessions_create`.**
 
 The orchestrator (this Claude session) is responsible for:
 - Choosing the member roster (default: Architect + Engineer + Designer + Researcher; modify per `CouncilMembers.md`)
@@ -39,9 +39,9 @@ The orchestrator (this Claude session) is responsible for:
 - Inlining the prior round's transcript into each subsequent round's `--task` text
 - Synthesising the final council recommendation from the collected member responses
 
-Each round dispatches N parallel `locus delegate run` calls (one per member) in a single assistant message. The platform parallelises them; each returns a JSON envelope with the member's response in `summary`. Only the synthesised transcript enters the orchestrator's context — the raw model deliberation stays out-of-process.
+Each round dispatches N parallel `allele_sessions_create` calls (one per member) in a single assistant message. The platform parallelises them; each replies with a report whose `summary` carries the member's response. Only the synthesised transcript enters the orchestrator's context — the raw model deliberation stays out-of-process.
 
-**Why:** members reasoning in their own context produces more honest perspective diversity than Task subagents that share the orchestrator's full context. Distinct provider + structured envelope + per-member trait composition is the council's epistemic contract.
+**Why:** members reasoning in their own context produces more honest perspective diversity than Task subagents that share the orchestrator's full context. Per-member trait composition + a fresh context per member + a structured report is the council's epistemic contract.
 
 **DO NOT use the platform-native Task tool for member dispatch.** See `RoundStructure.md` for the canonical dispatch idiom.
 
@@ -72,6 +72,6 @@ Additional roles can be added based on topic (Security, Writer, etc.).
 
 ## Degradation
 
-- **With `locus delegate run` available**: full parallel multi-agent debate; each round is N concurrent `locus delegate run` calls in one assistant message.
-- **`locus delegate run` rate-limited**: degrade to sequential per-member dispatch within each round (slower; each round becomes ~N×single-call latency instead of one wave).
-- **`locus delegate run` not on PATH**: council degrades to in-context simulation by the orchestrator (lossy — perspective diversity is reduced because all members share the orchestrator's context). Surface the degradation in the output.
+- **With `allele_sessions_create` available**: full parallel multi-agent debate; each round is N concurrent `allele_sessions_create` calls in one assistant message.
+- **`allele_sessions_create` rate-limited**: degrade to sequential per-member dispatch within each round (slower; each round becomes ~N×single-call latency instead of one wave).
+- **`allele_sessions_create` not on PATH**: council degrades to in-context simulation by the orchestrator (lossy — perspective diversity is reduced because all members share the orchestrator's context). Surface the degradation in the output.

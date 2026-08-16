@@ -28,11 +28,11 @@ If in doubt, use `academic-researcher` — it has the highest citation disciplin
 
 Craft one query. Be specific. "Bash read command flags" is a weak query; "`read -t` flag behaviour on macOS Bash 3.2 vs Bash 5" is a good Quick query — specific enough to get a precise answer.
 
-### Step 3 — Delegate via `locus delegate run`
+### Step 3 — Delegate via `allele_sessions_create`
 
-**The skill orchestrates; OpenCode does the research.** Compose the prompt with `locus agent compose`, then dispatch a single `locus delegate run` Bash call. The trait bundle below picks the chosen methodology's canonical composition (per `agents/{methodology}-researcher.md`).
+**The skill orchestrates; OpenCode does the research.** Compose the prompt with `locus agent compose`, then dispatch a single `allele_sessions_create` Bash call. The trait bundle below picks the chosen methodology's canonical composition (per `agents/{methodology}-researcher.md`).
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the heavy work runs out-of-context and only a compact envelope returns.
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the heavy work runs out-of-context and only the report comes back.
 
 Pick the trait bundle for the chosen methodology:
 
@@ -45,26 +45,30 @@ Pick the trait bundle for the chosen methodology:
 
 Then:
 
+**1 — compose the worker's prompt.** Run this and read its output:
+
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "<bundle from table above>" \
   --role "<methodology> researcher" \
-  --task "<the focused query>")
-
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "<the focused query>"
 ```
 
-The returned JSON envelope has `summary`, `findings`, `evidence`, `files_referenced`. Use those directly.
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
+```
+
+The report carries `summary`, `findings`, `evidence`, `files_referenced`. Use those directly.
 
 ### Step 4 — Adversarial claim verification
 
-Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the findings, then dispatch 3 adversarial verifiers per claim via `locus delegate run`. Even Quick mode produces claims worth pressure-testing — a single unchecked wrong answer is worse than a slower correct one.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the findings, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`. Even Quick mode produces claims worth pressure-testing — a single unchecked wrong answer is worse than a slower correct one.
 
 For Quick mode, expect 2-4 claims. Dispatch all votes (6-12 delegates) in a single message for parallel execution. Wall-clock cost: ~15s additional.
 

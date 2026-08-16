@@ -150,71 +150,121 @@ mod tests {
     }
 
     #[test]
-    fn claude_md_contains_delegation_section() {
+    fn claude_md_contains_dispatch_section() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         assert!(content.contains("## Delegation Guardrail"));
-        assert!(content.contains("## Locus Delegate"));
-        assert!(content.contains("locus delegate run"));
-        assert!(content.contains("--backend opencode"));
-        assert!(content.contains("--model openai/gpt-5.6-sol"));
+        assert!(content.contains("## Dispatching Sessions (allele MCP)"));
         assert!(content.contains("prohibited for Locus delegation"));
-        assert!(content.contains("read-only"));
-        assert!(content.contains("summary"));
-        assert!(content.contains("findings"));
-        assert!(content.contains("files_referenced"));
+
+        // Every lifecycle tool must be named, or a session cannot complete the
+        // loop it is told to run.
+        for tool in [
+            "allele_projects_list",
+            "allele_sessions_create",
+            "allele_sessions_list",
+            "allele_sessions_status",
+            "allele_sessions_interrupt",
+            "allele_sessions_discard",
+        ] {
+            assert!(content.contains(tool), "directive never names {tool}");
+        }
+
+        // The report shape downstream synthesis parses.
+        for field in ["summary", "findings", "evidence", "risks", "files_referenced"] {
+            assert!(content.contains(field), "report shape missing {field}");
+        }
     }
 
+    /// `locus delegate run` appears in the directive only as the standalone
+    /// fallback for sessions outside allele — never as the primary route. The
+    /// distinction is the whole point: a session told to use both as equals
+    /// will pick whichever it read last.
     #[test]
-    fn claude_md_documents_native_and_algorithmic_modes() {
+    fn claude_md_names_delegate_run_only_as_the_fallback() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        // The invocation example must show the new --mode flag.
+
+        // The fallback must exist, or a session outside allele has no way to
+        // delegate at all and the guardrail becomes a dead end.
         assert!(
-            content.contains("--mode native"),
-            "delegation example must show --mode native"
+            content.contains("locus delegate run"),
+            "no standalone fallback — sessions outside allele cannot delegate"
         );
-        // Both modes must be named so the reader knows the knob exists.
         assert!(
-            content.contains("`--mode algorithmic`"),
-            "must mention --mode algorithmic as the opt-in for the rare case"
+            content.contains("When allele is not available"),
+            "fallback is present but not framed as a fallback"
         );
-        // Must explain that native is the default (so the user understands
-        // omitting --mode is safe).
+
+        // It must be conditional on allele's absence, not offered as an
+        // alternative primary route.
+        assert!(
+            content.contains("allele is not running"),
+            "fallback must state the condition that triggers it"
+        );
+
+        // And the guardrail must still forbid the thing it always forbade.
+        assert!(
+            content.contains("never to native Task/Agent delegation")
+                || content.contains("Do not use platform-native Task/Agent"),
+            "native subagents must remain prohibited"
+        );
+    }
+
+    /// These three are silent when broken: a cached address fails only later, a
+    /// misread ListAgents looks like success, and an undiscarded session just
+    /// consumes a slot.
+    #[test]
+    fn claude_md_states_the_three_silent_dispatch_rules() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         let lower = content.to_lowercase();
+
         assert!(
-            lower.contains("native") && lower.contains("default"),
-            "must state that native is the default mode"
+            lower.contains("not an address") || lower.contains("never an address"),
+            "must say sessions_create does not return an address"
+        );
+        assert!(
+            lower.contains("awaiting_input") && lower.contains("response_ready"),
+            "must name the states that distinguish blocked from finished"
+        );
+        assert!(
+            lower.contains("discard"),
+            "must state the discard obligation"
         );
     }
 
     #[test]
-    fn claude_md_delegation_lists_when_to_use() {
+    fn claude_md_dispatch_lists_when_to_use() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         let section_start = content
-            .find("## Locus Delegate")
-            .expect("delegation section present");
+            .find("## Dispatching Sessions (allele MCP)")
+            .expect("dispatch section present");
         let section_end = content[section_start..]
             .find("## Platform Tools")
             .expect("section bounded by Platform Tools heading")
             + section_start;
         let section = &content[section_start..section_end];
 
-        assert!(section.contains("**When to delegate:**"));
-        assert!(section.contains("**When NOT to delegate:**"));
-        assert!(section.contains("**Result envelope:**"));
-        let when_to_bullets = section
-            .split("**When to delegate:**")
+        assert!(section.contains("**When to dispatch:**"));
+        assert!(section.contains("**When NOT to dispatch:**"));
+
+        let when_to = section
+            .split("**When to dispatch:**")
             .nth(1)
-            .and_then(|s| s.split("**When NOT to delegate:**").next())
+            .and_then(|s| s.split("**When NOT to dispatch:**").next())
             .unwrap_or("");
-        let bullet_count = when_to_bullets
+        let bullets = when_to
             .lines()
             .filter(|l| l.trim_start().starts_with("- "))
             .count();
-        assert!(
-            bullet_count >= 3,
-            "expected at least 3 when-to bullets, got {}",
-            bullet_count
-        );
+        assert!(bullets >= 3, "expected at least 3 when-to bullets, got {bullets}");
+    }
+
+    /// Depth and the cap are what stop the Algorithm's own dispatch rule from
+    /// recursing in every child.
+    #[test]
+    fn claude_md_states_dispatch_limits() {
+        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
+        assert!(content.contains("depth 3"), "depth limit not stated");
+        assert!(content.contains("20"), "global cap not stated");
     }
 
     #[test]

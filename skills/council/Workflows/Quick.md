@@ -28,11 +28,11 @@ Use when: a sanity check is enough; you need multiple perspectives on a small qu
 
 ### Step 2 — Round 1: Initial Positions
 
-Dispatch N parallel `locus delegate run` calls (one per member) in a single assistant message, per the dispatch idiom in `RoundStructure.md`. Each member's prompt follows the Round 1 template there.
+Dispatch N parallel `allele_sessions_create` calls (one per member) in a single assistant message, per the dispatch idiom in `RoundStructure.md`. Each member's prompt follows the Round 1 template there.
 
 **DO NOT use the platform Task tool for this step** — see `RoundStructure.md`'s "Dispatch idiom" section.
 
-Collect responses (each member's text from the JSON envelope's `summary` field). Display as:
+Collect responses (each member's text from the report's `summary` section). Display as:
 
 ```markdown
 ### Round 1: Initial Positions

@@ -12,30 +12,34 @@ Two rounds are insufficient: members state positions and rebut once, with no cha
 
 ## Dispatch idiom
 
-Each round dispatches one `locus delegate run` per member, all in a single assistant message so the platform parallelises them. Each member's prompt is composed via `locus agent compose` from that member's trait bundle. **DO NOT use the platform-native Task tool** — Task subagents burn the orchestrator's context budget; native delegation runs the member out-of-process and returns a compact envelope.
+Each round dispatches one `allele_sessions_create` per member, all in a single assistant message so the platform parallelises them. Each member's prompt is composed via `locus agent compose` from that member's trait bundle. **DO NOT use the platform-native Task tool** — Task subagents burn the orchestrator's context budget; dispatch runs the member in its own session, which reports back.
 
 The shape of each per-member dispatch is:
 
+**1 — compose the worker's prompt.** Run this and read its output:
+
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "<member trait bundle>" \
   --role "Council member: <RoleName>" \
-  --task "<round-specific task; see per-round prompts below>")
-
-locus delegate run \
-  --backend opencode \
-  --task-kind general \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "<round-specific task; see per-round prompts below>"
 ```
 
-The returned envelope's `summary` is the member's response; the orchestrator collects the N envelopes and assembles the transcript before the next round.
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
+```
+
+The report's `summary` is the member's response; the orchestrator collects the N reports and assembles the transcript before the next round.
 
 ## Round 1 — Initial Positions
 
-**Parallel execution.** Dispatch one `locus delegate run` per member in a single assistant message.
+**Parallel execution.** Dispatch one `allele_sessions_create` per member in a single assistant message.
 
 **Each member's `--task` text:**
 
@@ -52,11 +56,11 @@ Give your initial position on this topic from your composed stance.
 - You will engage with other members' positions in Round 2.
 ```
 
-**Collect** the responses (each from the JSON envelope's `summary` field) and **display** the transcript in full before proceeding.
+**Collect** the responses (each from the report's `summary` section) and **display** the transcript in full before proceeding.
 
 ## Round 2 — Responses & Challenges
 
-**Parallel execution.** Dispatch per-member `locus delegate run` calls again, with the full Round 1 transcript inlined into each `--task` text.
+**Parallel execution.** Dispatch per-member `allele_sessions_create` calls again, with the full Round 1 transcript inlined into each `--task` text.
 
 **Each member's `--task` text:**
 
@@ -83,7 +87,7 @@ The value is in genuine intellectual friction — engage with their actual argum
 
 ## Round 3 — Synthesis
 
-**Parallel execution.** Dispatch per-member `locus delegate run` calls with the full Rounds 1 + 2 transcripts in each `--task` text.
+**Parallel execution.** Dispatch per-member `allele_sessions_create` calls with the full Rounds 1 + 2 transcripts in each `--task` text.
 
 **Each member's `--task` text:**
 

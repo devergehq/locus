@@ -215,7 +215,7 @@ Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial 
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md` via the Read tool.
-When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/` via the Read tool, then delegate via `locus delegate run`.
+When the Algorithm calls for agent delegation, read agent definitions from `{home}/agents/` via the Read tool, then dispatch a session via `allele_sessions_create`.
 Protocols are at `{home}/protocols/`. **Read one via the Read tool when its subject is in play** — do not load them all:
 
 {protocols}
@@ -263,31 +263,45 @@ Available skills: {skills}.
 
 ## Delegation Guardrail
 
-Any agent-style delegation MUST go through `locus delegate run`. Do not use platform-native Task/Agent subagents for research, code exploration, council/red-team work, or any other delegated agent work. Native subagents burn orchestrator context and bypass Locus's compact result envelope.
+Any agent-style delegation MUST go through the **allele MCP** (`allele_sessions_create`). Do not use platform-native Task/Agent subagents for research, code exploration, council/red-team work, or any other delegated agent work. Native subagents burn orchestrator context, inherit this session's framing, and are invisible to the human.
 
-If `locus delegate run` is unavailable or failing, do not fall back to native Task/Agent delegation. Continue serially or ask the user how to proceed.
+If the allele MCP is unavailable, fall back to `locus delegate run` — never to native Task/Agent delegation, and never to doing the work inline.
+
+### When allele is not available
+
+The allele MCP talks to a socket allele binds at startup. If the `allele_*` tools are not present, **allele is not running and this session is outside it** — a plain terminal, `claude.ai/code`, CI, or allele simply closed. That is a supported way to run Locus, not an error.
+
+```bash
+locus agent compose --traits "..." --role "..." --task "..."   # unchanged
+locus delegate run --backend opencode --task-kind general --mode native \
+  --dir . --prompt "<composed prompt>" --output json
+```
+
+You lose the session — no workspace, no branch, no conversation, and it returns a JSON envelope rather than replying. You keep delegation, which is what matters. Say which mode you are in rather than silently producing lesser work:
+
+```
+Dispatch normally creates real allele sessions. allele is not available here,
+so this is running through `locus delegate run` instead: read-only, no branch,
+and no way to ask the worker a follow-up question.
+```
+
+`locus delegate run` is the standalone path, not the safe one — it is not a security boundary (`bash: allow` sits beside `edit: deny`; see DEV-419).
 
 ### Delegation Denial Compliance (CRITICAL)
 
-When a hook denies a native Agent or Task tool call, the denial message contains the exact `locus delegate run` command to execute instead. You MUST execute that command immediately via Bash. Specifically:
+When a hook denies a native Agent or Task tool call, dispatch an allele session instead. Specifically:
 
 - **Do NOT** fall back to doing the work yourself ("I'll just read the files directly", "Let me handle this in the current session")
 - **Do NOT** say "since I can't delegate, I'll do it manually" — that defeats the entire purpose of delegation
-- **Do** copy the `locus delegate run` command from the denial message and run it via Bash
-- The denial means "use this other tool", not "give up on delegation"
+- **Do** compose the worker's prompt with `locus agent compose` and dispatch it with `allele_sessions_create`
+- The denial means "use the other mechanism", not "give up on delegation"
 
-This is the single most common compliance failure. If you catch yourself about to do delegated work inline after a denial, stop and run `locus delegate run` instead.
-
-## Memory
-
-Locus maintains its own project memory at `{home}/data/projects/`. When reading or writing memories:
-
-- **Read from both**: check `{home}/data/projects/` (Locus canonical store) AND `~/.claude/projects/*/memory/` (Claude Code native). Locus is authoritative when they conflict.
-- **Write to both**: Claude Code's native memory system is mirrored automatically by hooks, but always verify Locus has the memory too. If writing something important, write it to the Locus project directory directly.
-
+This is the single most common compliance failure. If you catch yourself about to do delegated work inline after a denial, stop and dispatch a session instead.
 ## Agent Composition
 
-Locus composes agent prompts from trait IDs. Use `locus agent compose` to build a trait-composed prompt, then pass it to `locus delegate run --prompt`.
+Locus composes agent prompts from trait IDs. Use `locus agent compose` to build a trait-composed prompt, then pass that text as the `prompt` argument to `allele_sessions_create`.
+
+Trait composition is the main lever that makes dispatched workers reason differently. A fresh context and a distinct task framing do the rest; identical prompts produce correlated answers no matter how the work is dispatched.
 
 **CLI reference — `locus agent compose`:**
 
@@ -306,74 +320,87 @@ Pick 2-4 traits across axes. One expertise + one stance + one approach is the st
 
 **Compose-then-delegate workflow:**
 
+**1 — compose the worker's prompt.** Run this and read its output:
+
 ```bash
-# 1. Compose the agent prompt
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "research,skeptical,systematic" \
   --role "Security researcher" \
-  --task "Investigate auth token storage patterns in this codebase")
-
-# 2. Delegate the composed agent
-locus delegate run \
-  --backend opencode \
-  --model openai/gpt-5.6-sol \
-  --task-kind code-exploration \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "Investigate auth token storage patterns in this codebase"
 ```
 
-For parallel dispatch, issue multiple compose+delegate pairs as separate Bash tool calls in one assistant message.
+**2 — dispatch it.** Pass the composed text as `prompt`:
 
-## Locus Delegate
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "Auth Token Audit",
+  prompt:  "<the composed prompt from step 1, plus the report shape you want back>"
+)
+```
 
-For bounded read-only work that would otherwise burn the orchestrator's context (large codebase exploration, lengthy research sweeps, doc digests), shell out to `locus delegate run --backend opencode` instead of doing the work in-session. Native subagents stay prohibited: they are other Claudes sharing the orchestrator budget, while Locus Delegate runs out-of-process and returns a compact JSON envelope so the raw exploration never enters this context.
+The `name` becomes the session's address, so make it specific — a generic name forces every peer to disambiguate by ref.
 
-**When to delegate:**
-- Research with broad scope (multiple sources, comparison sweeps, "what's the state of X")
-- Read-only codebase mapping in unfamiliar repos (>5 files to understand structure)
-- Documentation or API surface enumeration where the answer is structured but voluminous
-- Any task whose intermediate work matters less than its final summary
+For parallel fan-out, compose each worker's prompt and issue the `allele_sessions_create` calls in one assistant message. Then converse with each as it reports, rather than serialising on the slowest.
 
-**When NOT to delegate:**
-- Trivial lookups (one file, one grep) — the round-trip costs more than doing it
-- Anything requiring writes, commits, or persistent state changes (delegation is read-only)
-- Time-sensitive work in an interactive flow (delegation adds 30-90s latency)
-- Tasks that depend on context already loaded in this session
-- Anything that needs a tool the backend doesn't have (e.g. a specific MCP server)
+## Dispatching Sessions (allele MCP)
 
-**CLI reference — `locus delegate run`:**
+Work leaves this session by becoming a **real allele session** — visible in the sidebar, interruptible, takeable-over, with its own workspace and branch. Not a subagent, not a hidden process, nothing the human cannot see.
 
-| Flag | Required | Default | Description |
-|------|----------|---------|-------------|
-| `--backend <BACKEND>` | Yes | — | Backend to use (`opencode`) |
-| `--model <MODEL>` | No | `openai/gpt-5.6-sol` | Provider-qualified model identifier |
-| `--task-kind <KIND>` | Yes | — | `research`, `code-exploration`, or `general` |
-| `--dir <DIR>` | Yes | — | Workspace directory for the delegated backend |
-| `--prompt <PROMPT>` | Yes | — | Task prompt (or composed agent prompt from `locus agent compose`) |
-| `--mode <MODE>` | No | `native` | `native` (no Algorithm) or `algorithmic` (loads Algorithm — rarely wanted) |
-| `--output <MODE>` | No | `json` | `json` (machine-readable) or `human` (readable status) |
-| `--context-file <PATH>` | No | — | Attach a file as context (repeatable for multiple files) |
-| `--agent <NAME>` | No | — | Backend agent/profile name |
-| `--timeout-seconds <N>` | No | `1200` | Maximum execution time (20 min default) |
-| `--dry-run` | No | — | Print request JSON without invoking the backend |
+**When to dispatch:**
+- Work that must produce its own commits on its own branch
+- 3+ independent workstreams that genuinely parallelise
+- Investigation spanning 5+ files where only the conclusion matters here
+- An independent perspective is the deliverable — red team, council, second opinion
+- A blocker you cannot resolve without derailing the work in front of you
 
-Use `--task-kind code-exploration` for codebase mapping, `--task-kind research` for web/doc research, and `--task-kind general` for everything else. Use `--model openai/gpt-5.6-sol` for the standard delegate model.
+**When NOT to dispatch:**
+- A single Grep/Glob/Read answers it in seconds
+- The work depends on context already loaded here that would be costly to transfer
+- You need to watch the intermediate reasoning directly
+- You are at depth 3
 
-**`--mode native` is the default and almost always what you want.** It runs the delegated session with no Locus orchestration scaffolding loaded — the delegated model just reads the prompt and produces the requested output, no `OBSERVE → THINK → PLAN` phases, no Mode Classification. Use `--mode algorithmic` *only* in the rare case the delegated session itself needs to orchestrate (you almost never want this; the orchestrator is *this* session, not the delegate).
+**The lifecycle:**
 
-**Result envelope:**
+```
+1. compose   locus agent compose --traits "..." --role "..." --task "..."
+2. dispatch  allele_sessions_create(project, name, prompt)   -> session_id, name
+3. address   ListAgents -> "name [ref]"        fresh, every send; refs rotate
+4. converse  SendMessage(to: "name [ref]", ...)
+5. check     allele_sessions_status(session_id) -> state == "response_ready"
+6. reclaim   allele_sessions_discard(session_id)
+```
 
-The command prints a single JSON object with these fields:
-- `summary` — one-paragraph synthesis of the model's final answer
-- `findings` — bulleted observations extracted from the answer
-- `evidence` — concrete references the answer cited
-- `risks` — caveats or limitations the model flagged
-- `files_referenced` — paths the model read or named
-- `raw_output_path` — JSONL artifact with the full event stream, for deep dives
+**Tools:**
 
-Read `summary`, `findings`, and `files_referenced` straight into your reasoning. Only open `raw_output_path` if you need detail the envelope dropped.
+| Tool | Purpose |
+|------|---------|
+| `allele_projects_list` | discover projects a session can be created in |
+| `allele_sessions_create` | provision a workspace and start a session with an initial prompt |
+| `allele_sessions_list` | every session and its state |
+| `allele_sessions_status` | state of one session, with `state_age_secs` |
+| `allele_sessions_interrupt` | stop what a dispatched session is doing |
+| `allele_sessions_discard` | commit, archive the branch, free the slot |
+
+`allele_sessions_create` takes `project`, `name`, `prompt`, and optional `orchestration` (`full` / `startup_only` / `nothing`; defaults to `startup_only` — the startup command runs so tests work, without opening drawer terminals).
+
+**Three rules that are silent when broken:**
+
+1. **`sessions_create` returns a `session_id`, not an address.** Refs are minted inside Claude Code and rotate wholesale. Resolve the name through `ListAgents` fresh at every send, and treat a rejected send as "re-resolve and retry", not as an error.
+2. **Never conclude a worker is finished from `ListAgents`.** It collapses six states into idle/busy. `response_ready` means finished; `awaiting_input` means blocked on a permission prompt with nobody coming unless a human acts.
+3. **Discard when done.** Discard commits uncommitted work and archives the branch first, so reclaiming a slot never loses anything. A session left running holds a slot against the global cap and becomes invisible work nobody owns.
+
+**Limits:** depth 3 (depth 0 is human-started; depth 3 does not dispatch), and a global cap of 20 concurrent dispatched sessions aggregated across all dispatchers. Both are derived by allele — depth is never caller-supplied.
+
+**Ask for the report shape you need**, in the dispatch prompt — a dispatched session replies, it does not return a value:
+
+```
+When finished, SendMessage back to me with: summary, findings, evidence,
+risks, files_referenced. Put the command you ran and the output you saw
+under evidence — a conclusion cannot be checked, a method can.
+```
+
+**Keep the prompt short.** Orientation plus an artifact URL beats a long inline brief.
 
 ## Platform Tools (Claude Code)
 
@@ -383,7 +410,7 @@ The following native tools are available in this Claude Code session:
 - **bash** — execute shell commands
 - **web_search** — open-ended web search
 - **web_fetch** — retrieve content from URLs
-- **task** — available, but prohibited for Locus delegation; use `locus delegate run`
+- **task** — available, but prohibited for Locus delegation; dispatch via `allele_sessions_create`
 - **glob** — find files by pattern
 - **grep** — search file contents
 
