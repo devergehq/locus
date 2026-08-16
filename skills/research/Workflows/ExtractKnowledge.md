@@ -91,24 +91,28 @@ If the source exceeds ~10,000 words (long paper, book chapter, full transcript),
 
 Delegate the extraction to a single OpenCode agent instead:
 
-**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the long source and the per-entry schema fills stay out of orchestrator context.
+**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the long source and the per-entry schema fills stay out of orchestrator context.
+
+**1 — compose the worker's prompt.** Run this and read its output:
 
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "research,empirical,rationalist,systematic,skeptical" \
   --role "Knowledge extractor" \
-  --task "Apply the Extract Knowledge workflow to the content at <source path or URL>. Schema: <schema name on first line, then each field one-per-line as 'field: type'>. For each load-bearing item, fill the schema fields; preserve direct quotes verbatim where phrasing matters; cite location (page/timestamp) within the source. Mark fields not specified in the source as 'not specified in source' — do not invent.")
-
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "Apply the Extract Knowledge workflow to the content at <source path or URL>. Schema: <schema name on first line, then each field one-per-line as 'field: type'>. For each load-bearing item, fill the schema fields; preserve direct quotes verbatim where phrasing matters; cite location (page/timestamp) within the source. Mark fields not specified in the source as 'not specified in source' — do not invent."
 ```
 
-The envelope's `findings` field carries the entries; pipe into the output template.
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
+```
+
+The report's `findings` section carries the entries; pipe into the output template.
 
 **Failure handling:** if the delegation fails (rate limit, network, parse error), fall back to inline extraction with an explicit budget warning to the user — flag that orchestrator context will be reduced for downstream synthesis.
 

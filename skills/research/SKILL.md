@@ -34,21 +34,21 @@ Multi-depth research framework that scales from quick single-pass lookups to ext
 
 ## Execution model
 
-**The research skill is the orchestrator. The research work runs in OpenCode via `locus delegate run`.**
+**The research skill is the orchestrator. The research work runs in OpenCode via `allele_sessions_create`.**
 
 The orchestrator (this Claude session) is responsible for:
 - Choosing methodology mix (academic / investigative / contrarian / multi-angle / deep-investigation)
 - Deciding agent count (1 for Quick, 3 for Standard, 12 for Extensive, 1×N passes for Deep)
 - Composing per-agent prompts (via `locus agent compose --traits ... --role ... --task ...`)
-- Synthesising returned envelopes (convergence, contradictions, gaps)
+- Synthesising the returned reports (convergence, contradictions, gaps)
 - Extracting falsifiable claims and dispatching adversarial verification (3 votes per claim)
 - Verifying every URL before returning results
 
-The work itself — running searches, reading sources, drafting findings, citing — runs in a delegated OpenCode process per `locus delegate run --backend opencode --task-kind research`. The orchestrator never does the raw research itself; it dispatches and synthesises.
+The work itself — running searches, reading sources, drafting findings, citing — runs in a dispatched allele session created via `allele_sessions_create`. The orchestrator never does the raw research itself; it dispatches and synthesises.
 
-**Why:** raw research output (search results, page reads, scratch reasoning) is voluminous and would burn the orchestrator's context. The delegated process returns a compact JSON envelope (`summary`, `findings`, `evidence`, `risks`, `files_referenced`) — only the synthesis enters this context.
+**Why:** raw research output (search results, page reads, scratch reasoning) is voluminous and would burn the orchestrator's context. The dispatched session replies with a report in the standard shape (`summary`, `findings`, `evidence`, `risks`, `files_referenced`) — only the synthesis enters this context.
 
-**DO NOT use the platform-native Task tool for research dispatch.** Task-tool subagents are other Claudes burning the same context budget. Research dispatch goes through `locus delegate run`, which runs an entirely different model (typically `openai/gpt-5.5`) under a different provider.
+**DO NOT use the platform-native Task tool for research dispatch.** Task-tool subagents are other Claudes burning the same context budget. Research dispatch goes through `allele_sessions_create`, which runs an entirely different model (typically `openai/gpt-5.5`) under a different provider.
 
 ## Researcher archetypes (methodology, not per-API theatre)
 
@@ -94,11 +94,11 @@ Iterative deep-investigation researcher, persistent vault across sessions, per-e
 
 ## Degradation
 
-- **With `locus delegate run` available**: parallel multi-researcher execution across Standard/Extensive/Deep — three or more `locus delegate run` Bash calls dispatched in a single assistant message.
-- **`locus delegate run` available but rate-limited / failing**: degrade to *sequential* `locus delegate run` calls (one researcher at a time). Slower, but the work still happens out-of-context and the envelope semantics are unchanged.
-- **`locus delegate run` not on PATH** (development environment, foreign machine): fall back to in-context execution via `web_search` + `web_fetch`. The orchestrator's context absorbs the raw research — accept the cost and keep the methodology rotation. Note this in the response so the user knows context was burned.
+- **With `allele_sessions_create` available**: parallel multi-researcher execution across Standard/Extensive/Deep — three or more `allele_sessions_create` Bash calls dispatched in a single assistant message.
+- **`allele_sessions_create` available but rate-limited / failing**: degrade to *sequential* `allele_sessions_create` calls (one researcher at a time). Slower, but the work still happens out-of-context and the report contract is unchanged.
+- **`allele_sessions_create` not on PATH** (development environment, foreign machine): fall back to in-context execution via `web_search` + `web_fetch`. The orchestrator's context absorbs the raw research — accept the cost and keep the methodology rotation. Note this in the response so the user knows context was burned.
 - **Partial failure across N parallel delegations**: if M of N succeed (M ≥ 1), synthesise from the M results and list the failed researcher(s) under the `Gaps` section of the output. Do not retry blindly — flag and move on.
-- **Without web access at all** (delegated process can't browse): the OpenCode side will return an envelope with empty `findings` and a risk note. Surface the gap; don't fabricate.
+- **Without web access at all** (the worker has no web access): the worker should report empty `findings` and say so under `risks`. Surface the gap; don't fabricate.
 
 ## Output discipline
 
@@ -121,9 +121,9 @@ Never cite a URL you have not verified resolves. Never include a claim that has 
 - **red-team** — research grounds adversarial analysis
 
 ### Uses
-- **`locus delegate run --backend opencode --task-kind research`** — the actual research execution; this skill is the orchestrator only
+- **`allele_sessions_create`** — the actual research execution; this skill is the orchestrator only
 - **`locus agent compose`** — builds methodology-specific prompts before dispatch
 - **extract-wisdom** — for insight extraction from specific sources
 - **iterative-depth** — for multi-angle research decomposition
 
-The general `delegation` skill is not needed for research dispatch — see "Execution model" above for the direct `locus delegate run` path.
+The general `delegation` skill is not needed for research dispatch — see "Execution model" above for the direct `allele_sessions_create` path.

@@ -86,24 +86,28 @@ If the source exceeds ~10,000 words (book chapter, full transcript, multi-part e
 
 Delegate the whole workflow to a single OpenCode agent instead:
 
-**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the long source and the ranking passes stay out of orchestrator context, and only the structured envelope returns.
+**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the long source and the ranking passes stay out of orchestrator context, and only the structured report returns.
+
+**1 — compose the worker's prompt.** Run this and read its output:
 
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "research,empirical,rationalist,systematic,skeptical" \
   --role "Alpha extractor" \
-  --task "Apply the Extract Alpha workflow to the content at <source path or URL>. Enumerate every load-bearing claim. Score each on non-obviousness (0-3) and consequentiality (0-3). Return the top 3-5 by score, each with: claim verbatim, why non-obvious, what decision it would change, source location. Weight reframes higher than standalone facts.")
-
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "Apply the Extract Alpha workflow to the content at <source path or URL>. Enumerate every load-bearing claim. Score each on non-obviousness (0-3) and consequentiality (0-3). Return the top 3-5 by score, each with: claim verbatim, why non-obvious, what decision it would change, source location. Weight reframes higher than standalone facts."
 ```
 
-The envelope's `findings` field carries the ranked alpha; map it directly into the output template below.
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
+```
+
+The report's `findings` section carries the ranked alpha; map it directly into the output template below.
 
 **Failure handling:** if the delegation fails (rate limit, network, parse error), fall back to inline extraction with an explicit budget warning to the user — flag that orchestrator context will be reduced for the rest of the session.
 

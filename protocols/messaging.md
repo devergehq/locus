@@ -9,7 +9,7 @@ receiver owes in reply.
 ## Scope
 
 This governs `SendMessage` between peer Claude Code sessions. It does not govern
-`locus delegate run`, which is a call and not a correspondent.
+`allele_sessions_create`, which is a call and not a correspondent.
 
 **Free-form agent-to-agent conversation is prohibited.** Not discouraged — prohibited.
 It is unbounded in cost, drifts, and launders accountability: after the fact nobody can

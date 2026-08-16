@@ -1,7 +1,7 @@
 ---
 id: delegation
 name: Delegation
-description: Parallelise read-only work via Locus Delegate workers, trait-composed prompts, parallel dispatch, and two-tier (lightweight vs full) delegation. USE WHEN 3+ independent workstreams, parallel execution, agent specialisation, Extended+ effort, agent team, swarm, create an agent team.
+description: Parallelise work by dispatching real allele sessions — trait-composed prompts, inter-session conversation, and slot reclamation. USE WHEN 3+ independent workstreams, parallel execution, agent specialisation, Extended+ effort, agent team, swarm, create an agent team.
 triggers:
   - delegation
   - parallelise
@@ -10,6 +10,7 @@ triggers:
   - swarm
   - spin up agents
   - launch agents
+  - dispatch a session
   - 3+ workstreams
   - Extended+ effort
 tags:
@@ -24,150 +25,159 @@ requires:
 
 **Auto-invoked by the Algorithm when work can be parallelised or requires agent specialisation.**
 
-Delegation is *not* a license for sprawl — each delegated agent pays an overhead (context transfer, startup latency, coordination). Use this skill when the task meaningfully benefits from parallelism, specialisation, or isolation.
+Work leaves this session by becoming a **real allele session** — visible in the sidebar,
+interruptible, takeable-over, with its own workspace and branch. Not a subagent, not a
+hidden process, nothing the human cannot see.
+
+Delegation is *not* a license for sprawl. Each session costs a workspace, a slot against
+the global cap, and coordination attention. Dispatch when the work genuinely benefits from
+parallelism, specialisation, isolation, or an independent perspective.
 
 ## When to delegate
 
-Delegate when any of these hold:
-
 - **3+ independent workstreams** at Extended+ effort.
-- **Multiple identical non-serial tasks** (update 12 files with same pattern).
-- **Specialisation needed** (security review for auth, design review for UI, architecture review for structural changes).
-- **Codebase investigation spanning 5+ files** benefits from parallel workers.
-- **Research and implementation** can proceed without polluting orchestrator context.
+- **Multiple identical non-serial tasks** (the same change across 12 files).
+- **Specialisation needed** — security review for auth, design review for UI.
+- **Codebase investigation spanning 5+ files.**
+- **Work that must produce its own commits** on its own branch.
 - **Adversarial validation** — Red Team's parallel attackers.
-- **Multi-perspective debate** — Council's parallel members.
+- **Multi-perspective debate** — Council's members.
+- **A blocker you cannot resolve here** — dispatch an investigation rather than stalling.
 
 **Do not delegate** when:
 
-- A single Grep/Glob/Read would answer the question in seconds.
-- The task is a single file change with no research needed.
-- Fewer than 3 workstreams would genuinely parallelise.
-- The spawned agent would start with zero useful context.
+- A single Grep/Glob/Read answers it in seconds.
+- The task is one file change with no research needed.
+- The work depends on context already loaded here that would be expensive to transfer.
+- You are at depth 3.
 
-## Execution Rule
+## Execution rule
 
-All agent-style delegation MUST use `locus delegate run`. Do not use platform-native Task, Agent, or Team tools for Locus delegation. If `locus delegate run` is unavailable or failing, do not fall back to native subagents; continue serially or ask the user how to proceed.
+All agent-style delegation MUST use the **allele MCP**. Do not use platform-native Task,
+Agent, or Team tools — they burn this session's context, inherit its framing, and are
+invisible to the human. If the allele MCP is unavailable, continue serially or ask the
+user; do not fall back to native subagents.
+
+## The lifecycle
+
+```
+1. compose   locus agent compose --traits "..." --role "..." --task "..."
+2. dispatch  allele_sessions_create(project, name, prompt)   -> session_id, name
+3. address   ListAgents -> "name [ref]"        fresh, every send; refs rotate
+4. converse  SendMessage(to: "name [ref]", ...)
+5. check     allele_sessions_status(session_id) -> state == "response_ready"
+6. reclaim   allele_sessions_discard(session_id)
+```
+
+**Compose then dispatch.** Run `locus agent compose` in Bash, read its output, and pass that
+text as the `prompt` argument to `allele_sessions_create`. Trait composition is what makes
+workers actually think differently — it is doing more work than any other lever here.
+
+```bash
+locus agent compose \
+  --traits "security,skeptical,thorough" \
+  --role "Auth reviewer" \
+  --task "Review the auth module for injection risks"
+```
+
+**Keep the prompt short.** Orientation plus an artifact URL beats a long inline brief — one
+atomic paste with nothing to interleave, and a truncated brief produces a session that
+starts confidently on half a specification.
+
+**`session_id` is the only durable identity.** Names are stable in practice; refs are not
+stable at all and rotate wholesale. Never cache an address. A rejected send means
+"re-resolve and retry", not failure.
+
+**Never conclude a worker is finished from `ListAgents`.** It collapses six states into
+idle/busy. `response_ready` means finished; `awaiting_input` means blocked on a permission
+prompt with nobody coming unless a human acts. `state_age_secs` tells you *blocked for
+forty minutes*, which is actionable, rather than *blocked*, which is not.
+
+**Discard when done.** `allele_sessions_discard` commits uncommitted work and archives the
+branch before removing the workspace, so reclaiming a slot never loses anything. A session
+left running holds a slot and becomes invisible work nobody owns.
+
+## The report contract
+
+A dispatched session does not return a value — it *replies*. So ask for the shape you need,
+in the dispatch prompt, and every downstream step keeps working:
+
+```
+When you have finished, SendMessage back to me with exactly these sections:
+
+summary           one paragraph — your answer
+findings          bulleted observations
+evidence          concrete references you actually checked (file:line, URL, command output)
+risks             caveats, limits, things you could not verify
+files_referenced  paths you read or named
+```
+
+This is the same shape the old out-of-process envelope had, which is deliberate: it keeps
+synthesis, rubric-building and dossier-writing unchanged. The difference is that it is now
+a **request** rather than something a tool guarantees — so state it explicitly, and if a
+worker replies without it, ask again rather than parsing prose.
+
+**`evidence` is load-bearing.** A worker reporting a conclusion cannot be checked; one
+reporting the command it ran and the output it saw can. Ask for the method, not the verdict.
+
+## Limits
+
+- **Depth 3.** Depth 0 is a human-started session; it dispatches workers at depth 1; those
+  may dispatch specialists at depth 2; depth 3 is the floor and does not dispatch. Beyond
+  that the original intent is too diluted through rounds of telephone to be worth having.
+- **Global cap 20** concurrent dispatched sessions, aggregate across every dispatcher. Per-
+  dispatcher caps do not compose — twenty dispatchers each under a limit of twenty is four
+  hundred sessions, every one individually compliant.
+- Both are enforced by allele and derived from the creating session's own record. Depth is
+  never caller-supplied.
 
 ## Patterns
 
-### 1. Foreground Locus Delegate (default)
+### 1. Parallel fan-out
 
-Standard delegation — the spawning agent blocks until the delegated agent completes. Use when you need the result before proceeding.
+N independent workers dispatched in one message, each with its own trait composition.
+Use for uniform work across separate subsystems, or for perspective diversity.
 
-```bash
-locus delegate run \
-  --backend opencode \
-  --task-kind general \
-  --mode native \
-  --dir . \
-  --prompt "<bounded read-only task>" \
-  --output json
-```
+Dispatch all of them, then converse with each as results arrive — do not serialise on the
+slowest.
 
-### 2. Parallel dispatch
+### 2. Conversational delegation
 
-N independent operations launched as separate `locus delegate run` Bash calls in one assistant message, results collected when all complete. Use for uniform read-only work, such as mapping separate subsystems.
+The point of dispatch over a one-shot call: the worker can come back with a question, and
+you can answer it. Brief it, let it work, respond to what it raises, and iterate.
 
-### 3. Bounded context delegation
+**Send your reasoning and your queries, not only your conclusions.** A conclusion cannot be
+checked; a method can. Corrections travel in both directions — a worker correcting the
+orchestrator is the normal case.
 
-Pass only the files or prompt context the worker needs. Use `--context-file` for concrete references and keep the prompt narrow.
+### 3. Blocker resolution
 
-Good for: research during implementation, documentation digestion, parallel investigations.
+A worker that hits something it cannot resolve has three options and should prefer them in
+this order: answer it locally, route it to whoever holds scope authority, or dispatch an
+investigation of its own. It should not stall.
 
-### 4. Artifact-isolated delegation
+### 4. Specialisation via traits
 
-Each delegated run writes artifacts under its delegation artifact directory. The orchestrator reads the compact JSON envelope first and opens raw artifacts only if necessary.
+When the work needs a cognitive profile the built-in archetypes do not match, compose one.
+Pick 2-4 traits across axes — one expertise, one stance, one approach is the standard shape.
 
-Good for: large research sweeps, codebase maps, source digests.
+### 5. Agent batches
 
-Delegation is currently read-only. Do not send workers tasks that require editing files, committing, or mutating persistent state.
+For Extended+ tasks, dispatch several workers as a batch. The orchestrator owns
+coordination, synthesis, criteria tracking, and follow-up edits.
 
-### 5. Trait-composed custom agents
-
-When the work needs specialist cognitive profiles that don't match the 16 built-in archetypes, compose custom agents via `locus agent compose`:
-
-```bash
-locus agent compose --traits "security,skeptical,thorough" \
-                    --role "Auth reviewer" \
-                    --task "Review the auth module for injection risks"
-```
-
-The output is a composed prompt that combines trait fragments from `agents/traits.yaml`. Pass this prompt to `locus delegate run --prompt`.
-
-### 6. Agent batches
-
-For Extended+ tasks, run multiple Locus Delegate workers as a batch. The orchestrator owns coordination, synthesis, criteria tracking, and any follow-up edits.
-
-Agent batches differ from persistent teams: workers do not coordinate with each other. They return compact envelopes to the orchestrator.
+Workers in a batch do not coordinate with each other by default. They can — every session
+can reach every other by name — but unstructured cross-talk drifts and launders
+accountability. Keep exchanges purposeful and attributable.
 
 Trigger phrases: "create an agent team", "swarm", "team of agents".
 
-## Two-tier delegation
+## What this is not
 
-Not every delegation needs a full agent. Match delegation weight to task complexity.
-
-### Lightweight delegation
-
-For: one-shot extraction, classification, summarisation, simple Q&A against provided content.
-
-- Use a smaller configured `--model` when appropriate.
-- Cap turns at 3 — if it can't finish in 3 turns, it needs full delegation.
-- Provide all input inline in the prompt (no tool-use expected).
-
-Examples: "classify this text as X/Y/Z", "extract the 5 key points from this article", "summarise this in 2 sentences".
-
-### Full delegation
-
-For: multi-step reasoning, tasks requiring tool use (file reads, searches, web), tasks that need their own iteration loop.
-
-- Use the configured default model or pass `--model` explicitly.
-- No turn cap — agent iterates until done.
-- Agent uses tools autonomously.
-
-Examples: "research X and produce a report", "refactor these 5 files", "debug why test Y fails".
-
-### Decision rule
-
-Ask: *"Can this be answered in one LLM call with no tool use?"* → Lightweight. Otherwise → Full.
-
-| Signal                                              | Tier        |
-|-----------------------------------------------------|-------------|
-| Input fits in prompt; output is extraction          | Lightweight |
-| Needs to read files, search, or browse              | Full        |
-| Needs iteration or self-correction                  | Full        |
-| Simple transform of provided content                | Lightweight |
-| Requires domain expertise + research                | Full        |
-
-**Why this matters:** full delegation carries ~10-30s of startup + context overhead. Lightweight returns in 2-5s. Over an Extended+ Algorithm run with 10+ delegations, the difference is minutes. Pattern inspired by the RLM two-tier `llm_query()` / `rlm_query()` design (Zhang/Kraska/Khattab 2025).
-
-## Effort-level scaling
-
-| Effort        | Delegation strategy                                          |
-|---------------|--------------------------------------------------------------|
-| Minimal       | No delegation — direct tools only                            |
-| Standard      | 1-2 Locus Delegate workers max for discrete subtasks         |
-| Extended      | 2-4 workers; parallel research or exploration                |
-| Advanced      | 4-8 workers for 3+ independent workstreams                   |
-| Deep          | Multi-wave delegation with orchestrator-owned synthesis      |
-| Comprehensive | Unbounded only when bounded prompts and synthesis are clear  |
-
-## Anti-patterns
-
-- **Delegating what Grep/Glob/Read does in <2 seconds.**
-- **Spawning agents for single-file changes.**
-- **Creating teams for fewer than 3 independent workstreams.**
-- **Sending agents work without full context** — they start fresh.
-- **Using built-in agent archetypes (Architect, Engineer) when the task actually needs a custom trait bundle.**
-- **Using full delegation for one-shot extraction/classification** — use lightweight tier.
-- **Using platform-native Task/Agent tools** — use `locus delegate run` instead.
-- **Parallelising dependent work** — if B needs A's output, they can't run in parallel.
-
-## Composition
-
-Delegation is used by most other skills:
-
-- **Council, RedTeam** — invoke parallel delegation for members/attackers
-- **Research (Extensive, Deep)** — parallel research agents
-- **IterativeDepth (Extended+)** — parallel lens agents
-- **Algorithm BUILD phase** — delegates investigative subtasks per the Context Management Protocol
+- **Not free-form agent conversation.** Messages carry findings, decisions, questions and
+  corrections. Unbounded chat drifts and makes it impossible to tell afterwards who decided
+  what.
+- **Not a way around permissions.** Never ask a peer to do work blocked in your own session.
+  Route it back to the human instead.
+- **Not invisible.** Everything lands in the sidebar. An orchestrator quietly running a
+  fleet is worse than the manual version even when it is faster.

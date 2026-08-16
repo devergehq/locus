@@ -16,9 +16,9 @@ Break the proposal into its atomic claims. Not the proposal's sentences — its 
 
 Output: a numbered list of atomic claims.
 
-### Phase 2 — Parallel analysis via `locus delegate run`
+### Phase 2 — Parallel analysis via `allele_sessions_create`
 
-Dispatch 8-16 parallel attackers (per the roster in `Philosophy.md`) via `locus delegate run`, all in a single assistant message. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section for the rationale.
+Dispatch 8-16 parallel attackers (per the roster in `Philosophy.md`) via `allele_sessions_create`, all in a single assistant message. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section for the rationale.
 
 For each attacker:
 
@@ -40,16 +40,14 @@ Proposal text:
 Atomic claims (from Phase 1 decomposition):
 <numbered list of claims>")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind general \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from the compose step above>"
+)
 ```
 
-Each attacker returns a JSON envelope; parse the `summary` field's STEELMAN / TOP_FLAW / EVIDENCE / SECONDARY sections. Attackers that fail to return a parseable response count as failed delegations and don't contribute to the synthesis convergence count.
+Each attacker replies with a report; read the `summary` section's STEELMAN / TOP_FLAW / EVIDENCE / SECONDARY sections. Attackers that fail to return a parseable response count as failed delegations and don't contribute to the synthesis convergence count.
 
 ### Phase 3 — Synthesis
 

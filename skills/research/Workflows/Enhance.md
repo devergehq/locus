@@ -36,9 +36,9 @@ For each weak spot, decide the type of enhancement:
 
 ### Step 3 — Research the enhancements
 
-**The skill orchestrates; OpenCode does the research.** For each weak spot, dispatch one `locus delegate run` Bash call with the methodology that fits the enhancement type. If the weak-spot count is ≤ 12, dispatch all calls in a *single assistant message* so the platform parallelises them. If > 12, run in waves of 12.
+**The skill orchestrates; OpenCode does the research.** For each weak spot, dispatch one `allele_sessions_create` Bash call with the methodology that fits the enhancement type. If the weak-spot count is ≤ 12, dispatch all calls in a *single assistant message* so the platform parallelises them. If > 12, run in waves of 12.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the heavy research runs out-of-context and only compact envelopes return.
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the heavy research runs out-of-context and only compact reports return.
 
 Map the weak-spot type from Step 2 to a methodology + trait bundle:
 
@@ -50,22 +50,26 @@ Map the weak-spot type from Step 2 to a methodology + trait bundle:
 
 Per weak spot:
 
+**1 — compose the worker's prompt.** Run this and read its output:
+
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "<bundle from table above>" \
   --role "<methodology> researcher" \
-  --task "<weak-spot text — verbatim sentence from Step 1 plus its weak-spot type from Step 2>. Source supporting material: a verified citation, a concrete example or a counter-case as appropriate. Return the source, a verified URL, and a suggested 1-3 sentence integration that preserves the original author's voice.")
-
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+  --task "<weak-spot text — verbatim sentence from Step 1 plus its weak-spot type from Step 2>. Source supporting material: a verified citation, a concrete example or a counter-case as appropriate. Return the source, a verified URL, and a suggested 1-3 sentence integration that preserves the original author's voice."
 ```
 
-Each enhancement returns (via the JSON envelope's `summary` / `findings` / `evidence` fields):
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
+```
+
+Each enhancement is reported back under `summary` / `findings` / `evidence`:
 - The source / evidence
 - A verified URL
 - A suggested integration — where in the content it slots, how long the insertion should be.

@@ -44,7 +44,7 @@ The orchestrator (not a delegate) extracts falsifiable claims from the synthesis
 
 ## Step 2 — Adversarial verification dispatch
 
-For each extracted claim, dispatch **3 adversarial verifiers** via `locus delegate run`. Use the `adversarial-verifier` agent definition (traits: `research,skeptical,adversarial,empirical`).
+For each extracted claim, dispatch **3 adversarial verifiers** via `allele_sessions_create`. Use the `adversarial-verifier` agent definition (traits: `research,skeptical,adversarial,empirical`).
 
 ```bash
 VERIFY_PROMPT=$(locus agent compose \
@@ -69,13 +69,11 @@ Default to refuted=true if uncertain.
 
 Return JSON: {refuted: bool, evidence: string, confidence: 'high'|'medium'|'low', counterSource: string|null}")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$VERIFY_PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this is the address>",
+  prompt:  $VERIFY_PROMPT
+)
 ```
 
 **Dispatch rules:**

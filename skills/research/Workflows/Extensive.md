@@ -33,27 +33,31 @@ For each sub-query, launch 4 researchers in parallel:
 
 Total: 3 sub-queries × 4 methodologies = **12 parallel delegations**.
 
-### Step 3 — Parallel execution via `locus delegate run`
+### Step 3 — Parallel execution via `allele_sessions_create`
 
-**The skill orchestrates; OpenCode does the research.** Dispatch all 12 `locus delegate run` Bash calls in a *single assistant message* — the platform tracks them as parallel tool uses and they execute concurrently.
+**The skill orchestrates; OpenCode does the research.** Dispatch all 12 `allele_sessions_create` Bash calls in a *single assistant message* — the platform tracks them as parallel tool uses and they execute concurrently.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `locus delegate run --backend opencode --mode native` so the 12 heavy researches run out-of-context and only compact envelopes return.
+**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the 12 heavy researches run out-of-context and only compact reports return.
 
 For each (sub-query × methodology) pair, build the prompt with `locus agent compose` and dispatch:
 
+**1 — compose the worker's prompt.** Run this and read its output:
+
 ```bash
-PROMPT=$(locus agent compose \
+locus agent compose \
   --traits "<methodology trait bundle>" \
   --role "<Methodology> researcher (sub-query <N>)" \
-  --task "<sub-query N's text, framed for this methodology>")
+  --task "<sub-query N's text, framed for this methodology>"
+```
 
-locus delegate run \
-  --backend opencode \
-  --task-kind research \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+**2 — dispatch it.** Pass the composed text as `prompt`:
+
+```
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from step 1>"
+)
 ```
 
 Trait bundles per methodology (per `agents/{kind}-researcher.md`):
@@ -65,7 +69,7 @@ Trait bundles per methodology (per `agents/{kind}-researcher.md`):
 | contrarian-researcher     | `research,contrarian,skeptical,adversarial`                 |
 | multi-angle-researcher    | `research,exploratory,iterative,analogical`                 |
 
-Each researcher returns a JSON envelope with:
+Each researcher reports back with:
 - `summary`, `findings` with citations
 - `evidence`, `risks`, `files_referenced`
 - Methodology-specific perspective baked in via the trait composition
@@ -85,7 +89,7 @@ Now across all 3 sub-queries — does the full picture produce a coherent answer
 
 ### Step 6 — Adversarial claim verification (mandatory)
 
-Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the cross-sub-query synthesis, then dispatch 3 adversarial verifiers per claim via `locus delegate run`.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the cross-sub-query synthesis, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`.
 
 For Extensive mode, expect 10-20 claims across the three sub-queries. Dispatch all votes (30-60 delegates) in batches if needed to stay within platform concurrency limits. Wall-clock cost: ~15-30s additional per batch.
 
@@ -140,4 +144,4 @@ All surviving claims' URLs must pass `UrlVerificationProtocol.md`. Drop any that
 
 ## Fallback
 
-If `locus delegate run` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). Verification runs as a separate wave after all research completes. ~3-4 minutes total in fallback.
+If `allele_sessions_create` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). Verification runs as a separate wave after all research completes. ~3-4 minutes total in fallback.

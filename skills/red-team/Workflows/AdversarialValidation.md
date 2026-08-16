@@ -18,9 +18,9 @@ State the creative task:
 
 Example: "Produce a design spec for the billing subsystem. Must support: monthly invoicing, prorated upgrades, dunning workflow. Success = design survives a 30-minute engineering review with no load-bearing objections."
 
-### Step 2 — Generate candidates via `locus delegate run`
+### Step 2 — Generate candidates via `allele_sessions_create`
 
-Dispatch 3-5 parallel `locus delegate run` calls in a single assistant message, each with a trait bundle chosen for **diversity across design philosophy**, not just role. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section.
+Dispatch 3-5 parallel `allele_sessions_create` calls in a single assistant message, each with a trait bundle chosen for **diversity across design philosophy**, not just role. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section.
 
 | Candidate | Trait bundle                                              | Design philosophy              |
 |-----------|-----------------------------------------------------------|--------------------------------|
@@ -49,20 +49,18 @@ Success criterion:
 
 Return the full design text.")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind general \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from the compose step above>"
+)
 ```
 
-The orchestrator collects N candidate designs from the `summary` field of each envelope.
+The orchestrator collects N candidate designs from the `summary` section of each report.
 
-### Step 3 — Adversarial cross-attack via `locus delegate run`
+### Step 3 — Adversarial cross-attack via `allele_sessions_create`
 
-For each (attacker, target) pair where attacker ≠ target, dispatch one `locus delegate run`. With 5 candidates that's 20 attacks; with 3 candidates it's 6. Dispatch all in a single assistant message (or in waves of N if rate-limited).
+For each (attacker, target) pair where attacker ≠ target, dispatch one `allele_sessions_create`. With 5 candidates that's 20 attacks; with 3 candidates it's 6. Dispatch all in a single assistant message (or in waves of N if rate-limited).
 
 Per attack:
 
@@ -75,16 +73,14 @@ PROMPT=$(locus agent compose \
 Target design:
 <target candidate's design text>")
 
-locus delegate run \
-  --backend opencode \
-  --task-kind general \
-  --mode native \
-  --dir . \
-  --prompt "$PROMPT" \
-  --output json
+allele_sessions_create(
+  project: "<project>",
+  name:    "<short label — this becomes the address>",
+  prompt:  "<the composed prompt from the compose step above>"
+)
 ```
 
-Output: per-candidate attack summary aggregated from the envelopes — the flaws each other candidate's attacker surfaced.
+Output: per-candidate attack summary aggregated from the reports — the flaws each other candidate's attacker surfaced.
 
 ### Step 4 — Synthesis
 
