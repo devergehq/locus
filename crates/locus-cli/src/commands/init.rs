@@ -118,11 +118,62 @@ fn create_directories(home: &PathBuf) -> Result<(), LocusError> {
 
     // Install bundled content (algorithm, skills, agents, protocols).
     install_bundled_content(home)?;
+    prune_stale_algorithm_versions(home)?;
 
     output::success(&format!(
         "Created directory structure at {}",
         home.display()
     ));
+    Ok(())
+}
+
+/// Remove Algorithm specs from a previous version.
+///
+/// `install_bundled_content` writes files and never removes them, so upgrading
+/// leaves the old spec sitting beside the new one. Two Algorithm documents on
+/// disk, only one of them referenced by anything — and the stale one is exactly
+/// the kind of thing a session or a human will open and believe.
+///
+/// Deliberately narrow: only `algorithm/*.md`, and only files the current build
+/// does not bundle. It is not a general sweep of the Locus home, because the
+/// other managed directories are places users legitimately add their own
+/// content and a broad prune would delete it.
+fn prune_stale_algorithm_versions(home: &PathBuf) -> Result<(), LocusError> {
+    let dir = home.join("algorithm");
+
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Ok(()); // nothing installed yet
+    };
+
+    let current = format!("algorithm/{}", locus_core::ALGORITHM_FILE);
+    let bundled: Vec<String> = crate::bundled::bundled_files()
+        .into_iter()
+        .map(|(rel, _)| rel)
+        .collect();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.extension().is_some_and(|x| x == "md") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let rel = format!("algorithm/{name}");
+        if rel == current || bundled.contains(&rel) {
+            continue;
+        }
+
+        fs::remove_file(&path).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to remove stale Algorithm version: {}", e),
+            path: path.clone(),
+        })?;
+        output::info(&format!(
+            "Removed superseded Algorithm spec: {name} (now {})",
+            locus_core::ALGORITHM_FILE
+        ));
+    }
+
     Ok(())
 }
 
@@ -281,5 +332,70 @@ fn build_default_config(platforms: Vec<Platform>, _env: &DetectedEnv) -> LocusCo
         paths: PathConfig::default(),
         platform_overrides: std::collections::HashMap::new(),
         delegation: locus_core::DelegationConfig::default(),
+    }
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+
+    fn alg_dir(home: &PathBuf) -> PathBuf {
+        let d = home.join("algorithm");
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn removes_a_superseded_algorithm_spec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let dir = alg_dir(&home);
+        fs::write(dir.join("v1.1.md"), "old spec").unwrap();
+        fs::write(dir.join(locus_core::ALGORITHM_FILE), "current spec").unwrap();
+
+        prune_stale_algorithm_versions(&home).unwrap();
+
+        assert!(
+            !dir.join("v1.1.md").exists(),
+            "superseded spec survived the upgrade"
+        );
+        assert!(
+            dir.join(locus_core::ALGORITHM_FILE).exists(),
+            "current spec was removed"
+        );
+    }
+
+    #[test]
+    fn keeps_the_current_spec_when_it_is_the_only_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let dir = alg_dir(&home);
+        fs::write(dir.join(locus_core::ALGORITHM_FILE), "current").unwrap();
+
+        prune_stale_algorithm_versions(&home).unwrap();
+
+        assert!(dir.join(locus_core::ALGORITHM_FILE).exists());
+    }
+
+    /// The prune is scoped to Algorithm specs. Anything else a user has put in
+    /// that directory is theirs.
+    #[test]
+    fn leaves_non_markdown_and_other_directories_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let dir = alg_dir(&home);
+        fs::write(dir.join("notes.txt"), "mine").unwrap();
+        fs::write(home.join("skills-note.md"), "mine too").unwrap();
+
+        prune_stale_algorithm_versions(&home).unwrap();
+
+        assert!(dir.join("notes.txt").exists(), "pruned a non-spec file");
+        assert!(home.join("skills-note.md").exists(), "pruned outside algorithm/");
+    }
+
+    #[test]
+    fn no_algorithm_directory_is_not_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        prune_stale_algorithm_versions(&tmp.path().to_path_buf()).unwrap();
     }
 }

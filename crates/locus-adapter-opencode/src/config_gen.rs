@@ -46,7 +46,8 @@ fn web_search_enabled_from_env() -> bool {
 /// fallback guidance to `web_fetch` / `bash` is shown. Regenerate after
 /// changing the env with `locus platform add opencode`.
 ///
-/// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
+/// Source of truth for the Algorithm remains `~/.locus/algorithm/{ALGORITHM_FILE}`
+/// (see `locus_core::ALGORITHM_FILE`).
 /// Note on delegation: this directive still routes to `locus delegate run`,
 /// and that is deliberate rather than stale. The allele MCP is registered for
 /// Claude Code only (`~/.claude.json`), and this adapter configures no MCP
@@ -64,7 +65,9 @@ pub fn generate_agents_md_with(locus_home: &Path, web_search_available: bool) ->
     let home = locus_home.display();
 
     // Read the Algorithm from disk.
-    let algorithm_path = locus_home.join("algorithm").join("v1.1.md");
+    let algorithm_path = locus_home
+        .join("algorithm")
+        .join(locus_core::ALGORITHM_FILE);
     let algorithm_content = std::fs::read_to_string(&algorithm_path)
         .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
 
@@ -90,7 +93,7 @@ This system uses the Locus agentic workflow framework.
 
 Locus home: {home}
 
-Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial requests.
+Read and follow the Algorithm at `{home}/algorithm/{algorithm_file}` for all non-trivial requests.
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md`.
@@ -178,6 +181,7 @@ Never attempt a tool that is not in the list above.
 {algorithm}
 "#,
         home = home,
+        algorithm_file = locus_core::ALGORITHM_FILE,
         algorithm = algorithm_content,
         web_search_bullet = web_search_bullet,
         web_search_note = web_search_note,
@@ -263,7 +267,11 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     // Build the Locus instruction paths using ~ for portability.
     let home_relative = tilde_path(locus_home);
     let locus_instructions: Vec<String> = vec![
-        format!("{}/algorithm/v1.1.md", home_relative),
+        format!(
+            "{}/algorithm/{}",
+            home_relative,
+            locus_core::ALGORITHM_FILE
+        ),
         format!("{}/protocols/degradation.md", home_relative),
         format!("{}/protocols/context-management.md", home_relative),
         format!("{}/protocols/memory-schema.md", home_relative),

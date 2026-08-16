@@ -136,7 +136,10 @@ mod tests {
     fn agents_md_contains_locus_directive() {
         let content = config_gen::generate_agents_md(Path::new("/home/test/.locus"));
         assert!(content.contains("# Locus"));
-        assert!(content.contains("/home/test/.locus/algorithm/v1.1.md"));
+        assert!(content.contains(&format!(
+            "/home/test/.locus/algorithm/{}",
+            locus_core::ALGORITHM_FILE
+        )));
         assert!(content.contains("/home/test/.locus/skills/"));
         assert!(content.contains("/home/test/.locus/agents/"));
         assert!(content.contains("MANDATORY"));
@@ -186,6 +189,7 @@ mod tests {
         // ... phases"); what we forbid is the *imperative* form.
         assert!(!content.contains("Mode Classification (MANDATORY)"));
         assert!(!content.contains("Algorithm v1.1"));
+        assert!(!content.contains("Algorithm v2.0"));
         assert!(!content.contains("Follow the 7-phase structure"));
         assert!(!content.contains("Classification: Trivial"));
         assert!(!content.contains("Classification: Non-trivial"));

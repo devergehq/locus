@@ -41,7 +41,8 @@ pub struct ClaudeMdWrite {
 /// context without relying on any path resolution or auto-loading by the
 /// platform.
 ///
-/// Source of truth for the Algorithm remains `~/.locus/algorithm/v1.1.md`.
+/// Source of truth for the Algorithm remains `~/.locus/algorithm/{ALGORITHM_FILE}`
+/// (see `locus_core::ALGORITHM_FILE`).
 /// Regenerate with `locus platform add claude-code`.
 /// Enumerate the trait vocabulary from `{locus_home}/agents/traits.yaml`.
 ///
@@ -196,7 +197,9 @@ pub fn generate_claude_md(locus_home: &Path) -> String {
 
     // Read the Algorithm from disk — falls back to a placeholder if it's not
     // yet installed, which is the only reasonable degraded mode.
-    let algorithm_path = locus_home.join("algorithm").join("v1.1.md");
+    let algorithm_path = locus_home
+        .join("algorithm")
+        .join(locus_core::ALGORITHM_FILE);
     let algorithm_content = std::fs::read_to_string(&algorithm_path)
         .unwrap_or_else(|_| "<!-- Algorithm not found. Run `locus init` to install. -->".into());
 
@@ -211,7 +214,7 @@ This system uses the Locus agentic workflow framework.
 
 Locus home: {home}
 
-Read and follow the Algorithm at `{home}/algorithm/v1.1.md` for all non-trivial requests.
+Read and follow the Algorithm at `{home}/algorithm/{algorithm_file}` for all non-trivial requests.
 For trivial requests (single file, single action, no investigation needed), handle directly.
 
 When the Algorithm calls for skills, read the relevant skill from `{home}/skills/<skill-id>/SKILL.md` via the Read tool.
@@ -423,6 +426,7 @@ for verification of specific URLs.
 {algorithm}
 "#,
         home = home,
+        algorithm_file = locus_core::ALGORITHM_FILE,
         algorithm = algorithm_content,
         protocols = protocol_index,
         skills = skill_list,

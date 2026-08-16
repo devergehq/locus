@@ -10,8 +10,8 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
     vec![
         // Algorithm
         (
-            "algorithm/v1.1.md".into(),
-            include_str!("../../../algorithm/v1.1.md"),
+            format!("algorithm/{}", locus_core::ALGORITHM_FILE),
+            include_str!("../../../algorithm/v2.0.md"),
         ),
         // Skills — top-level SKILL.md files
         (
@@ -338,6 +338,65 @@ mod drift_tests {
             .into_iter()
             .map(|(rel, _)| rel.replace('\\', "/"))
             .collect()
+    }
+
+    /// `include_str!` needs a literal path, so the Algorithm filename exists in
+    /// two places: `locus_core::ALGORITHM_FILE`, which every reader uses, and
+    /// the literal here. If they drift, the CLI installs one file while every
+    /// directive tells sessions to read another — and the install still
+    /// succeeds, so nothing surfaces it until a session cannot find the spec.
+    ///
+    /// Comparing content rather than filenames is deliberate: a literal
+    /// pointing at a different but existing file would still compile.
+    #[test]
+    fn bundled_algorithm_is_the_one_every_reader_expects() {
+        let expected_key = format!("algorithm/{}", locus_core::ALGORITHM_FILE);
+
+        let (_, bundled_content) = super::bundled_files()
+            .into_iter()
+            .find(|(rel, _)| rel == &expected_key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "nothing bundled at `{expected_key}` — locus_core::ALGORITHM_FILE \
+                     and the include_str! literal in bundled.rs disagree"
+                )
+            });
+
+        let on_disk = std::fs::read_to_string(
+            repo_root()
+                .join("algorithm")
+                .join(locus_core::ALGORITHM_FILE),
+        )
+        .expect("Algorithm file missing at the path ALGORITHM_FILE names");
+
+        assert_eq!(
+            bundled_content, on_disk,
+            "bundled Algorithm content differs from algorithm/{} — the \
+             include_str! literal points at a different file",
+            locus_core::ALGORITHM_FILE
+        );
+    }
+
+    /// A stale spec left in the repo is a second source of truth.
+    #[test]
+    fn exactly_one_algorithm_version_exists() {
+        let versions: Vec<String> = std::fs::read_dir(repo_root().join("algorithm"))
+            .expect("algorithm dir")
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                p.extension()
+                    .is_some_and(|x| x == "md")
+                    .then(|| p.file_name()?.to_str().map(str::to_string))
+                    .flatten()
+            })
+            .collect();
+
+        assert_eq!(
+            versions,
+            vec![locus_core::ALGORITHM_FILE.to_string()],
+            "expected exactly one Algorithm spec, found {versions:?}"
+        );
     }
 
     /// `include_str!` is a compile-time macro, so the bundle list cannot be
