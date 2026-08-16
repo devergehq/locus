@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "locus-adapter-claude"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "locus-adapter-opencode"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "locus-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "clap",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "locus-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "dirs",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "locus-index"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "locus-core",
  "serde",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "locus-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "locus-core",
  "serde",
