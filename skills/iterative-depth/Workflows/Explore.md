@@ -39,7 +39,7 @@ At Extended+: delegate in parallel. Each lens is a separate agent spawn with a t
 Each lens's output is a list of ISC candidate criteria. Consolidate across lenses:
 
 1. **Dedupe** — multiple lenses often surface the same criterion from different angles. Keep one, note the lenses that converged on it (convergence is evidence of importance).
-2. **Apply the Splitting Test** (from `algorithm/v1.1.md`) — any candidate that fails atomicity gets split.
+2. **Apply the Splitting Test** (from the Algorithm) — any candidate that fails atomicity gets split.
 3. **Classify** — criterion vs. anti-criterion (what must NOT happen).
 4. **Rank** — by a mix of convergence (how many lenses surfaced this) and severity (how badly missing it would hurt).
 

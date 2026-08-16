@@ -97,10 +97,13 @@ fn write_stdout_json(value: &serde_json::Value) -> Result<(), LocusError> {
 fn handle_session_start(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
     // Inject additional context informing the model that Locus is active,
     // where the Algorithm lives, and how to classify modes.
-    let ctx = "Locus is active on this session. The Algorithm at ~/.locus/algorithm/v1.1.md \
+    let ctx = format!(
+        "Locus is active on this session. The Algorithm at ~/.locus/algorithm/{} \
 governs non-trivial requests: OBSERVE -> THINK -> PLAN -> BUILD -> EXECUTE -> VERIFY -> LEARN. \
 Classify every request as trivial (single file/concept) or non-trivial (multi-step, investigation, \
-design). Non-trivial enters the Algorithm. Skills live at ~/.locus/skills/ and load via Read.";
+design). Non-trivial enters the Algorithm. Skills live at ~/.locus/skills/ and load via Read.",
+        locus_core::ALGORITHM_FILE
+    );
 
     let out = serde_json::json!({
         "hookSpecificOutput": {

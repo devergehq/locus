@@ -131,7 +131,10 @@ mod tests {
     fn claude_md_contains_locus_directive() {
         let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
         assert!(content.contains("# Locus"));
-        assert!(content.contains("/home/test/.locus/algorithm/v1.1.md"));
+        assert!(content.contains(&format!(
+            "/home/test/.locus/algorithm/{}",
+            locus_core::ALGORITHM_FILE
+        )));
         assert!(content.contains("/home/test/.locus/skills/"));
         assert!(content.contains("/home/test/.locus/agents/"));
         assert!(content.contains("MANDATORY"));

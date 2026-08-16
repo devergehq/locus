@@ -23,6 +23,17 @@
 //! - **Honest degradation**: features requiring unsupported platform capabilities are
 //!   explicitly marked unavailable via `CapabilityManifest`, never silently degraded.
 
+/// Filename of the Algorithm spec inside `{locus_home}/algorithm/`.
+///
+/// One constant because this string is read by both adapters, embedded by the
+/// CLI bundler, and quoted in the SessionStart hook context. It was previously
+/// written out in six places; missing one on a version bump tells every session
+/// to read a file that does not exist, and nothing would catch it.
+///
+/// `include_str!` still needs a literal path, so `bundled.rs` carries the only
+/// remaining copy — pinned by a test that fails if the two disagree.
+pub const ALGORITHM_FILE: &str = "v2.0.md";
+
 pub mod adapter;
 pub mod agents;
 pub mod capabilities;
