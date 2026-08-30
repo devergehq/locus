@@ -390,3 +390,16 @@ sanctioned to go.
 The hook should deny only what the table routes away from native (adversarial and
 multi-perspective work, 5+ file sweeps, anything needing its own branch) and permit the
 rest. Not changed here: `crates/` is owned by a parallel workstream.
+
+## DEV-516 follow-up: the hook still enforces a write the Algorithm no longer makes
+
+`has_matching_learning_file()` (`crates/locus-cli/src/commands/hook.rs:693`, called from
+`:401`) warns when a PRD reaches `phase:learn` without a corresponding file under
+`memory/learning/session/`. Under the DEV-516 decision the Algorithm no longer instructs
+that write, so the check now fires on correct behaviour.
+
+It should be removed along with its call site. Not changed here: `crates/` is owned by a
+parallel workstream.
+
+Worth noting what this check was: the only code path in the entire CLI that touched
+`memory/learning/`, and it only ever asked whether a file existed — never what was in it.
