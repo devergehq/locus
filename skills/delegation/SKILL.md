@@ -25,9 +25,10 @@ requires:
 
 **Auto-invoked by the Algorithm when work can be parallelised or requires agent specialisation.**
 
-Work leaves this session by becoming a **real allele session** — visible in the sidebar,
-interruptible, takeable-over, with its own workspace and branch. Not a subagent, not a
-hidden process, nothing the human cannot see.
+Work that is *dispatched* leaves this session by becoming a **real allele session** —
+visible in the sidebar, interruptible, takeable-over, with its own workspace and branch.
+Dispatch is one of three routes, not the only sanctioned one; see the routing table in
+`protocols/orchestration.md` for when native subagents are the right call instead.
 
 Delegation is *not* a license for sprawl. Each session costs a workspace, a slot against
 the global cap, and coordination attention. Dispatch when the work genuinely benefits from
@@ -44,19 +45,25 @@ parallelism, specialisation, isolation, or an independent perspective.
 - **Multi-perspective debate** — Council's members.
 - **A blocker you cannot resolve here** — dispatch an investigation rather than stalling.
 
-**Do not delegate** when:
+## Execution rule — route, do not prohibit
 
-- A single Grep/Glob/Read answers it in seconds.
-- The task is one file change with no research needed.
-- The work depends on context already loaded here that would be expensive to transfer.
-- You are at depth 3.
+There is no blanket ban on native subagents. There is a routing decision, and getting it
+wrong in either direction costs something. The full table lives in
+`protocols/orchestration.md`; the short form:
 
-## Execution rule
+- **Writes anything** (code, commits, PRs), needs a host-only tool, or needs tight
+  interactive latency → **native subagent**. `locus delegate run` is read-only, so routing
+  implementation work to it routes it nowhere.
+- **Adversarial, multi-perspective, or an independent second opinion** → **dispatch**. A
+  native subagent inherits this session's framing and fails the same way this session
+  fails; correlated errors cannot serve as a check.
+- **Needs its own workspace or branch**, or is a 5+ file sweep whose conclusion is all that
+  matters here → **dispatch**.
+- **A single Grep/Glob/Read answers it**, it is one file change with no research, it depends
+  on context already loaded here that is costly to transfer, or you are at depth 3 →
+  **do it here.**
 
-All agent-style delegation MUST use the **allele MCP**. Do not use platform-native Task,
-Agent, or Team tools — they burn this session's context, inherit its framing, and are
-invisible to the human. If the allele MCP is unavailable, fall back to
-`locus delegate run` (see below); never to native subagents.
+Whichever route you take, it must stay visible to the human.
 
 ## The lifecycle
 
@@ -197,8 +204,8 @@ so this is running through `locus delegate run` instead: read-only, no branch,
 and no way to ask the worker a follow-up question.
 ```
 
-**Do not fall back to native Task/Agent subagents**, and do not abandon delegation. The
-guardrail names the mechanism; it is not a reason to do the work inline.
+Work the routing table sends to **native** is unaffected — that route never depended on
+allele. Do not abandon routing and do the work inline because one mechanism is missing.
 
 Note `locus delegate run` is **not** a security boundary — see the warning in
 `orchestration.md`. It is the standalone path, not the safe one.

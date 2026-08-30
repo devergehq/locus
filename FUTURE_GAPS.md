@@ -377,3 +377,16 @@ re-derive the design.>
 ### Estimated effort when picked up
 <Rough order of magnitude — hours, days, weeks.>
 ```
+
+## DEV-512 follow-up: denial hook still blocks native unconditionally
+
+`crates/locus-cli/src/commands/hook.rs:171` denies `Task | Agent | TeamCreate | task |
+agent` on tool name alone, with no routing condition. Under the routing table added in
+`protocols/orchestration.md` that is now wrong in one direction: work the table sends to
+**native** — anything that writes code, commits or PRs — is still refused, and
+`locus delegate run` is read-only, so the hook leaves implementation work with nowhere
+sanctioned to go.
+
+The hook should deny only what the table routes away from native (adversarial and
+multi-perspective work, 5+ file sweeps, anything needing its own branch) and permit the
+rest. Not changed here: `crates/` is owned by a parallel workstream.
