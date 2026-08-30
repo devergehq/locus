@@ -14,36 +14,59 @@ bounded depth. A worker that hits a blocker is expected to resolve it — by ans
 locally, routing it to whoever holds scope, or dispatching an investigation — rather than
 stalling and waiting to be unblocked.
 
-## Two mechanisms
+## Three mechanisms
 
-| | **Do it here** | **Dispatch** (`allele_sessions_create`) |
-|---|---|---|
-| Identity | this session | persistent, addressable, in the sidebar |
-| Context | yours, and it fills up | fresh per session |
-| Writes | yes | yes, own workspace and branch |
-| Human sees it | yes | yes — interruptible and takeable-over |
-| Costs | your context | a slot against the global cap |
+| | **Do it here** | **Native subagent** (`Task`/`Agent`) | **Dispatch** (`allele_sessions_create`) |
+|---|---|---|---|
+| Identity | this session | a descendant of this session | persistent, addressable, in the sidebar |
+| Context | yours, and it fills up | fresh, but framed by your prompt | fresh per session |
+| Writes | yes | yes, in your workspace | yes, own workspace and branch |
+| Human sees it | yes | as a tool call | yes — interruptible and takeable-over |
+| Error correlation | n/a | **high — inherits your blind spots** | low — different model, cold start |
+| Costs | your context | your budget and framing | a slot against the global cap |
 
-Cross-session messaging (`ListAgents` / `SendMessage`) is a channel, not a third mechanism.
+Cross-session messaging (`ListAgents` / `SendMessage`) is a channel, not a fourth mechanism.
 It is how you talk to what you dispatched.
 
-## When to dispatch
+## Routing: which mechanism, and when
 
-Dispatch when any of these hold:
+Three mechanisms are available, and **none of them dominates.** Route by the shape of the
+work, not by policy.
 
-- **The work needs its own workspace or branch** — anything producing commits.
-- **3+ independent workstreams** that genuinely parallelise.
-- **Investigation spanning 5+ files**, where only the conclusion matters here.
-- **An independent perspective is the deliverable** — red team, council, tie-break,
-  second opinion, "am I fooling myself".
+| Route | Use it for | Costs |
+|---|---|---|
+| **Do it here** | Trivial lookups a single Grep/Glob/Read answers in seconds. Work depending on context already loaded here that would be costly to transfer. Work whose intermediate reasoning you need to watch directly. | Your context |
+| **Native subagent** (`Task`/`Agent`) | **Anything that writes** — code, commits, PRs. Tight interactive iteration where latency matters. Work needing a host-only tool or MCP server the delegate backend lacks. Bounded fan-out over context already established here. | Shares this session's budget and framing |
+| **Dispatch** (`allele_sessions_create`, or `locus delegate run` outside allele) | Adversarial review, red teams, council members, tie-breaks, "am I fooling myself". Work that needs its own workspace and branch. Investigation spanning 5+ files where only the conclusion matters here. Large parallel sweeps. Anything wanting a durable, replayable audit artifact. | A slot against the global cap; latency; no access to your loaded context |
+
+### Why adversarial work must leave the family
+
+A native subagent is a descendant of this session: it inherits the framing, the assumptions
+and the blind spots that produced the thing it is meant to attack. Its errors are therefore
+**correlated with yours**, which is precisely the property an independent check must not
+have. A different model family, in its own process, with its own trait composition, fails
+differently — and only uncorrelated failure produces a real second opinion.
+
+This is not a claim that dispatch is cheaper. It is not: a subagent's raw tool traces stay
+out of the parent context but its final result still enters, and Locus returns a compact
+envelope while retaining the full trace externally — so both forms manage context. The
+argument for dispatch on adversarial work is **independence**, not economy.
+
+### Why write work stays native
+
+`locus delegate run` is read-only. Routing implementation work to it means routing it
+nowhere. Native subagents write, commit and open PRs; that is the route for work that
+produces artifacts, unless the work also needs its own branch — in which case dispatch a
+real allele session, which has a workspace.
+
+### Also dispatch when
+
+- **3+ independent workstreams** genuinely parallelise.
 - **A blocker you cannot resolve** without derailing the work in front of you.
 
-**Do not dispatch** when:
+### Never route anywhere
 
-- A single Grep/Glob/Read answers it in seconds.
-- The work depends on context already loaded here that would be costly to transfer.
-- You need to watch the intermediate reasoning directly, not just the result.
-- You are at depth 3.
+- You are at **depth 3** — that is the floor, and it does not dispatch.
 
 ## Independence, and what actually produces it
 
@@ -128,8 +151,8 @@ so this is running through `locus delegate run` instead: read-only, no branch,
 and no way to ask the worker a follow-up question.
 ```
 
-**Do not fall back to native Task/Agent subagents**, and do not abandon delegation. The
-guardrail names the mechanism; it is not a reason to do the work inline.
+Work the routing table sends to **native** is unaffected — that route never depended on
+allele. Do not abandon routing and do the work inline because one mechanism is missing.
 
 Note `locus delegate run` is **not** a security boundary — see the warning in
 `orchestration.md`. It is the standalone path, not the safe one.
