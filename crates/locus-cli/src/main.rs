@@ -254,9 +254,16 @@ enum DelegateCommands {
         #[arg(long)]
         older_than: Option<String>,
 
-        /// Prune every delegation. Mutually exclusive with --older-than.
+        /// Prune every delegation. Mutually exclusive with the other selectors.
         #[arg(long)]
         all: bool,
+
+        /// Strip the OpenCode sandbox — and any stray credential copy — from
+        /// every delegation of any age, keeping manifests and stdout
+        /// artifacts. The one-shot repair for installs that accumulated
+        /// sandboxes before they were discarded automatically.
+        #[arg(long)]
+        sandboxes: bool,
 
         /// Actually delete (without this flag, prune is a dry-run).
         #[arg(long)]
@@ -391,6 +398,7 @@ fn main() {
             DelegateCommands::Prune {
                 older_than,
                 all,
+                sandboxes,
                 apply,
                 keep_stdout,
                 root,
@@ -398,6 +406,7 @@ fn main() {
             } => commands::delegate::prune(commands::delegate::PruneArgs {
                 older_than,
                 all,
+                sandboxes,
                 apply,
                 keep_stdout,
                 root,

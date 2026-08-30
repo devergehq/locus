@@ -9,10 +9,12 @@ use std::collections::BTreeMap;
 
 use chrono::{Local, TimeZone};
 use clap::ValueEnum;
-use locus_adapter_opencode::run::{parse::extract_token_usage, run_delegation};
+use locus_adapter_opencode::run::{
+    discard_sandbox, parse::extract_token_usage, run_delegation, SANDBOX_DIRS,
+};
 use locus_core::{
-    DelegationBackend, DelegationConfig, DelegationDefaults, DelegationMode, DelegationRequest,
-    DelegationTaskKind, ExecutionMode, LocusConfig, LocusError, TokenUsage,
+    DelegationBackend, DelegationConfig, DelegationDefaults, DelegationManifest, DelegationMode,
+    DelegationRequest, DelegationTaskKind, ExecutionMode, LocusConfig, LocusError, TokenUsage,
 };
 use serde::Serialize;
 
@@ -116,6 +118,14 @@ pub fn run(args: RunArgs) -> Result<(), LocusError> {
     let result = match request.backend {
         DelegationBackend::OpenCode => run_delegation(&request)?,
     };
+
+    // Bound retention opportunistically. A successful run has already dropped
+    // its own sandbox; this is what stops failed runs and raw JSONL from
+    // accumulating forever. Best-effort — a housekeeping failure must never
+    // turn a successful delegation into an error.
+    if let Some(root) = request.artifact_dir.parent() {
+        let _ = sweep_expired(root, SystemTime::now());
+    }
 
     match output_mode {
         DelegateOutput::Json => print_json(&result),
@@ -308,7 +318,20 @@ fn default_artifact_dir(id: &str) -> PathBuf {
     default_delegations_root().join(id)
 }
 
+/// Where new delegation artifacts are written.
+///
+/// Delegation scratch used to live under `data/memory/work/delegations`, which
+/// put ephemeral sandboxes inside the memory tree that Locus syncs and treats as
+/// durable. It is not memory — it is scratch with a manifest — so it now sits at
+/// `data/delegations`.
 fn default_delegations_root() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    home.join(".locus").join("data").join("delegations")
+}
+
+/// The pre-DEV-505 location. Still enumerated by `ls`, `prune`, and `usage` so
+/// existing delegations remain visible, prunable, and countable towards usage.
+fn legacy_delegations_root() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     home.join(".locus")
         .join("data")
@@ -316,6 +339,25 @@ fn default_delegations_root() -> PathBuf {
         .join("work")
         .join("delegations")
 }
+
+/// The roots a maintenance command should walk.
+///
+/// An explicit `--root` is taken literally. Otherwise both the current and the
+/// legacy root are walked, skipping whichever does not exist.
+fn roots_to_scan(explicit: Option<PathBuf>) -> Vec<PathBuf> {
+    match explicit {
+        Some(root) => vec![root],
+        None => [default_delegations_root(), legacy_delegations_root()]
+            .into_iter()
+            .filter(|r| r.exists())
+            .collect(),
+    }
+}
+
+/// Days after which a delegation's bulky artifacts are swept, leaving only the
+/// manifest. Failed runs keep their sandbox for this long so they stay
+/// diagnosable; successful runs have already discarded theirs at completion.
+const RETENTION_DAYS: u64 = 7;
 
 /// Arguments for `locus delegate ls`.
 #[derive(Debug, Clone)]
@@ -329,45 +371,66 @@ pub struct LsArgs {
 pub struct PruneArgs {
     pub older_than: Option<String>,
     pub all: bool,
+    /// Strip the OpenCode sandbox (and its credential copy) from every
+    /// delegation, of any age, keeping the manifest and stdout artifacts.
+    pub sandboxes: bool,
     pub apply: bool,
     pub keep_stdout: bool,
     pub root: Option<PathBuf>,
     pub output: DelegateOutput,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 struct DelegationEntry {
     id: String,
     path: PathBuf,
     age_seconds: u64,
     size_bytes: u64,
     opencode_data_bytes: u64,
+    /// Bytes held by all three sandbox directories, not just `opencode-data`.
+    sandbox_bytes: u64,
+    /// Whether this entry holds a real credential copy (a symlink to the
+    /// canonical file does not count).
+    has_auth_copy: bool,
+    /// The durable manifest, when one has been written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    manifest: Option<DelegationManifest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct LsReport {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     entries: Vec<DelegationEntry>,
     total_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct PruneReport {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     applied: bool,
     keep_stdout: bool,
+    /// Whether this was a sandbox-only sweep rather than a full delete.
+    sandboxes_only: bool,
     selected: Vec<DelegationEntry>,
     freed_bytes: u64,
+    /// Credential copies removed by the sweep. Counted separately because they
+    /// are the reason prune is not merely a disk-space concern.
+    auth_files_removed: usize,
 }
 
 /// List existing delegation artifact directories.
 pub fn ls(args: LsArgs) -> Result<(), LocusError> {
-    let root = args.root.unwrap_or_else(default_delegations_root);
-    let entries = enumerate_delegations(&root, SystemTime::now())?;
+    let roots = roots_to_scan(args.root);
+    let now = SystemTime::now();
+    let mut entries = Vec::new();
+    for root in &roots {
+        entries.extend(enumerate_delegations(root, now)?);
+    }
+    entries.sort_by(|a, b| b.age_seconds.cmp(&a.age_seconds));
     let total_bytes = entries.iter().map(|e| e.size_bytes).sum();
 
     let report = LsReport {
-        root,
+        roots,
         entries,
         total_bytes,
     };
@@ -379,10 +442,27 @@ pub fn ls(args: LsArgs) -> Result<(), LocusError> {
 }
 
 /// Prune delegation artifact directories.
+///
+/// Three selectors, exactly one of which must be given:
+///
+/// - `--older-than <dur>` — entries past an age
+/// - `--all` — every entry
+/// - `--sandboxes` — every entry of any age, but strip only the OpenCode
+///   sandbox and leave the manifest and stdout artifacts in place. This is the
+///   one-shot repair for installs that accumulated sandboxes before they were
+///   discarded automatically.
+///
+/// Whichever selector is used, applying a prune also sweeps every stray
+/// `auth.json` under every scanned root, regardless of the entry's age. A
+/// credential copy is not a disk-space problem you wait out.
 pub fn prune(args: PruneArgs) -> Result<(), LocusError> {
-    if args.all == args.older_than.is_some() {
+    let selectors = [args.all, args.older_than.is_some(), args.sandboxes]
+        .iter()
+        .filter(|selected| **selected)
+        .count();
+    if selectors != 1 {
         return Err(LocusError::Config {
-            message: "Specify exactly one of --all or --older-than".into(),
+            message: "Specify exactly one of --all, --older-than, or --sandboxes".into(),
             path: None,
         });
     }
@@ -392,9 +472,13 @@ pub fn prune(args: PruneArgs) -> Result<(), LocusError> {
         None => None,
     };
 
-    let root = args.root.unwrap_or_else(default_delegations_root);
+    let roots = roots_to_scan(args.root);
     let now = SystemTime::now();
-    let all_entries = enumerate_delegations(&root, now)?;
+    let mut all_entries = Vec::new();
+    for root in &roots {
+        all_entries.extend(enumerate_delegations(root, now)?);
+    }
+    all_entries.sort_by(|a, b| b.age_seconds.cmp(&a.age_seconds));
 
     let selected: Vec<DelegationEntry> = all_entries
         .into_iter()
@@ -405,26 +489,141 @@ pub fn prune(args: PruneArgs) -> Result<(), LocusError> {
         .collect();
 
     let mut freed_bytes: u64 = 0;
+    let mut auth_files_removed = 0usize;
     if args.apply {
         for entry in &selected {
-            freed_bytes += delete_entry(&entry.path, args.keep_stdout, &entry.id)?;
+            if args.sandboxes {
+                freed_bytes += discard_sandbox(&entry.path)?;
+            } else {
+                freed_bytes += delete_entry(&entry.path, args.keep_stdout, &entry.id)?;
+            }
+        }
+        // Belt and braces: catch credential copies in entries the selector
+        // skipped, and any left behind by a --keep-stdout prune.
+        for root in &roots {
+            auth_files_removed += purge_auth_files(root)?;
         }
     } else {
-        freed_bytes = selected.iter().map(|e| e.size_bytes).sum();
+        freed_bytes = if args.sandboxes {
+            selected.iter().map(|e| e.sandbox_bytes).sum()
+        } else {
+            selected.iter().map(|e| e.size_bytes).sum()
+        };
+        auth_files_removed = selected.iter().filter(|e| e.has_auth_copy).count();
     }
 
     let report = PruneReport {
-        root,
+        roots,
         applied: args.apply,
         keep_stdout: args.keep_stdout,
+        sandboxes_only: args.sandboxes,
         selected,
         freed_bytes,
+        auth_files_removed,
     };
 
     match args.output {
         DelegateOutput::Json => print_json(&report),
         DelegateOutput::Human => print_human_prune(&report),
     }
+}
+
+/// Remove every `auth.json` under a delegations root, whatever its age.
+///
+/// Returns how many were removed. These are copies of the user's OpenCode
+/// credentials made by pre-DEV-505 delegations; the current code links the
+/// canonical file instead, so anything found here is residue.
+fn purge_auth_files(root: &Path) -> Result<usize, LocusError> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in fs::read_dir(root).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to read delegations root: {}", e),
+        path: root.to_path_buf(),
+    })? {
+        let Ok(entry) = entry else { continue };
+        if !entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let auth = auth_copy_path(&entry.path());
+        // symlink_metadata: a link to the canonical credential is not a copy,
+        // and deleting the canonical file behind it would be catastrophic.
+        let Ok(metadata) = fs::symlink_metadata(&auth) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            let _ = fs::remove_file(&auth);
+            continue;
+        }
+        fs::remove_file(&auth).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to remove stray credential copy: {}", e),
+            path: auth.clone(),
+        })?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+/// Where a delegation's stray credential copy would sit.
+fn auth_copy_path(delegation_dir: &Path) -> PathBuf {
+    delegation_dir
+        .join("opencode-data")
+        .join("opencode")
+        .join("auth.json")
+}
+
+/// Discard bulky artifacts from delegations past the retention window, keeping
+/// each manifest so `locus delegate usage` still reports on them.
+///
+/// Runs opportunistically after a delegation completes. Successful runs have
+/// already dropped their sandbox at completion; this is what bounds the
+/// retention of failed runs and of the raw stdout JSONL.
+fn sweep_expired(root: &Path, now: SystemTime) -> Result<(), LocusError> {
+    let retention = Duration::from_secs(RETENTION_DAYS * 86_400);
+    for entry in enumerate_delegations(root, now)? {
+        if entry.age_seconds < retention.as_secs() {
+            continue;
+        }
+        if entry.manifest.is_none() {
+            // No durable record yet — deleting the JSONL would delete the only
+            // evidence this run ever happened. Leave it for an explicit prune.
+            continue;
+        }
+        let _ = delete_entry_except_manifest(&entry.path);
+    }
+    Ok(())
+}
+
+/// Remove everything in a delegation directory except its manifest.
+fn delete_entry_except_manifest(path: &Path) -> Result<u64, LocusError> {
+    let mut freed = 0u64;
+    for item in fs::read_dir(path).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to read delegation dir: {}", e),
+        path: path.to_path_buf(),
+    })? {
+        let Ok(item) = item else { continue };
+        if item.file_name() == std::ffi::OsStr::new(DelegationManifest::FILE_NAME) {
+            continue;
+        }
+        let item_path = item.path();
+        let size = dir_size(&item_path)?;
+        let removed = if item_path.is_dir() {
+            fs::remove_dir_all(&item_path)
+        } else {
+            fs::remove_file(&item_path)
+        };
+        if removed.is_ok() {
+            freed += size;
+        }
+    }
+    Ok(freed)
+}
+
+/// Read a delegation's durable manifest, if it has one.
+fn read_manifest(path: &Path) -> Option<DelegationManifest> {
+    let body = fs::read(path.join(DelegationManifest::FILE_NAME)).ok()?;
+    serde_json::from_slice(&body).ok()
 }
 
 fn enumerate_delegations(
@@ -460,6 +659,14 @@ fn enumerate_delegations(
         let id = dir_entry.file_name().to_string_lossy().into_owned();
         let size_bytes = dir_size(&path)?;
         let opencode_data_bytes = dir_size(&path.join("opencode-data")).unwrap_or(0);
+        let sandbox_bytes: u64 = SANDBOX_DIRS
+            .iter()
+            .map(|name| dir_size(&path.join(name)).unwrap_or(0))
+            .sum();
+        let has_auth_copy = fs::symlink_metadata(auth_copy_path(&path))
+            .map(|m| !m.file_type().is_symlink())
+            .unwrap_or(false);
+        let manifest = read_manifest(&path);
         let mtime = metadata.modified().unwrap_or(UNIX_EPOCH);
         let age_seconds = now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0);
 
@@ -469,6 +676,9 @@ fn enumerate_delegations(
             age_seconds,
             size_bytes,
             opencode_data_bytes,
+            sandbox_bytes,
+            has_auth_copy,
+            manifest,
         });
     }
 
@@ -579,7 +789,7 @@ struct DayUsage {
 
 #[derive(Debug, Clone, Serialize)]
 struct UsageReport {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     since: String,
     days: Vec<DayUsage>,
     total: TokenUsage,
@@ -587,9 +797,14 @@ struct UsageReport {
 }
 
 /// Show token usage across delegations, grouped by day.
+///
+/// Reads each delegation's manifest when it has one, and falls back to
+/// re-parsing the raw stdout JSONL for delegations written before manifests
+/// existed. That fallback is what lets sandboxes and JSONL be discarded without
+/// erasing history: the manifest is written first, and it is what survives.
 pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
     let cutoff = parse_duration(&args.since)?;
-    let root = args.root.unwrap_or_else(default_delegations_root);
+    let roots = roots_to_scan(args.root);
     let now = SystemTime::now();
     let cutoff_epoch = now
         .duration_since(UNIX_EPOCH)
@@ -601,8 +816,8 @@ pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
     let mut total = TokenUsage::default();
     let mut total_delegations: u64 = 0;
 
-    if root.exists() {
-        let entries = fs::read_dir(&root).map_err(|e| LocusError::Filesystem {
+    for root in &roots {
+        let entries = fs::read_dir(root).map_err(|e| LocusError::Filesystem {
             message: format!("Failed to read delegations root: {}", e),
             path: root.clone(),
         })?;
@@ -618,34 +833,43 @@ pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
             }
 
             let name = dir_entry.file_name().to_string_lossy().into_owned();
-            let Some(ts_ms) = name.strip_prefix("delegate-").and_then(|s| s.parse::<u64>().ok())
-            else {
-                continue;
+            let path = dir_entry.path();
+            let manifest = read_manifest(&path);
+
+            // The manifest carries its own completion time. Without one, fall
+            // back to the millisecond timestamp encoded in the directory name.
+            let ts_sec = match &manifest {
+                Some(m) => m.completed_at,
+                None => {
+                    let Some(ts_ms) =
+                        name.strip_prefix("delegate-").and_then(|s| s.parse::<u64>().ok())
+                    else {
+                        continue;
+                    };
+                    ts_ms / 1000
+                }
             };
-            let ts_sec = ts_ms / 1000;
             if ts_sec < cutoff_epoch {
                 continue;
             }
 
-            let jsonl_path = dir_entry.path().join(format!("{}-opencode-stdout.jsonl", name));
-            let usage = if jsonl_path.exists() {
-                let data = fs::read(&jsonl_path).unwrap_or_default();
-                extract_token_usage(&data)
-            } else {
-                None
+            let usage = match &manifest {
+                Some(m) => m.usage.clone(),
+                None => {
+                    let jsonl_path = path.join(format!("{}-opencode-stdout.jsonl", name));
+                    if jsonl_path.exists() {
+                        extract_token_usage(&fs::read(&jsonl_path).unwrap_or_default())
+                    } else {
+                        None
+                    }
+                }
             };
 
             let date = format_epoch_date(ts_sec);
             total_delegations += 1;
 
             if let Some(u) = &usage {
-                total.input_tokens += u.input_tokens;
-                total.output_tokens += u.output_tokens;
-                total.reasoning_tokens += u.reasoning_tokens;
-                total.cache_read_tokens += u.cache_read_tokens;
-                total.cache_write_tokens += u.cache_write_tokens;
-                total.total_tokens += u.total_tokens;
-                total.cost_usd += u.cost_usd;
+                add_usage(&mut total, u);
             }
 
             let day = day_map.entry(date.clone()).or_insert_with(|| DayUsage {
@@ -654,21 +878,15 @@ pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
                 tokens: TokenUsage::default(),
             });
             day.delegation_count += 1;
-            if let Some(u) = usage {
-                day.tokens.input_tokens += u.input_tokens;
-                day.tokens.output_tokens += u.output_tokens;
-                day.tokens.reasoning_tokens += u.reasoning_tokens;
-                day.tokens.cache_read_tokens += u.cache_read_tokens;
-                day.tokens.cache_write_tokens += u.cache_write_tokens;
-                day.tokens.total_tokens += u.total_tokens;
-                day.tokens.cost_usd += u.cost_usd;
+            if let Some(u) = &usage {
+                add_usage(&mut day.tokens, u);
             }
         }
     }
 
     let days: Vec<DayUsage> = day_map.into_values().collect();
     let report = UsageReport {
-        root,
+        roots,
         since: args.since,
         days,
         total,
@@ -679,6 +897,16 @@ pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
         DelegateOutput::Json => print_json(&report),
         DelegateOutput::Human => print_human_usage(&report),
     }
+}
+
+fn add_usage(total: &mut TokenUsage, u: &TokenUsage) {
+    total.input_tokens += u.input_tokens;
+    total.output_tokens += u.output_tokens;
+    total.reasoning_tokens += u.reasoning_tokens;
+    total.cache_read_tokens += u.cache_read_tokens;
+    total.cache_write_tokens += u.cache_write_tokens;
+    total.total_tokens += u.total_tokens;
+    total.cost_usd += u.cost_usd;
 }
 
 fn format_epoch_date(epoch_secs: u64) -> String {
@@ -702,7 +930,15 @@ fn format_number(n: u64) -> String {
 fn print_human_usage(report: &UsageReport) -> Result<(), LocusError> {
     output::print_header();
     output::section("Delegation Token Usage");
-    output::field("Root", &report.root.display().to_string());
+    output::field(
+        "Roots",
+        &report
+            .roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     output::field("Period", &format!("last {}", report.since));
 
     if report.days.is_empty() {
@@ -786,7 +1022,15 @@ fn invalid_duration(spec: &str) -> LocusError {
 fn print_human_ls(report: &LsReport) -> Result<(), LocusError> {
     output::print_header();
     output::section("Delegations");
-    output::field("Root", &report.root.display().to_string());
+    output::field(
+        "Roots",
+        &report
+            .roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
 
     if report.entries.is_empty() {
         output::info("No delegation directories found.");
@@ -822,7 +1066,15 @@ fn print_human_prune(report: &PruneReport) -> Result<(), LocusError> {
         "Delegation Prune (dry-run)"
     };
     output::section(title);
-    output::field("Root", &report.root.display().to_string());
+    output::field(
+        "Roots",
+        &report
+            .roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     output::field(
         "Mode",
         if report.keep_stdout {
@@ -1008,6 +1260,262 @@ mod tests {
         assert!(parse_duration("abc").is_err());
     }
 
+    /// Write a delegation directory that also carries a credential copy, the
+    /// way every pre-DEV-505 delegation did.
+    fn write_delegation_with_auth(root: &Path, id: &str) -> PathBuf {
+        let dir = write_delegation(
+            root,
+            id,
+            &[(&format!("{}-opencode-stdout.jsonl", id), b"{}")],
+            &[("opencode.db", &[0u8; 2048])],
+        );
+        let auth_dir = dir.join("opencode-data").join("opencode");
+        fs::create_dir_all(&auth_dir).unwrap();
+        fs::write(auth_dir.join("auth.json"), br#"{"openai":{"expires":1}}"#).unwrap();
+        dir
+    }
+
+    fn write_manifest_file(dir: &Path, id: &str, completed_at: u64, total_tokens: u64) {
+        let manifest = serde_json::json!({
+            "schema_version": 1,
+            "id": id,
+            "backend": "opencode",
+            "task_kind": "research",
+            "model": "openai/gpt-5.6-sol",
+            "status": "success",
+            "completed_at": completed_at,
+            "duration_ms": 1234,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "reasoning_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "total_tokens": total_tokens,
+                "cost_usd": 0.5
+            },
+            "sandbox_discarded": true
+        });
+        fs::write(
+            dir.join(DelegationManifest::FILE_NAME),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// DEV-505: the default root moved out of the memory tree. Delegation
+    /// scratch is ephemeral; memory is not.
+    #[test]
+    fn default_root_is_not_inside_memory_work() {
+        let root = default_delegations_root();
+        assert!(
+            !root.to_string_lossy().contains("memory"),
+            "delegation scratch must not live in the memory tree: {}",
+            root.display()
+        );
+        assert!(root.ends_with("data/delegations"), "got {}", root.display());
+    }
+
+    /// DEV-505: the pre-move root is still walked, or the existing 225
+    /// delegations become invisible to ls, prune, and usage.
+    #[test]
+    fn legacy_root_is_still_scanned() {
+        assert!(legacy_delegations_root()
+            .to_string_lossy()
+            .contains("memory/work/delegations"));
+        // An explicit --root is taken literally and suppresses both defaults.
+        let explicit = PathBuf::from("/tmp/somewhere");
+        assert_eq!(roots_to_scan(Some(explicit.clone())), vec![explicit]);
+    }
+
+    /// DEV-505: "no auth.json copy survives a prune, regardless of age."
+    #[test]
+    fn prune_removes_credential_copies_regardless_of_age() {
+        let root = unique_root();
+        let dir = write_delegation_with_auth(&root, "delegate-auth1");
+        let auth = auth_copy_path(&dir);
+        assert!(auth.exists());
+
+        // Selected by age: nothing here is 30 days old, so the entry itself is
+        // not pruned — but the credential copy must still go.
+        prune(PruneArgs {
+            older_than: Some("30d".into()),
+            all: false,
+            sandboxes: false,
+            apply: true,
+            keep_stdout: false,
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        assert!(dir.exists(), "a young delegation is not deleted by --older-than 30d");
+        assert!(!auth.exists(), "the credential copy must be purged anyway");
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// DEV-505: a symlink to the canonical credential is not a copy, and must
+    /// never be followed and deleted — that would destroy the real file.
+    #[cfg(unix)]
+    #[test]
+    fn prune_does_not_delete_the_canonical_file_through_a_link() {
+        let root = unique_root();
+        let canonical = root.join("canonical-auth.json");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&canonical, br#"{"openai":{"expires":9}}"#).unwrap();
+
+        let dir = write_delegation(&root, "delegate-link", &[], &[]);
+        let auth_dir = dir.join("opencode-data").join("opencode");
+        fs::create_dir_all(&auth_dir).unwrap();
+        std::os::unix::fs::symlink(&canonical, auth_dir.join("auth.json")).unwrap();
+
+        purge_auth_files(&root).unwrap();
+
+        assert!(
+            canonical.exists(),
+            "the canonical credential must survive — the link is removed, not its target"
+        );
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// DEV-505: the one-shot repair for the 225 existing sandboxes. Strips the
+    /// sandbox from every entry of any age while keeping the manifest and the
+    /// stdout artifact.
+    #[test]
+    fn prune_sandboxes_strips_sandboxes_but_keeps_artifacts() {
+        let root = unique_root();
+        let dir = write_delegation_with_auth(&root, "delegate-repair");
+        write_manifest_file(&dir, "delegate-repair", 1_788_000_000, 30);
+        fs::create_dir_all(dir.join("opencode-cache")).unwrap();
+        fs::write(dir.join("opencode-cache").join("models.json"), [0u8; 512]).unwrap();
+
+        prune(PruneArgs {
+            older_than: None,
+            all: false,
+            sandboxes: true,
+            apply: true,
+            keep_stdout: false,
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        for name in SANDBOX_DIRS {
+            assert!(!dir.join(name).exists(), "{} must be stripped", name);
+        }
+        assert!(
+            dir.join("delegate-repair-opencode-stdout.jsonl").exists(),
+            "stdout artifact is kept"
+        );
+        assert!(
+            dir.join(DelegationManifest::FILE_NAME).exists(),
+            "the manifest must survive — usage history depends on it"
+        );
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn prune_rejects_more_than_one_selector() {
+        let result = prune(PruneArgs {
+            older_than: None,
+            all: true,
+            sandboxes: true,
+            apply: false,
+            keep_stdout: false,
+            root: Some(unique_root()),
+            output: DelegateOutput::Json,
+        });
+        assert!(result.is_err());
+    }
+
+    /// DEV-505 ordering guarantee: usage is computed from the manifest, so a
+    /// delegation whose sandbox and JSONL are gone still reports its tokens.
+    #[test]
+    fn usage_reads_the_manifest_when_the_jsonl_is_gone() {
+        let root = unique_root();
+        let dir = root.join("delegate-manifest-only");
+        fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        write_manifest_file(&dir, "delegate-manifest-only", now, 4242);
+
+        let manifest = read_manifest(&dir).expect("manifest parses");
+        assert_eq!(manifest.usage.unwrap().total_tokens, 4242);
+
+        // And the report path runs clean over a manifest-only directory.
+        usage(UsageArgs {
+            since: "30d".into(),
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// The fallback that keeps pre-manifest delegations countable.
+    #[test]
+    fn usage_falls_back_to_jsonl_for_legacy_delegations() {
+        let root = unique_root();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let id = format!("delegate-{}", now_ms);
+        let dir = write_delegation(&root, &id, &[], &[]);
+        assert!(read_manifest(&dir).is_none(), "legacy dirs have no manifest");
+
+        usage(UsageArgs {
+            since: "1d".into(),
+            root: Some(root.clone()),
+            output: DelegateOutput::Json,
+        })
+        .unwrap();
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// DEV-505: the retention sweep keeps the manifest and drops the bulk.
+    #[test]
+    fn sweep_expired_keeps_the_manifest_and_drops_the_rest() {
+        let root = unique_root();
+        let dir = write_delegation_with_auth(&root, "delegate-old");
+        write_manifest_file(&dir, "delegate-old", 1, 7);
+
+        // Pretend "now" is far past the retention window.
+        let future = SystemTime::now() + Duration::from_secs(RETENTION_DAYS * 86_400 + 3_600);
+        sweep_expired(&root, future).unwrap();
+
+        assert!(dir.join(DelegationManifest::FILE_NAME).exists());
+        assert!(!dir.join("opencode-data").exists());
+        assert!(!dir.join("delegate-old-opencode-stdout.jsonl").exists());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
+    /// A delegation with no manifest is never swept — the JSONL would be the
+    /// only surviving evidence it ever ran.
+    #[test]
+    fn sweep_expired_spares_entries_without_a_manifest() {
+        let root = unique_root();
+        let dir = write_delegation(
+            &root,
+            "delegate-nomanifest",
+            &[("delegate-nomanifest-opencode-stdout.jsonl", b"{}")],
+            &[],
+        );
+
+        let future = SystemTime::now() + Duration::from_secs(RETENTION_DAYS * 86_400 + 3_600);
+        sweep_expired(&root, future).unwrap();
+
+        assert!(dir.join("delegate-nomanifest-opencode-stdout.jsonl").exists());
+        fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn enumerate_returns_empty_for_missing_root() {
         let root = unique_root();
@@ -1048,6 +1556,7 @@ mod tests {
         prune(PruneArgs {
             older_than: None,
             all: true,
+            sandboxes: false,
             apply: false,
             keep_stdout: false,
             root: Some(root.clone()),
@@ -1073,6 +1582,7 @@ mod tests {
         prune(PruneArgs {
             older_than: None,
             all: true,
+            sandboxes: false,
             apply: true,
             keep_stdout: false,
             root: Some(root.clone()),
@@ -1108,6 +1618,7 @@ mod tests {
         prune(PruneArgs {
             older_than: None,
             all: true,
+            sandboxes: false,
             apply: true,
             keep_stdout: true,
             root: Some(root.clone()),
@@ -1178,6 +1689,7 @@ mod tests {
         let result = prune(PruneArgs {
             older_than: None,
             all: false,
+            sandboxes: false,
             apply: false,
             keep_stdout: false,
             root: Some(unique_root()),
@@ -1191,6 +1703,7 @@ mod tests {
         let result = prune(PruneArgs {
             older_than: Some("1d".into()),
             all: true,
+            sandboxes: false,
             apply: false,
             keep_stdout: false,
             root: Some(unique_root()),

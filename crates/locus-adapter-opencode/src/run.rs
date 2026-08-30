@@ -6,15 +6,15 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Seconds before the hard timeout at which the parent sends SIGTERM (Unix)
 /// to give the agent a chance to wrap up and summarize.
 const TIMEOUT_GRACE_PERIOD_SECONDS: u64 = 120;
 
 use locus_core::{
-    DelegationMode, DelegationRequest, DelegationResult, DelegationStatus, ExecutionMode,
-    LocusError, Platform,
+    DelegationManifest, DelegationMode, DelegationRequest, DelegationResult, DelegationStatus,
+    ExecutionMode, LocusError, Platform,
 };
 
 /// Command program, arguments, and environment overrides that will invoke OpenCode.
@@ -99,24 +99,48 @@ fn seed_opencode_models_cache(cache_dir: &Path) {
     let _ = fs::copy(&source, dest_dir.join("models.json"));
 }
 
-/// Seed the per-delegation data directory with the user's OpenCode credentials.
+/// Path of the canonical OpenCode credential file.
 ///
-/// `$XDG_DATA_HOME/opencode/auth.json` is OpenCode's credential file —
-/// without it the spawned session has no provider auth and cannot dispatch
-/// any LLM call. Lacking auth, OpenCode reports `ProviderModelNotFoundError`
-/// for the requested model (the provider is filtered out before model
-/// lookup). The file is mode 0600 so we preserve those permissions on the
-/// copy. Errors are swallowed silently — if auth seeding fails the user
-/// will see the same `Model not found` error they would have seen anyway.
-fn seed_opencode_auth(data_dir: &Path) {
-    let Some(home) = dirs::home_dir() else {
+/// OpenCode resolves it as `$XDG_DATA_HOME/opencode/auth.json`, falling back to
+/// `~/.local/share/opencode/auth.json`. Delegation overrides `XDG_DATA_HOME` to
+/// isolate the session database, which is why the credential needs handling of
+/// its own — see [`link_opencode_auth`].
+pub fn canonical_auth_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| {
+        home.join(".local")
+            .join("share")
+            .join("opencode")
+            .join("auth.json")
+    })
+}
+
+/// Point the per-delegation data directory at the user's real credential file.
+///
+/// The sandbox exists to keep concurrent delegations off each other's SQLite
+/// database. `auth.json` is not a database and does not contend — but because
+/// it lives in the same `$XDG_DATA_HOME/opencode/` directory, isolating the
+/// database isolated the credential too.
+///
+/// That was actively destructive. OpenCode refreshes the OAuth token, writes
+/// the new one into the sandbox, and the sandbox is thrown away. With a
+/// rotating refresh token each run invalidates the previous one upstream while
+/// the canonical file keeps a stale copy, so delegation slowly destroyed its own
+/// auth: on the reporting machine 66 sandbox copies held 7 distinct expiry
+/// values, and the canonical file had not advanced in seven weeks until
+/// `locus delegate run` started failing with `Token refresh failed: 401`.
+///
+/// So the credential is shared, not copied. A symlink is enough because
+/// OpenCode's `Auth.set` writes through `fs.writeFile` (truncate-in-place) and
+/// then `chmod`s the same path — both follow the link, so a refresh lands on
+/// the canonical file. Nothing to copy back, and no credential copy is left
+/// behind to purge.
+///
+/// Falls back to a copy where symlinks are unavailable; [`reconcile_opencode_auth`]
+/// then carries any refresh back at the end of the run.
+fn link_opencode_auth(data_dir: &Path) {
+    let Some(source) = canonical_auth_path() else {
         return;
     };
-    let source = home
-        .join(".local")
-        .join("share")
-        .join("opencode")
-        .join("auth.json");
     if !source.exists() {
         return;
     }
@@ -125,10 +149,21 @@ fn seed_opencode_auth(data_dir: &Path) {
         return;
     }
     let dest = dest_dir.join("auth.json");
+    let _ = fs::remove_file(&dest);
+
+    #[cfg(unix)]
+    {
+        if std::os::unix::fs::symlink(&source, &dest).is_ok() {
+            return;
+        }
+    }
+
+    // Fallback: copy, and rely on reconcile_opencode_auth to carry a refresh
+    // back out. Errors are swallowed — without auth the user sees the same
+    // `Model not found` error they would have seen anyway.
     if fs::copy(&source, &dest).is_err() {
         return;
     }
-    // auth.json contains credentials — restrict to owner read/write.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -138,6 +173,71 @@ fn seed_opencode_auth(data_dir: &Path) {
             let _ = fs::set_permissions(&dest, perms);
         }
     }
+}
+
+/// Carry a credential refresh back to the canonical file, if one is stranded.
+///
+/// When [`link_opencode_auth`] managed a symlink there is nothing to do — the
+/// refresh already landed on the canonical file. This handles the two cases
+/// where it did not: the copy fallback, and a future OpenCode that replaces the
+/// link with a fresh file (an atomic `rename` would do that).
+///
+/// The write-back only ever moves the expiry *forward*. Two delegations running
+/// concurrently can both hold a refreshed credential; taking the later one means
+/// a slower run can never clobber the canonical file with a staler token.
+///
+/// Returns true when the canonical file was updated.
+pub fn reconcile_opencode_auth(data_dir: &Path) -> bool {
+    let sandbox = data_dir.join("opencode").join("auth.json");
+    let Ok(metadata) = fs::symlink_metadata(&sandbox) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() {
+        // Writes went straight through to the canonical file.
+        return false;
+    }
+    let Some(canonical) = canonical_auth_path() else {
+        return false;
+    };
+
+    let sandbox_expiry = latest_auth_expiry(&sandbox);
+    let canonical_expiry = latest_auth_expiry(&canonical);
+    match (sandbox_expiry, canonical_expiry) {
+        (Some(fresh), Some(current)) if fresh <= current => return false,
+        (None, _) => return false,
+        _ => {}
+    }
+
+    if let Some(parent) = canonical.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if fs::copy(&sandbox, &canonical).is_err() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if let Ok(metadata) = fs::metadata(&canonical) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(&canonical, perms);
+        }
+    }
+    true
+}
+
+/// The furthest-future `expires` value across every provider in an auth file.
+///
+/// Used only to order two credential files against each other, so an
+/// unreadable or malformed file is simply "no information".
+fn latest_auth_expiry(path: &Path) -> Option<i64> {
+    let body = fs::read_to_string(path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parsed
+        .as_object()?
+        .values()
+        .filter_map(|entry| entry.get("expires").and_then(|v| v.as_i64()))
+        .max()
 }
 
 /// Seed the per-delegation state with the user's runtime model registry.
@@ -269,7 +369,114 @@ pub fn run_delegation(request: &DelegationRequest) -> Result<DelegationResult, L
 }
 
 /// Execute a delegated request through a custom OpenCode executable.
+///
+/// On the way out the run is finalised: a durable `manifest.json` is written,
+/// and the per-run OpenCode sandbox is discarded when the run succeeded. See
+/// [`finalize_delegation`].
 pub fn run_delegation_with_bin(
+    request: &DelegationRequest,
+    opencode_bin: impl Into<String>,
+) -> Result<DelegationResult, LocusError> {
+    let result = execute_delegation(request, opencode_bin)?;
+    finalize_delegation(request, &result)?;
+    Ok(result)
+}
+
+/// Names of the per-run OpenCode sandbox directories, relative to the
+/// delegation's artifact directory.
+pub const SANDBOX_DIRS: [&str; 3] = ["opencode-data", "opencode-state", "opencode-cache"];
+
+/// Write the durable manifest, then discard the sandbox when it is safe to.
+///
+/// The ordering is load-bearing. `locus delegate usage` aggregates historical
+/// token spend, and until the manifest is on disk the only record of this run's
+/// tokens is the raw JSONL inside the directory we are about to prune. Manifest
+/// first, always — otherwise enabling auto-discard silently zeroes history.
+///
+/// The sandbox is kept when the run failed or timed out: it holds the session
+/// database and logs that make a failure diagnosable, and nothing else does.
+pub fn finalize_delegation(
+    request: &DelegationRequest,
+    result: &DelegationResult,
+) -> Result<(), LocusError> {
+    if !request.artifact_dir.exists() {
+        return Ok(());
+    }
+
+    let completed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+
+    // Carry any stranded credential refresh back before anything is deleted.
+    // Normally a no-op: the sandbox credential is a symlink at the canonical
+    // file, so the refresh already landed there. Runs on failures too — a run
+    // that refreshed the token and then failed still refreshed the token.
+    reconcile_opencode_auth(&opencode_data_dir(request));
+
+    let discard = result.status == DelegationStatus::Success;
+    let mut manifest = DelegationManifest::from_result(request, result, completed_at);
+    manifest.sandbox_discarded = discard;
+
+    let manifest_path = request.artifact_dir.join(DelegationManifest::FILE_NAME);
+    let body =
+        serde_json::to_string_pretty(&manifest).map_err(|e| LocusError::Adapter {
+            platform: Platform::OpenCode,
+            message: format!("Failed to serialise delegation manifest: {}", e),
+        })?;
+    fs::write(&manifest_path, body).map_err(|e| LocusError::Filesystem {
+        message: format!("Failed to write delegation manifest: {}", e),
+        path: manifest_path.clone(),
+    })?;
+
+    if discard {
+        discard_sandbox(&request.artifact_dir)?;
+    }
+
+    Ok(())
+}
+
+/// Remove the per-run OpenCode sandbox directories from an artifact directory.
+///
+/// Returns the number of bytes reclaimed. Safe to call on a directory that has
+/// already been swept. The copied `auth.json` lives under `opencode-data`, so
+/// this is also what removes the credential copy.
+pub fn discard_sandbox(artifact_dir: &Path) -> Result<u64, LocusError> {
+    let mut freed = 0u64;
+    for name in SANDBOX_DIRS {
+        let dir = artifact_dir.join(name);
+        if !dir.exists() {
+            continue;
+        }
+        freed += dir_size(&dir);
+        fs::remove_dir_all(&dir).map_err(|e| LocusError::Filesystem {
+            message: format!("Failed to discard delegation sandbox: {}", e),
+            path: dir.clone(),
+        })?;
+    }
+    Ok(freed)
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| dir_size(&entry.path()))
+        .sum()
+}
+
+fn execute_delegation(
     request: &DelegationRequest,
     opencode_bin: impl Into<String>,
 ) -> Result<DelegationResult, LocusError> {
@@ -292,7 +499,7 @@ pub fn run_delegation_with_bin(
         message: format!("Failed to create OpenCode data directory: {}", e),
         path: data_dir.clone(),
     })?;
-    seed_opencode_auth(&data_dir);
+    link_opencode_auth(&data_dir);
 
     let state_dir = opencode_state_dir(request);
     fs::create_dir_all(&state_dir).map_err(|e| LocusError::Filesystem {
@@ -1036,7 +1243,11 @@ mod tests {
     #[test]
     fn run_creates_per_invocation_data_dir() {
         let request = sample_request();
-        let _ = run_delegation_with_bin(&request, "true").unwrap();
+        // Drives the pre-finalize path: `run_delegation_with_bin` discards the
+        // sandbox on success, which is what DEV-505 added and what the tests
+        // below assert. What this one guards is that the sandbox is isolated
+        // per invocation while the run is in flight.
+        let _ = execute_delegation(&request, "true").unwrap();
 
         let data_dir = request.artifact_dir.join("opencode-data");
         assert!(
@@ -1070,7 +1281,11 @@ mod tests {
     #[test]
     fn run_creates_per_invocation_state_dir() {
         let request = sample_request();
-        let _ = run_delegation_with_bin(&request, "true").unwrap();
+        // Drives the pre-finalize path: `run_delegation_with_bin` discards the
+        // sandbox on success, which is what DEV-505 added and what the tests
+        // below assert. What this one guards is that the sandbox is isolated
+        // per invocation while the run is in flight.
+        let _ = execute_delegation(&request, "true").unwrap();
 
         let state_dir = request.artifact_dir.join("opencode-state");
         assert!(
@@ -1104,7 +1319,11 @@ mod tests {
     #[test]
     fn run_creates_per_invocation_cache_dir() {
         let request = sample_request();
-        let _ = run_delegation_with_bin(&request, "true").unwrap();
+        // Drives the pre-finalize path: `run_delegation_with_bin` discards the
+        // sandbox on success, which is what DEV-505 added and what the tests
+        // below assert. What this one guards is that the sandbox is isolated
+        // per invocation while the run is in flight.
+        let _ = execute_delegation(&request, "true").unwrap();
 
         let cache_dir = request.artifact_dir.join("opencode-cache");
         assert!(
@@ -1113,6 +1332,250 @@ mod tests {
             cache_dir.display()
         );
         let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: every completed delegation leaves a durable manifest behind.
+    #[test]
+    fn successful_run_writes_a_manifest() {
+        let request = sample_request();
+        let result = run_delegation_with_bin(&request, "true").unwrap();
+        assert_eq!(result.status, DelegationStatus::Success);
+
+        let manifest_path = request.artifact_dir.join(DelegationManifest::FILE_NAME);
+        assert!(manifest_path.is_file(), "manifest must be written");
+
+        let manifest: DelegationManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        assert_eq!(manifest.id, request.id);
+        assert_eq!(manifest.status, DelegationStatus::Success);
+        assert_eq!(manifest.model, request.model);
+        assert_eq!(manifest.task_kind, request.task_kind);
+        assert_eq!(manifest.schema_version, DelegationManifest::CURRENT_SCHEMA_VERSION);
+        assert!(manifest.completed_at > 0);
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: the sandbox is what grows without bound — 385 MB across 225
+    /// runs on the reporting machine. A successful run does not need it.
+    #[test]
+    fn successful_run_discards_the_sandbox() {
+        let request = sample_request();
+        let result = run_delegation_with_bin(&request, "true").unwrap();
+        assert_eq!(result.status, DelegationStatus::Success);
+
+        for name in SANDBOX_DIRS {
+            let dir = request.artifact_dir.join(name);
+            assert!(
+                !dir.exists(),
+                "{} must be discarded after a successful run",
+                name
+            );
+        }
+        assert!(
+            request.artifact_dir.exists(),
+            "the artifact directory itself survives — it holds the manifest"
+        );
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: the manifest exists before the sandbox goes. If this ordering
+    /// ever inverts, `locus delegate usage` silently loses history.
+    #[test]
+    fn manifest_records_the_sandbox_was_discarded() {
+        let request = sample_request();
+        let _ = run_delegation_with_bin(&request, "true").unwrap();
+
+        let manifest: DelegationManifest = serde_json::from_slice(
+            &fs::read(request.artifact_dir.join(DelegationManifest::FILE_NAME)).unwrap(),
+        )
+        .unwrap();
+        assert!(manifest.sandbox_discarded);
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: a failed run keeps its sandbox — the session database and logs
+    /// inside it are the only thing that makes the failure diagnosable.
+    #[cfg(unix)]
+    #[test]
+    fn failed_run_retains_the_sandbox() {
+        let request = sample_request();
+        let result = run_delegation_with_bin(&request, "false").unwrap();
+        assert_eq!(result.status, DelegationStatus::Failure);
+
+        for name in SANDBOX_DIRS {
+            assert!(
+                request.artifact_dir.join(name).is_dir(),
+                "{} must be retained after a failed run",
+                name
+            );
+        }
+
+        let manifest: DelegationManifest = serde_json::from_slice(
+            &fs::read(request.artifact_dir.join(DelegationManifest::FILE_NAME)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.status, DelegationStatus::Failure);
+        assert!(!manifest.sandbox_discarded);
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: a timed-out run is a failure for retention purposes.
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_run_retains_the_sandbox() {
+        use std::io::Write;
+        let mut request = sample_request();
+        request.timeout_seconds = 1;
+        fs::create_dir_all(&request.artifact_dir).unwrap();
+        let script_path = request.artifact_dir.join("fake-opencode-sleep.sh");
+        let mut script = fs::File::create(&script_path).unwrap();
+        write!(script, "#!/bin/sh\nsleep 30\n").unwrap();
+        drop(script);
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", script_path.to_str().unwrap()])
+            .output();
+
+        let result = run_delegation_with_bin(&request, script_path.to_str().unwrap()).unwrap();
+        assert_eq!(result.status, DelegationStatus::TimedOut);
+        assert!(
+            request.artifact_dir.join("opencode-data").is_dir(),
+            "a timed-out run keeps its sandbox for debugging"
+        );
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: the credential copy lives inside the sandbox, so discarding the
+    /// sandbox is what removes it.
+    #[test]
+    fn discarding_the_sandbox_removes_the_auth_copy() {
+        let request = sample_request();
+        let auth = request
+            .artifact_dir
+            .join("opencode-data")
+            .join("opencode")
+            .join("auth.json");
+        fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        fs::write(&auth, "{\"anthropic\":{}}").unwrap();
+
+        discard_sandbox(&request.artifact_dir).unwrap();
+
+        assert!(!auth.exists(), "auth.json copy must not survive the sweep");
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    #[test]
+    fn discarding_an_already_swept_sandbox_is_not_an_error() {
+        let request = sample_request();
+        fs::create_dir_all(&request.artifact_dir).unwrap();
+        assert_eq!(discard_sandbox(&request.artifact_dir).unwrap(), 0);
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505 root cause: the sandbox used to hold a *copy* of the credential,
+    /// so every OAuth refresh OpenCode performed was written into a directory
+    /// that was then abandoned. The credential is now shared, not copied.
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_credential_is_a_link_to_the_canonical_file() {
+        let Some(canonical) = canonical_auth_path() else {
+            return;
+        };
+        if !canonical.exists() {
+            // Nothing to link on a machine with no OpenCode login.
+            return;
+        }
+
+        let request = sample_request();
+        let data_dir = request.artifact_dir.join("opencode-data");
+        fs::create_dir_all(&data_dir).unwrap();
+        link_opencode_auth(&data_dir);
+
+        let sandbox_auth = data_dir.join("opencode").join("auth.json");
+        let meta = fs::symlink_metadata(&sandbox_auth).expect("credential must be present");
+        assert!(
+            meta.file_type().is_symlink(),
+            "the sandbox credential must be a link, not a copy — a copy strands \
+             every token refresh in a directory that is about to be deleted"
+        );
+        assert_eq!(
+            fs::read_link(&sandbox_auth).unwrap(),
+            canonical,
+            "the link must point at the canonical credential file"
+        );
+
+        let _ = fs::remove_dir_all(&request.artifact_dir);
+    }
+
+    /// DEV-505: writing through the link updates the canonical file. This is
+    /// the property that makes a refresh survive the run — OpenCode's
+    /// `Auth.set` is an in-place `fs.writeFile` on this exact path.
+    #[cfg(unix)]
+    #[test]
+    fn writing_through_the_link_updates_the_canonical_file() {
+        // Stand up a fake HOME so the test never touches the real credential.
+        let root = std::env::temp_dir().join(format!("locus-auth-{}", unique_id()));
+        let canonical_dir = root.join(".local").join("share").join("opencode");
+        fs::create_dir_all(&canonical_dir).unwrap();
+        let canonical = canonical_dir.join("auth.json");
+        fs::write(&canonical, r#"{"openai":{"type":"oauth","expires":1000}}"#).unwrap();
+
+        let data_dir = root.join("sandbox").join("opencode-data");
+        let dest_dir = data_dir.join("opencode");
+        fs::create_dir_all(&dest_dir).unwrap();
+        let sandbox_auth = dest_dir.join("auth.json");
+        std::os::unix::fs::symlink(&canonical, &sandbox_auth).unwrap();
+
+        // What OpenCode does on refresh: truncate-in-place through the path.
+        fs::write(&sandbox_auth, r#"{"openai":{"type":"oauth","expires":2000}}"#).unwrap();
+
+        assert_eq!(latest_auth_expiry(&canonical), Some(2000));
+        assert!(
+            fs::symlink_metadata(&sandbox_auth).unwrap().file_type().is_symlink(),
+            "an in-place write leaves the link intact"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// DEV-505 fallback: if the credential ends up as a real file in the
+    /// sandbox — the copy path, or a future OpenCode that writes via rename —
+    /// a refresh is carried back out rather than lost.
+    #[test]
+    fn a_stranded_refresh_is_reconciled_only_when_it_is_newer() {
+        let root = std::env::temp_dir().join(format!("locus-auth-{}", unique_id()));
+        let data_dir = root.join("opencode-data");
+        let dest_dir = data_dir.join("opencode");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let stranded = dest_dir.join("auth.json");
+        fs::write(&stranded, r#"{"openai":{"type":"oauth","expires":5000}}"#).unwrap();
+        let older = dest_dir.join("older.json");
+        fs::write(&older, r#"{"openai":{"type":"oauth","expires":1}}"#).unwrap();
+
+        assert_eq!(latest_auth_expiry(&stranded), Some(5000));
+        assert_eq!(latest_auth_expiry(&older), Some(1));
+        assert_eq!(latest_auth_expiry(&dest_dir.join("absent.json")), None);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A malformed credential file must not make the run explode — it just
+    /// carries no ordering information.
+    #[test]
+    fn malformed_auth_file_yields_no_expiry() {
+        let root = std::env::temp_dir().join(format!("locus-auth-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("auth.json");
+        fs::write(&path, "not json at all").unwrap();
+        assert_eq!(latest_auth_expiry(&path), None);
+        fs::write(&path, r#"{"openai":{"type":"api","key":"x"}}"#).unwrap();
+        assert_eq!(latest_auth_expiry(&path), None);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
