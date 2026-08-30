@@ -260,6 +260,74 @@ impl DelegationResult {
     }
 }
 
+/// Compact, durable record of one completed delegation.
+///
+/// The sandbox a delegation runs in (`opencode-data`, `opencode-state`,
+/// `opencode-cache`) is discarded once the run succeeds, and the raw stdout
+/// JSONL is pruned on a schedule. Neither can be the source of truth for
+/// `locus delegate usage`, which aggregates historical token spend. This
+/// manifest is: it is written next to the artifacts before anything is
+/// deleted, and it is small enough to keep indefinitely.
+///
+/// Written as `manifest.json` in the delegation's artifact directory.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DelegationManifest {
+    /// Schema version for the manifest file itself.
+    pub schema_version: u32,
+    /// Unique request identifier — matches the artifact directory name.
+    pub id: String,
+    /// Backend that executed the task.
+    pub backend: DelegationBackend,
+    /// Broad delegated task category.
+    pub task_kind: DelegationTaskKind,
+    /// Provider/model identifier used by the backend.
+    pub model: String,
+    /// Completion status.
+    pub status: DelegationStatus,
+    /// Unix epoch seconds at which the run completed.
+    pub completed_at: u64,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
+    /// Token usage aggregated across all steps, when the backend reported it.
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
+    /// Whether the per-run OpenCode sandbox directories were discarded.
+    #[serde(default)]
+    pub sandbox_discarded: bool,
+    /// Structured error message for failures.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+impl DelegationManifest {
+    /// Current manifest schema version.
+    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+    /// File name the manifest is written under, inside the artifact directory.
+    pub const FILE_NAME: &'static str = "manifest.json";
+
+    /// Build a manifest from a request and its result.
+    pub fn from_result(
+        request: &DelegationRequest,
+        result: &DelegationResult,
+        completed_at: u64,
+    ) -> Self {
+        Self {
+            schema_version: Self::CURRENT_SCHEMA_VERSION,
+            id: result.id.clone(),
+            backend: result.backend.clone(),
+            task_kind: request.task_kind.clone(),
+            model: result.model.clone(),
+            status: result.status.clone(),
+            completed_at,
+            duration_ms: result.duration_ms,
+            usage: result.usage.clone(),
+            sandbox_discarded: false,
+            error: result.error.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
