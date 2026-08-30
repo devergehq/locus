@@ -348,6 +348,169 @@ mod tests {
         }
     }
 
+    /// Count the Locus-owned hook commands registered for one event, across
+    /// every matcher group. The invariant DEV-504 restores is that this is
+    /// always exactly 1.
+    fn locus_command_count(settings: &serde_json::Value, event: &str) -> usize {
+        settings["hooks"][event]
+            .as_array()
+            .map(|groups| {
+                groups
+                    .iter()
+                    .filter_map(|g| g.get("hooks").and_then(|h| h.as_array()))
+                    .flatten()
+                    .filter(|h| {
+                        config_gen::is_locus_hook_command(
+                            h.get("command").and_then(|c| c.as_str()).unwrap_or(""),
+                        )
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// DEV-504: a fresh install registers each event exactly once.
+    #[test]
+    fn fresh_install_registers_each_event_exactly_once() {
+        let mut settings = serde_json::json!({});
+        config_gen::merge_locus_hooks(&mut settings);
+
+        for (name, _, _) in config_gen::locus_hook_entries() {
+            assert_eq!(
+                locus_command_count(&settings, name),
+                1,
+                "{} must have exactly one Locus command on a fresh install",
+                name
+            );
+        }
+    }
+
+    /// DEV-504: re-running registration over an already-registered config does
+    /// not accumulate a second copy — this is the upgrade path.
+    #[test]
+    fn rerunning_registration_does_not_accumulate_duplicates() {
+        let mut settings = serde_json::json!({});
+        for _ in 0..5 {
+            config_gen::merge_locus_hooks(&mut settings);
+        }
+
+        for (name, _, _) in config_gen::locus_hook_entries() {
+            assert_eq!(
+                locus_command_count(&settings, name),
+                1,
+                "{} must stay at one command after repeated registration",
+                name
+            );
+        }
+    }
+
+    /// DEV-504: the observed breakage. An older Locus registered the hook by
+    /// resolved absolute path; the current one registers the bare command. The
+    /// merge must displace the legacy entry rather than sit beside it.
+    #[test]
+    fn absolute_path_legacy_entry_is_repaired() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "/Users/someone/.cargo/bin/locus hook stop" }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        config_gen::merge_locus_hooks(&mut settings);
+
+        assert_eq!(
+            locus_command_count(&settings, "Stop"),
+            1,
+            "legacy absolute-path entry must be replaced, not duplicated"
+        );
+        let commands: Vec<&str> = settings["hooks"]["Stop"][0]["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(commands, vec!["locus hook stop"]);
+    }
+
+    /// DEV-504: a Locus entry parked under a different matcher group is still
+    /// ours, and is still a duplicate. The sweep must cross group boundaries.
+    #[test]
+    fn duplicate_in_another_matcher_group_is_repaired() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "PostToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            { "type": "command", "command": "/opt/bin/locus hook post-tool-use" }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        config_gen::merge_locus_hooks(&mut settings);
+
+        assert_eq!(locus_command_count(&settings, "PostToolUse"), 1);
+        // The group emptied by the sweep is dropped rather than left as litter.
+        assert_eq!(settings["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+    }
+
+    /// DEV-504 guard rail: the sweep keys off argv shape, so a user hook that
+    /// merely mentions Locus must survive.
+    #[test]
+    fn user_hooks_mentioning_locus_are_not_swept() {
+        let mut settings = serde_json::json!({
+            "hooks": {
+                "Stop": [
+                    {
+                        "matcher": "",
+                        "hooks": [
+                            { "type": "command", "command": "echo locus hook ran >> /tmp/log" },
+                            { "type": "command", "command": "locus status" },
+                            { "type": "command", "command": "/usr/local/bin/locusd hook stop" }
+                        ]
+                    }
+                ]
+            }
+        });
+
+        config_gen::merge_locus_hooks(&mut settings);
+
+        let commands: Vec<String> = settings["hooks"]["Stop"][0]["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["command"].as_str().unwrap().to_string())
+            .collect();
+        assert!(commands.iter().any(|c| c.starts_with("echo locus hook")));
+        assert!(commands.iter().any(|c| c == "locus status"));
+        assert!(commands.iter().any(|c| c.contains("locusd")));
+        assert_eq!(locus_command_count(&settings, "Stop"), 1);
+    }
+
+    #[test]
+    fn locus_hook_command_detection() {
+        assert!(config_gen::is_locus_hook_command("locus hook stop"));
+        assert!(config_gen::is_locus_hook_command(
+            "/Users/x/.cargo/bin/locus hook post-tool-use"
+        ));
+        assert!(config_gen::is_locus_hook_command("./locus hook stop"));
+        assert!(config_gen::is_locus_hook_command("  locus   hook   stop  "));
+
+        assert!(!config_gen::is_locus_hook_command("locus status"));
+        assert!(!config_gen::is_locus_hook_command("locusd hook stop"));
+        assert!(!config_gen::is_locus_hook_command("echo locus hook stop"));
+        assert!(!config_gen::is_locus_hook_command("locus"));
+        assert!(!config_gen::is_locus_hook_command(""));
+    }
+
     #[test]
     fn statusline_merge_sets_locus_script_when_absent() {
         let mut settings = serde_json::json!({});
