@@ -535,9 +535,10 @@ pub fn locus_hook_entries() -> &'static [(&'static str, Option<&'static str>, &'
 
 /// Merge Locus hook entries into a parsed settings.json value in place.
 ///
-/// Preserves all non-Locus hooks and all non-Locus root keys. Any hook entry
-/// whose command starts with `"locus hook "` is replaced so the merge is
-/// idempotent across runs.
+/// Preserves all non-Locus hooks and all non-Locus root keys. Every hook entry
+/// Locus owns — however the `locus` binary was spelled when it was written — is
+/// swept out before the current entry is inserted, so the merge is idempotent
+/// across runs and repairs installs that older versions duplicated.
 pub fn merge_locus_hooks(settings: &mut serde_json::Value) {
     if !settings.is_object() {
         *settings = serde_json::json!({});
@@ -754,6 +755,33 @@ fn upsert_hook(
         }
     };
 
+    // Sweep every matcher group, not just the one we are about to write to.
+    // Older Locus versions registered the hook under a resolved absolute path
+    // (`/Users/x/.cargo/bin/locus hook stop`); the current one registers the
+    // bare command. Both are Locus-owned, so both must go before we insert,
+    // or every upgrade leaves another copy behind.
+    for group in arr.iter_mut() {
+        let Some(group_hooks) = group
+            .get_mut("hooks")
+            .and_then(|h| h.as_array_mut())
+        else {
+            continue;
+        };
+        group_hooks.retain(|h| {
+            let cmd = h.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            !is_locus_hook_command(cmd)
+        });
+    }
+
+    // Drop groups the sweep emptied, unless they were never ours to begin with
+    // (a group with no `hooks` key at all is left alone).
+    arr.retain(|group| {
+        match group.get("hooks").and_then(|h| h.as_array()) {
+            Some(entries) => !entries.is_empty(),
+            None => true,
+        }
+    });
+
     // Find an existing group with the same matcher, or create one.
     let group_idx = arr
         .iter()
@@ -784,18 +812,32 @@ fn upsert_hook(
         }
     };
 
-    // Remove any prior Locus-owned hook (any entry whose command starts with
-    // "locus hook "). Preserve all other entries.
-    group_hooks.retain(|h| {
-        let cmd = h.get("command").and_then(|v| v.as_str()).unwrap_or("");
-        !cmd.trim_start().starts_with("locus hook ")
-    });
-
     // Insert the fresh Locus entry.
     group_hooks.push(serde_json::json!({
         "type": "command",
         "command": command
     }));
+}
+
+/// Whether a settings.json hook command is one Locus owns.
+///
+/// Matches on the shape of the command line rather than on a substring, so a
+/// user's own hook that merely mentions Locus (`echo "locus hook fired"`, or a
+/// wrapper script under a `locus/` directory) is never swept away. A command is
+/// Locus-owned when its executable is the `locus` binary — spelled bare, or via
+/// any absolute or relative path — and its first argument is `hook`.
+pub fn is_locus_hook_command(command: &str) -> bool {
+    let mut tokens = command.split_whitespace();
+    let Some(program) = tokens.next() else {
+        return false;
+    };
+    if tokens.next() != Some("hook") {
+        return false;
+    }
+
+    let program = program.trim_matches(|c| c == '"' || c == '\'');
+    let basename = program.rsplit('/').next().unwrap_or(program);
+    basename == "locus" || basename == "locus.exe"
 }
 
 #[cfg(test)]
