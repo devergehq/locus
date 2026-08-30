@@ -1,16 +1,46 @@
 //! `locus doctor` — validate the Locus installation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use locus_core::config::LocusConfig;
 use locus_core::platform::Platform;
 use locus_core::LocusError;
 
+use crate::commands::health::{self, HealthEnv, Severity};
 use crate::commands::update_content;
 use crate::output;
 
+/// What doctor concluded, and what the process should exit with.
+///
+/// The three states are distinct on purpose. Before DEV-506 doctor always
+/// returned success, so no script could act on its verdict and no defect it
+/// found could stop anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoctorOutcome {
+    pub issues: usize,
+    pub warnings: usize,
+}
+
+impl DoctorOutcome {
+    /// `0` clean, `1` degrading, `2` broken.
+    ///
+    /// Warnings are deliberately non-zero: a warning that cannot fail a check
+    /// is the exact failure mode DEV-506 exists to remove. They are kept
+    /// distinct from errors so a caller can choose to tolerate one and not the
+    /// other.
+    pub fn exit_code(&self) -> i32 {
+        if self.issues > 0 {
+            2
+        } else if self.warnings > 0 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 /// Run the doctor command.
-pub fn run() -> Result<(), LocusError> {
+pub fn run() -> Result<DoctorOutcome, LocusError> {
     output::print_header();
     output::section("System Check");
 
@@ -124,6 +154,27 @@ pub fn run() -> Result<(), LocusError> {
     output::section("External Tools");
     check_binary("git", "Git (required for sync)", &mut issues);
 
+    // 7. State checks — the ones that can report a problem with something
+    // that exists, rather than only with something that is missing.
+    output::section("Health");
+    let findings = health::check_all(&build_health_env(&data_dir));
+    if findings.is_empty() {
+        output::success("No degradation detected");
+    } else {
+        for finding in &findings {
+            match finding.severity {
+                Severity::Error => {
+                    output::error(&finding.message);
+                    issues.push(finding.message.clone());
+                }
+                Severity::Warning => {
+                    output::warn(&finding.message);
+                    warnings.push(finding.message.clone());
+                }
+            }
+        }
+    }
+
     // Summary.
     output::section("Summary");
     if issues.is_empty() && warnings.is_empty() {
@@ -145,10 +196,61 @@ pub fn run() -> Result<(), LocusError> {
             issues.len(),
             warnings.len()
         ));
+        output::info(match (issues.is_empty(), warnings.is_empty()) {
+            (false, _) => "Exit 2 — something is broken.",
+            (true, false) => "Exit 1 — nothing is broken yet.",
+            _ => "Exit 0.",
+        });
     }
 
     println!();
-    Ok(())
+    Ok(DoctorOutcome {
+        issues: issues.len(),
+        warnings: warnings.len(),
+    })
+}
+
+/// Assemble what the state checks read from the live machine.
+fn build_health_env(data_dir: &Path) -> HealthEnv {
+    let claude_settings = dirs::home_dir()
+        .map(|h| h.join(".claude").join("settings.json"))
+        .filter(|p| p.exists());
+
+    let opencode_auth = locus_adapter_opencode::run::canonical_auth_path().filter(|p| p.exists());
+
+    let delegation_roots = [
+        data_dir.join("delegations"),
+        data_dir.join("memory").join("work").join("delegations"),
+    ]
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect();
+
+    HealthEnv {
+        data_dir: data_dir.to_path_buf(),
+        delegation_roots,
+        claude_settings,
+        opencode_auth,
+        locus_on_path_version: locus_version_on_path(),
+        running_version: env!("CARGO_PKG_VERSION").to_string(),
+        now: std::time::SystemTime::now(),
+    }
+}
+
+/// The version of the `locus` binary hooks will actually invoke.
+fn locus_version_on_path() -> Option<String> {
+    let output = std::process::Command::new("locus")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `locus 0.2.1` -> `0.2.1`
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .last()
+        .map(|s| s.to_string())
 }
 
 fn resolve_home() -> Result<PathBuf, LocusError> {
