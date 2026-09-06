@@ -202,6 +202,13 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/security/SKILL.md".into(),
             include_str!("../../../skills/security/SKILL.md"),
         ),
+        // Generated from algorithm/v2.0.md by scripts/gen-algorithm-skill.sh.
+        // Bundled as well as shipped in the plugin so the binary install path
+        // and the plugin install path carry the same Algorithm.
+        (
+            "skills/locus-algorithm/SKILL.md".into(),
+            include_str!("../../../skills/locus-algorithm/SKILL.md"),
+        ),
         (
             "skills/media/SKILL.md".into(),
             include_str!("../../../skills/media/SKILL.md"),
@@ -461,6 +468,77 @@ mod drift_tests {
             missing.is_empty(),
             "skill files exist in-repo but are not bundled, so `locus init` will \
              install a partially-working skill: {missing:?}"
+        );
+    }
+
+    /// The Algorithm now ships down two paths — `algorithm/v2.0.md` for the
+    /// binary install, and `skills/locus-algorithm/SKILL.md` for the plugin.
+    /// Two copies is one copy too many, so the skill is generated from the
+    /// spec and this test is what makes the generation non-optional: edit the
+    /// spec, forget to re-run the generator, and the build fails here rather
+    /// than shipping two Locuses that disagree about their own Algorithm.
+    #[test]
+    fn locus_algorithm_skill_body_matches_the_algorithm() {
+        let root = repo_root();
+        let spec = std::fs::read_to_string(root.join("algorithm").join(locus_core::ALGORITHM_FILE))
+            .expect("Algorithm spec missing");
+        let skill = std::fs::read_to_string(root.join("skills/locus-algorithm/SKILL.md"))
+            .expect("locus-algorithm SKILL.md missing — run scripts/gen-algorithm-skill.sh");
+
+        assert!(
+            skill.ends_with(&spec),
+            "skills/locus-algorithm/SKILL.md is not algorithm/{} plus frontmatter. \
+             Run scripts/gen-algorithm-skill.sh.",
+            locus_core::ALGORITHM_FILE
+        );
+    }
+
+    /// The dispatcher is injected next to every single prompt, so its size is
+    /// paid on every turn of every session. One kilobyte is the budget the
+    /// design set; without a test, prose grows and nobody notices the bill.
+    #[test]
+    fn dispatcher_payload_stays_under_one_kilobyte() {
+        let payload = std::fs::read(repo_root().join("hooks/dispatcher.txt"))
+            .expect("hooks/dispatcher.txt missing");
+
+        assert!(
+            payload.len() < 1024,
+            "dispatcher.txt is {} bytes; the budget is 1024 because this text is \
+             injected on every turn",
+            payload.len()
+        );
+    }
+
+    /// `agents` in a plugin manifest *replaces* the default `./agents/` scan
+    /// rather than extending it, and it only accepts file paths — so listing
+    /// the directory is invalid and listing the files invites drift the moment
+    /// someone adds an agent. Omitting the key is the correct answer, and this
+    /// test states why so nobody "fixes" it back.
+    #[test]
+    fn plugin_manifest_omits_agents_so_the_default_scan_applies() {
+        let manifest = std::fs::read_to_string(repo_root().join(".claude-plugin/plugin.json"))
+            .expect("plugin manifest missing");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&manifest).expect("plugin.json is not valid JSON");
+
+        assert!(
+            parsed.get("agents").is_none(),
+            "plugin.json declares `agents`, which replaces the default ./agents/ \
+             scan — every agent not listed disappears silently"
+        );
+
+        // `hooks/hooks.json` is loaded automatically, exactly like ./skills/
+        // and ./agents/. Naming it in the manifest as well loads it twice and
+        // the plugin fails with `hook-load-failed` — while
+        // `claude plugin validate --strict` still passes. The only place that
+        // failure surfaces is the system/init event, so this test stands in
+        // for a check the validator does not perform.
+        assert!(
+            parsed.get("hooks").is_none(),
+            "plugin.json declares `hooks`; hooks/hooks.json is already loaded \
+             automatically, so this registers it twice and the whole plugin \
+             fails to load its hooks. Verified against claude 2.1.263 — \
+             `validate --strict` does not catch it."
         );
     }
 }

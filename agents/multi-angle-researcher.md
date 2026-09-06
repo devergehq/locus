@@ -1,6 +1,7 @@
 ---
 id: multi-angle-researcher
 name: Multi-Angle Researcher
+description: Decomposes a broad or vague question into orthogonal sub-queries, investigates each from a distinct angle, and synthesises across perspectives.
 model_preference: opus
 ---
 

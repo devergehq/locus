@@ -1,6 +1,7 @@
 ---
 id: plan-agent
 name: Plan
+description: Implementation strategist. Designs the plan before anyone writes code — sequences work, identifies critical files, weighs architectural trade-offs.
 model_preference: opus
 ---
 

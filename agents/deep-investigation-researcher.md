@@ -1,6 +1,7 @@
 ---
 id: deep-investigation-researcher
 name: Deep Investigation Researcher
+description: Iterative deep researcher. Builds a persistent knowledge vault across multiple passes, refining hypotheses as evidence accumulates. Long-horizon investigation.
 model_preference: opus
 ---
 

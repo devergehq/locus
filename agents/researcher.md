@@ -1,6 +1,7 @@
 ---
 id: researcher
 name: Researcher
+description: Generic research agent. Use this when no methodology-specific researcher (academic / investigative / contrarian / multi-angle / deep-investigation) is a clearly better fit.
 model_preference: sonnet
 ---
 

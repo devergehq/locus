@@ -1,0 +1,383 @@
+---
+name: locus-algorithm
+description: The Locus Algorithm — seven-phase structured decomposition (OBSERVE, THINK, PLAN, BUILD, EXECUTE, VERIFY, LEARN) with effort tiers, ISC floors, the Splitting Test and the Phantom Capability Rule. Invoke this whenever a request has been classified non-trivial; do not reconstruct the phases from memory.
+---
+
+<!-- GENERATED FILE — edit algorithm/v2.0.md and run scripts/gen-algorithm-skill.sh -->
+
+# The Locus Algorithm v2.0
+
+Structured phased decomposition for agentic AI execution. Transitions from CURRENT STATE to IDEAL STATE using verifiable criteria.
+
+## Effort Levels
+
+| Tier            | Time Budget | ISC Floor | Min Capabilities | When                                          |
+|-----------------|-------------|-----------|------------------|-----------------------------------------------|
+| **Minimal**     | <1 min      | 4         | 0-1              | Single, well-understood task                  |
+| **Standard**    | <5 min      | 8         | 1-2              | Normal request (DEFAULT)                      |
+| **Extended**    | <15 min     | 16        | 3-5              | Quality must be extraordinary, multi-system   |
+| **Advanced**    | <30 min     | 24        | 4-7              | Substantial multi-file work                   |
+| **Deep**        | <60 min     | 40        | 6-10             | Complex design, cross-cutting refactors       |
+| **Comprehensive** | <120 min  | 64        | 8-15             | Major architectural work, no time pressure    |
+
+**Min Capabilities** = minimum number of distinct skills that must be **actually invoked via tool call** during execution. Writing text that resembles a skill's output is NOT invocation. See the Phantom Capability Rule below.
+
+**Time Check** at every phase — if elapsed time exceeds 150% of budget, auto-compress and move on.
+
+## Ideal State Criteria (ISC)
+
+Every criterion must be **atomic** — one verifiable end-state, 8-12 words, binary pass/fail. Atomic is not optional; it is the property that makes verification real.
+
+### The Splitting Test
+
+Apply to every criterion before it enters the PRD:
+
+1. **"And" / "with" test** — contains "and", "with", "including", "plus" joining two verifiable things → split.
+2. **Independent failure test** — can part A pass while part B fails? → separate criteria.
+3. **Scope word test** — "all", "every", "complete", "full" → enumerate what "all" means.
+4. **Domain boundary test** — crosses UI / API / data / logic / infra boundaries → one criterion per boundary.
+
+### Domain Decomposition
+
+| Domain            | Decompose per...                         | Example                                                                      |
+|-------------------|------------------------------------------|------------------------------------------------------------------------------|
+| **UI / Visual**   | Element, state, breakpoint               | "Hero visible" + "Hero readable at 320px" + "Hero CTA clickable"             |
+| **Data / API**    | Field, validation rule, error, edge      | "Name max 100 chars" + "Name rejects empty" + "Name trims whitespace"        |
+| **Logic / Flow**  | Branch, transition, boundary             | "Login valid ok" + "Login wrong-password fails" + "Login locks after 5"      |
+| **Content**       | Section, format, tone                    | "Intro present" + "Intro <50 words" + "Intro in active voice"                |
+| **Infrastructure**| Service, config, permission              | "Worker deployed" + "Worker has R2 binding" + "Worker rate-limited 100 req/s"|
+
+### Granularity example
+
+Coarse (wrong for Extended+):
+
+```
+- [ ] ISC-1: Blog publishing handles draft to published transition
+- [ ] ISC-2: Markdown content renders correctly with all formatting
+- [ ] ISC-3: SEO metadata generated and validated for each post
+```
+
+Atomic (same task, decomposed):
+
+```
+Draft-to-published:
+- [ ] ISC-1: Draft status stored in frontmatter YAML field
+- [ ] ISC-2: Published status stored in frontmatter YAML field
+- [ ] ISC-3: Status transition requires explicit user confirmation
+- [ ] ISC-4: Published timestamp set on first publish only
+- [ ] ISC-5: Slug auto-generated from title on draft creation
+- [ ] ISC-6: Slug immutable after first publish
+
+Markdown rendering:
+- [ ] ISC-7: H1-H6 headings render with correct hierarchy
+- [ ] ISC-8: Code blocks render with syntax highlighting
+- [ ] ISC-9: Inline code renders in monospace font
+- [ ] ISC-10: Images render with alt text fallback
+- [ ] ISC-11: Links open in new tab for external URLs
+
+SEO:
+- [ ] ISC-12: Title tag under 60 characters
+- [ ] ISC-13: Meta description under 160 characters
+- [ ] ISC-14: OG image URL present and valid
+- [ ] ISC-15: Canonical URL set to published permalink
+```
+
+Three fat criteria become fifteen atomic ones. Every one is independently testable. **Always write atomic.**
+
+### ISC Count Gate
+
+Cannot exit OBSERVE with fewer criteria than the tier floor above. If below the floor, decompose until it is met. No exceptions.
+
+## PRD as System of Record
+
+The PRD (Product Requirements Document) at `{data}/memory/work/{slug}/PRD.md` is the single source of truth for any Algorithm execution.
+
+**Frontmatter fields:**
+- `task` — short task description
+- `slug` — `{YYYYMMDD}-{HHMMSS}_{kebab-description}`
+- `effort` — tier name (minimal / standard / extended / advanced / deep / comprehensive)
+- `phase` — current phase (observe / think / plan / build / execute / verify / learn / complete)
+- `progress` — `N/M` criteria satisfied
+- `mode` — `trivial` or `algorithm`
+- `started` — ISO 8601 timestamp
+- `updated` — ISO 8601 timestamp, refreshed at every phase transition
+- `iteration` — optional integer, incremented on rework
+
+**Body sections:** `## Context`, `## Criteria` (ISC checkboxes), `## Decisions`, `## Verification`.
+
+The AI writes all PRD content directly using Write/Edit tools. Criteria use checkbox format: `- [ ] ISC-1: criterion text` → `- [x] ISC-1: criterion text` when satisfied. Mark the moment the criterion passes, not at VERIFY.
+
+## Phantom Capability Rule (CRITICAL)
+
+Every capability selected in OBSERVE creates a binding commitment to **invoke it via a tool call** — `Skill`/Read tooling for skills, `allele_sessions_create` for agent delegation. There is no text-only alternative.
+
+Writing "**FirstPrinciples decomposition:**" followed by prose that resembles what that skill would produce is **not invocation — it is theatre.** Selecting a capability and never invoking it via tool is dishonest, and a worse failure than not selecting it in the first place, because it creates the appearance of rigour without the substance.
+
+If, during execution, a selected capability turns out not to be needed, remove it from the selection list with a reason rather than leaving it as phantom.
+
+---
+
+## Phase Execution
+
+### Phase 1: OBSERVE (1/7)
+
+**Goal:** Understand the request deeply, define the ideal state, select capabilities.
+
+**First action:** Edit PRD frontmatter `phase: observe, updated: {timestamp}`.
+
+**Context gathering:**
+- If a project index exists, query it from 2-4 different angles (domain terms, function names, integration points).
+- If past learnings exist, recall relevant ones for this task type.
+- Read relevant source files (targeted, not exploratory sweeps).
+- If context gathering requires reading 3+ files, dispatch a session via `allele_sessions_create` if delegation is needed. Do not use platform-native Task/Agent subagents; if the allele MCP is unavailable, continue serially or ask the user.
+
+**Reverse engineering:**
+
+```
+REVERSE ENGINEERING:
+  Explicit wants: [what they said they wanted, granular, one per line]
+  Implied wants: [what they obviously want but didn't say]
+  Explicit not-wanted: [what they said they don't want]
+  Implied not-wanted: [what they obviously don't want]
+  Gotchas: [common pitfalls for this type of task]
+  Urgency: [how fast they want it — feeds effort tier choice]
+```
+
+**Effort level:** Select based on reverse engineering. Default Standard. Announce the tier and one-sentence reasoning.
+
+**ISC generation:** Write atomic criteria directly into the PRD. Apply the Splitting Test. Count must meet the floor for the chosen tier. If the count is below floor, decompose further — do not proceed until the gate passes.
+
+**Capability selection:** Review available skills and select those that will best accomplish the task within the time budget. Every selected skill creates a binding invocation commitment (see Phantom Capability Rule).
+
+If no capabilities are genuinely needed (mechanical execution, all information already in hand), use the zero-capability declaration — this is the **only valid path to zero capabilities**:
+
+```
+CAPABILITIES: none needed — [reason why no skills are required]
+```
+
+Otherwise, list each selected capability:
+
+```
+CAPABILITIES SELECTED:
+  [skill-name] — [phase it will be invoked] — [8-word reason]
+```
+
+**Checkpoint (mandatory):** Write a checkpoint file to `{data}/memory/state/checkpoint-{timestamp}.md` with: current ISC list, effort level, selected capabilities, PRD path. Checkpoints survive context compaction.
+
+**Working memory (Extended+ only):** Create `{data}/memory/state/working-memory-{timestamp}.md`. All subsequent investigation findings get written there, not kept in context.
+
+### Phase 2: THINK (2/7)
+
+**Goal:** Pressure-test the plan before committing to execution.
+
+**First action:** Edit PRD frontmatter `phase: think, updated: {timestamp}`.
+
+```
+RISKIEST ASSUMPTIONS: [2-12 assumptions that could be wrong]
+PREMORTEM:            [2-12 ways the current approach could fail]
+PREREQUISITES CHECK:  [things we need that might not exist]
+```
+
+**ISC refinement:** re-read every criterion through the Splitting Test lens. Are any still compound? Split them. Did the premortem reveal uncovered failure modes? Add criteria for them. Update the PRD and recount.
+
+**Write to PRD:** add a `### Risks` subsection under `## Context` listing the key risks. Update the checkpoint.
+
+### Phase 3: PLAN (3/7)
+
+**Goal:** Validate prerequisites and establish execution order.
+
+**First action:** Edit PRD frontmatter `phase: plan, updated: {timestamp}`.
+
+- Validate all prerequisites identified in THINK.
+- Sequence the work — what depends on what.
+- For Extended+: add a `### Plan` subsection to the PRD with technical approach and key decisions.
+- Re-evaluate capabilities — add any the THINK phase revealed as necessary.
+
+**Checkpoint update:** plan details, any prerequisite validation results.
+
+### Phase 4: BUILD (4/7)
+
+**Goal:** Prepare everything needed before execution.
+
+**First action:** Edit PRD frontmatter `phase: build, updated: {timestamp}`.
+
+**Invoke each selected capability via tool call** — `Skill`/Read tooling for skills, `allele_sessions_create` for agent delegation. Every capability listed in OBSERVE must have a corresponding tool call in BUILD or EXECUTE. No exceptions.
+
+- Any preparation work (scaffolding, research, design) happens here.
+- Dispatch investigative subtasks to their own sessions; keep build artefacts in main context, exploration out.
+- Write non-obvious decisions directly into the PRD's `## Decisions` section.
+
+**Checkpoint update:** build outputs, files created/modified, decisions.
+
+### Phase 5: EXECUTE (5/7)
+
+**Goal:** Perform the actual work.
+
+**First action:** Edit PRD frontmatter `phase: execute, updated: {timestamp}`.
+
+- Execute the plan from PLAN.
+- As each ISC criterion is satisfied, immediately edit the PRD: change `- [ ]` to `- [x]` and bump the `progress` frontmatter field. Do not batch — mark criteria the moment they pass.
+
+**Checkpoint update:** criteria progress, key execution results.
+
+### Phase 6: VERIFY (6/7)
+
+**Goal:** Confirm every criterion is actually met — not assumed.
+
+**First action:** Edit PRD frontmatter `phase: verify, updated: {timestamp}`.
+
+For each ISC criterion:
+1. Test that it is actually complete (run the test, read the file, check the output).
+2. Mark as verified in the PRD.
+3. Add evidence to the `## Verification` section.
+
+**Capability invocation check:** for every capability selected in OBSERVE, confirm it was actually invoked via `Skill`/Read tooling or `allele_sessions_create`. Text output alone does not count. If any selected capability lacks a tool call, flag it as a failure.
+
+**Dispatch reclamation check:** every session this run dispatched is either discarded via `allele_sessions_discard` or explicitly recorded as still working with a reason. A dispatched session left running holds a slot against the global cap and is invisible work nobody owns.
+
+**Checkpoint update:** final verification results, any failed criteria.
+
+### Phase 7: LEARN (7/7)
+
+**Goal:** Extract insights to make future executions better.
+
+**First action:** Edit PRD frontmatter `phase: learn, updated: {timestamp}`. After reflection, set `phase: complete`.
+
+```
+LEARNING:
+  What should I have done differently?
+  What would a smarter approach have looked like?
+  What capabilities should I have used that I didn't?
+  What would I change about the algorithm for this type of task?
+```
+
+**Persist learnings** (mandatory) to `{data}/memory/learning/session/{YYYY-MM}/{YYYYMMDD}-{HHMMSS}_{slug}.md`:
+
+```markdown
+---
+timestamp: {ISO 8601}
+task: {task description}
+project: {project path}
+effort: {effort level}
+category: SESSION
+---
+
+# Learnings: {task description}
+
+## Insights
+
+{every learning bullet — do not filter, summarise, or skip}
+
+## Context
+
+{1-2 sentences on what was built/changed}
+```
+
+**Research sessions:** if this session used the Research skill (any mode), ALSO write a copy to `{data}/memory/research/{YYYY-MM}/{YYYYMMDD}-{HHMMSS}_{slug}.md` using the same content. Not all learnings are research, but all research should produce both a learning and a research artifact.
+
+---
+
+## Dispatch
+
+Work leaves this session by becoming a **real allele session** — visible in the sidebar,
+interruptible, and addressable. Not a subagent, not a hidden process.
+
+```
+1. compose   locus agent compose --traits "..." --role "..." --task "..."
+2. dispatch  allele_sessions_create(project, name, prompt)   -> session_id, name
+3. address   ListAgents -> "name [ref]"        fresh, every send; refs rotate
+4. converse  SendMessage(to: "name [ref]", ...)
+5. check     allele_sessions_status(session_id) -> state == "response_ready"
+6. reclaim   allele_sessions_discard(session_id)
+```
+
+**`sessions_create` returns a `session_id`, not an address.** Refs are minted inside Claude
+Code and rotate; resolve the name through `ListAgents` at every send and treat a rejected
+send as "re-resolve and retry", not as an error.
+
+**Never conclude a worker is finished from `ListAgents`.** It collapses every state into
+idle/busy, so a session blocked on a permission prompt is indistinguishable from one that
+finished. `allele_sessions_status` distinguishes them: `response_ready` means finished,
+`awaiting_input` means blocked and nobody is coming unless a human acts.
+
+**Limits.** Depth 3 — a session at depth 3 does not dispatch. Global cap of 20 concurrent
+dispatched sessions across all dispatchers. Discard finishes the job: it commits
+uncommitted work and archives the branch before removing the workspace, so reclaiming a
+slot costs nothing.
+
+**When not to dispatch.** Trivial lookups, anything already in this context, and work whose
+intermediate reasoning you need to watch directly. Dispatch is for work with its own
+workspace, its own branch, or its own perspective.
+
+**If the `allele_*` tools are absent**, allele is not running and this session is outside it.
+Fall back to `locus delegate run`, and say so — you lose the workspace, the branch and the
+conversation, but you keep delegation. Never fall back to native Task/Agent subagents, and
+never abandon delegation and do the work inline.
+
+## Context Management
+
+### Compaction at phase boundaries (Extended+)
+
+When accumulated tool outputs and reasoning exceed ~60% of the working context, self-summarise before proceeding to the next phase.
+
+**Preserve:**
+- ISC criteria status (which passed / failed / pending)
+- Key results (numbers, decisions, file paths, code references)
+- Current phase and next actions
+
+**Discard:**
+- Verbose tool output
+- Intermediate reasoning
+- Raw search results
+- Repeated information
+
+Format: 1-3 paragraphs replacing prior phase content. This prevents context rot — degraded output quality from bloated history — which is the single largest cause of late-phase failures in long Algorithm runs.
+
+### Recovery after compaction
+
+If you lose track of state:
+
+1. Read the most recent checkpoint from `{data}/memory/state/checkpoint-*.md` (by mtime). Fastest route back.
+2. If Extended+, read the working-memory file from `{data}/memory/state/working-memory-*.md` for detailed findings.
+3. Read the PRD from `{data}/memory/work/{slug}/PRD.md` — frontmatter has phase/progress/effort/mode/task/slug/started/updated, body has criteria checkboxes, decisions, verification evidence.
+
+Checkpoint → working memory → PRD is the canonical fallback chain.
+
+---
+
+## Critical Rules
+
+1. **Mandatory phase execution** — every phase runs in order. No skipping.
+2. **PRD is your responsibility** — if you don't edit it, it stays stale. No hook or external system will do it for you.
+3. **ISC Count Gate is mandatory** — cannot exit OBSERVE below the tier floor. Decompose until met.
+4. **Atomic criteria only** — every criterion passes the Splitting Test. No compound criteria.
+5. **Phantom Capability Rule** — every selected capability invoked via tool call. Text-only output is not invocation.
+6. **Context compaction at phase boundaries** — at Extended+ and beyond, compact when context exceeds ~60%. Preserve decisions and status; discard verbosity.
+7. **Checkpoints are mandatory** — write one at every phase transition.
+8. **Persist learnings** — the LEARN phase writing step is not optional. Learnings not written to disk are lost.
+
+## Mode Selection
+
+Before entering the Algorithm, classify the request:
+
+- **Trivial** (single file, single concept, one clear action, no investigation) → handle directly without the Algorithm. Set PRD `mode: trivial` if a PRD is created at all. **Open every trivial response with `**Classification: Trivial**` — one line, before any content.**
+- **Non-trivial** (anything involving multiple steps, investigation, design decisions, or complex changes) → enter the Algorithm. Set PRD `mode: algorithm`. **Open the response with `**Classification: Non-trivial**` before the OBSERVE phase output.**
+
+The Algorithm is for non-trivial work. Don't use it to rename a variable or answer a question.
+
+## Output Requirements (MANDATORY)
+
+**Every response** — trivial or non-trivial — opens with a visible classification line:
+- Trivial: `**Classification: Trivial**`
+- Non-trivial: `**Classification: Non-trivial**`
+
+This line appears before any other content. It is the user's signal that Locus classification ran. A response without it is a compliance failure.
+
+At every phase transition, produce visible structured output. Do NOT hide reasoning in internal thinking blocks — the user must see progress.
+
+Each phase must visibly show:
+- Phase name and number (e.g., "Phase 1: OBSERVE (1/7)")
+- The key outputs defined for that phase (reverse engineering, ISC criteria, risks, plan, etc.)
+- A brief progress summary before transitioning to the next phase
+
+If the model supports hidden reasoning blocks, those may be used for internal computation, but all Algorithm-required outputs MUST appear in the visible response. Silent execution of Algorithm phases is a failure — the user cannot verify compliance with what they cannot see.

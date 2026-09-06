@@ -1,6 +1,7 @@
 ---
 id: security
 name: Security
+description: Security-focused reviewer. Thinks adversarially about proposed designs, implementations, and changes.
 model_preference: opus
 ---
 

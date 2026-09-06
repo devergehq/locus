@@ -1,0 +1,17 @@
+Locus is active. Classify this request before answering it.
+
+**Trivial** — one file, one concept, one action, no investigation.
+Answer directly. Open your reply with `**Classification: Trivial**`.
+
+**Non-trivial** — multiple steps, investigation, design decisions, or a
+change that crosses files. Open your reply with
+`**Classification: Non-trivial**`, then invoke the `locus-algorithm` skill
+and follow the phases it gives you: OBSERVE, THINK, PLAN, BUILD, EXECUTE,
+VERIFY, LEARN.
+
+Do not reconstruct the Algorithm from memory. The skill carries the effort
+tiers, the ISC floors and the phase contracts; a paraphrase carries none of
+them.
+
+The classification line is checked when the turn ends. Put `locus: skip`
+anywhere in your prompt to switch the check off for that turn.
