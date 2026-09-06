@@ -146,9 +146,12 @@ Three hooks carry it:
   `additionalContext`. Compliance decay is a distance problem; injecting on
   every turn resets the distance instead of loading the instruction once and
   hoping it is still salient thirty thousand tokens later.
-- **`Stop`** checks that the turn actually classified itself, and that a
-  non-trivial turn actually invoked the skill. If not it blocks **once** and
-  says what was missed.
+- **`Stop`** checks that a turn which classified itself non-trivial actually
+  invoked the skill. If not it blocks **once** and says what was missed. It
+  deliberately does *not* block on a missing classification line — the line is
+  nearly free to emit and the skill invocation is the expensive behaviour, so
+  gating on either would teach the model to produce the cheap half. The line is
+  still recorded on every turn; it is a signal, never a gate.
 - **`SessionStart`** re-injects the dispatcher after a compaction
   (`source: "compact"`), which is the one point where a turn can run without a
   fresh `UserPromptSubmit`.
@@ -160,12 +163,21 @@ a model could switch off its own check. The hook also blocks at most once per
 turn (it honours `stop_hook_active`), so a misclassification costs you one extra
 turn and can never wedge a session.
 
-**The activation log.** Every turn appends one JSONL record — prompt id,
-classification, whether the skill fired, whether the hook blocked:
+**The activation log.** Every turn appends a `turn` record — prompt id,
+classification, whether the skill fired, whether the hook blocked. A turn that
+was blocked appends a second `recovery` record once the model continues, so
+"failed" and "failed then recovered" are distinguishable rather than both
+reading as failure:
 
 ```jsonl
-{"ts":"…","prompt_id":"3c45dabc…","classification":null,"skill_fired":false,"escaped":false,"blocked":true,"reason":"…"}
+{"ts":"…","prompt_id":"c633b02f…","event":"turn","classification":"non-trivial","skill_fired":false,"blocked":true,"outcome":"blocked","reason":"…"}
+{"ts":"…","prompt_id":"c633b02f…","event":"recovery","classification":"non-trivial","skill_fired":true,"blocked":false,"outcome":"recovered","reason":null}
 ```
+
+`outcome` is one of `passed`, `escaped`, `blocked`, `recovered`, `unrecovered`.
+The two records join on `prompt_id`. The turn record is written immediately
+rather than held until the recovery, because the recovery Stop does not always
+arrive — an aborted turn would otherwise vanish from the log entirely.
 
 The block rate in that file *is* the activation-failure rate. It cannot tell you
 whether the Algorithm helps; it can tell you whether the Algorithm **runs when

@@ -39,6 +39,11 @@ write_transcript () {
     if [ "${2:-}" = "skill" ]; then
       printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"locus-algorithm"}}]}}\n'
     fi
+    # The form a real session actually emits: Claude Code namespaces plugin
+    # skills, so the live invocation is `locus:locus-algorithm`.
+    if [ "${2:-}" = "nsskill" ]; then
+      printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"locus:locus-algorithm","args":"x"}}]}}\n'
+    fi
   } > "$transcript"
 }
 
@@ -96,24 +101,42 @@ ok "compact envelope names SessionStart" \
 echo "Stop verifier"
 
 write_transcript "please refactor the auth module"
-ok "blocks a turn with no classification line" \
-   "$(run_stop "$(stop_event 'Here you go, all done.' false)")" 2
-ok "block reason is non-empty" \
-   "$([ -s "$work/stderr" ] && echo yes || echo no)" yes
-ok "allows a trivial classification" \
-   "$(run_stop "$(stop_event '**Classification: Trivial**
-
-Renamed it.' false)")" 0
 ok "blocks non-trivial with no skill invocation" \
    "$(run_stop "$(stop_event '**Classification: Non-trivial**
 
 I will wing it.' false)")" 2
+ok "block reason is non-empty" \
+   "$([ -s "$work/stderr" ] && echo yes || echo no)" yes
+ok "block reason names the skill, not the line" \
+   "$(grep -c 'locus-algorithm' "$work/stderr" | tr -d ' ')" 1
+ok "allows a trivial classification" \
+   "$(run_stop "$(stop_event '**Classification: Trivial**
+
+Renamed it.' false)")" 0
+
+# DEV-580: the classification line is a logged signal, never a gate. Blocking on
+# a missing line as well would reward emitting the cheap half of the behaviour.
+ok "GATE: missing line, no skill — allowed (was 2 before DEV-580)" \
+   "$(run_stop "$(stop_event 'Here you go, all done.' false)")" 0
 
 write_transcript "please refactor the auth module" skill
 ok "allows non-trivial when the skill fired" \
    "$(run_stop "$(stop_event '**Classification: Non-trivial**
 
 Phase 1 OBSERVE.' false)")" 0
+ok "GATE: missing line but skill fired — allowed" \
+   "$(run_stop "$(stop_event 'Straight to work, no preamble.' false)")" 0
+write_transcript "please refactor the auth module" nsskill
+ok "detects the namespaced locus:locus-algorithm form" \
+   "$(run_stop "$(stop_event '**Classification: Non-trivial**
+
+Phase 1 OBSERVE.' false)")" 0
+
+write_transcript "please refactor the auth module" skill
+ok "GATE: trivial line but skill fired — allowed" \
+   "$(run_stop "$(stop_event '**Classification: Trivial**
+
+Done.' false)")" 0
 
 # --- the two guards that stop this becoming a footgun ---
 write_transcript "please refactor the auth module"
@@ -130,7 +153,9 @@ ok "GUARD escape: is case-insensitive" \
 
 write_transcript "please refactor the auth module"
 ok "GUARD escape: the model cannot escape for itself" \
-   "$(run_stop "$(stop_event 'locus: skip — no classification needed' false)")" 2
+   "$(run_stop "$(stop_event '**Classification: Non-trivial**
+
+locus: skip — I decided this does not need the skill.' false)")" 2
 
 ok "GUARD kill switch: LOCUS_VERIFY=off allows" \
    "$(LOCUS_VERIFY=off run_stop "$(stop_event 'nothing at all' false)")" 0
@@ -161,11 +186,107 @@ import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 print("yes" if rows and all(sys.argv[2] in r for r in rows) else "no")' "$logfile" "$field")" yes
 done
-ok "the ceiling re-entry did not log a second record" \
+ok "every turn logs its classification key" \
    "$(python3 -c '
 import json, sys
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-print("yes" if all(r["prompt_id"] == "P1" for r in rows) else "no")' "$logfile")" yes
+print("yes" if all("classification" in r for r in rows) else "no")' "$logfile")" yes
+ok "records carry event" \
+   "$(python3 -c '
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print("yes" if all("event" in r for r in rows) else "no")' "$logfile")" yes
+ok "records carry outcome" \
+   "$(python3 -c '
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print("yes" if all("outcome" in r for r in rows) else "no")' "$logfile")" yes
+
+# ------------------------------------------------- DEV-580 recovery outcome --
+echo "Post-recovery outcome"
+
+recovery_log="$work/rec"
+fresh_log () { rm -rf "$recovery_log"; export LOCUS_ACTIVATION_LOG_DIR="$recovery_log"; }
+outcomes () {
+  python3 -c '
+import json, glob, sys
+rows = []
+for p in glob.glob(sys.argv[1] + "/activation-*.jsonl"):
+    rows += [json.loads(l) for l in open(p) if l.strip()]
+print(",".join(r["event"] + ":" + r["outcome"] for r in rows))' "$1"
+}
+
+# blocked, then the model invokes the skill on the retry
+fresh_log
+write_transcript "please refactor the auth module"
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+winging it' false)" >/dev/null
+write_transcript "please refactor the auth module" skill
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+Phase 1 OBSERVE.' true)" >/dev/null
+ok "blocked then recovered logs turn+recovery" "$(outcomes "$recovery_log")" "turn:blocked,recovery:recovered"
+
+# blocked, and the model still does not invoke the skill
+fresh_log
+write_transcript "please refactor the auth module"
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+winging it' false)" >/dev/null
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+still winging it' true)" >/dev/null
+ok "blocked then not recovered logs unrecovered" "$(outcomes "$recovery_log")" "turn:blocked,recovery:unrecovered"
+
+# a clean turn writes exactly one record and no recovery
+fresh_log
+write_transcript "please refactor the auth module" skill
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+Phase 1 OBSERVE.' false)" >/dev/null
+ok "a passing turn logs one record only" "$(outcomes "$recovery_log")" "turn:passed"
+
+# another plugin's Stop hook caused the continue — we must not invent a record
+fresh_log
+write_transcript "please refactor the auth module"
+run_stop "$(stop_event 'someone else blocked this' true)" >/dev/null
+ok "no recovery record when the block was not ours" "$(outcomes "$recovery_log")" ""
+
+# the recovery record joins its turn record on prompt_id
+fresh_log
+write_transcript "please refactor the auth module"
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+winging it' false)" >/dev/null
+write_transcript "please refactor the auth module" skill
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+ok' true)" >/dev/null
+ok "recovery shares the turn prompt_id" \
+   "$(python3 -c '
+import json, glob, sys
+rows = []
+for p in glob.glob(sys.argv[1] + "/activation-*.jsonl"):
+    rows += [json.loads(l) for l in open(p) if l.strip()]
+print("yes" if len({r["prompt_id"] for r in rows}) == 1 and len(rows) == 2 else "no")' "$recovery_log")" yes
+ok "the marker is consumed, not left behind" \
+   "$(find "$recovery_log/pending" -name '*.marker' 2>/dev/null | wc -l | tr -d ' ')" 0
+
+# A blocked turn aborted before its recovery Stop (max-turns, user interrupt)
+# leaves its marker behind. Harmless but unbounded, so writes sweep old ones.
+fresh_log
+mkdir -p "$recovery_log/pending"
+touch -t 202001010000 "$recovery_log/pending/stale.marker"
+touch "$recovery_log/pending/fresh.marker"
+write_transcript "please refactor the auth module"
+run_stop "$(stop_event '**Classification: Non-trivial**
+
+winging it' false)" >/dev/null
+ok "a stale marker is pruned on the next block" \
+   "$([ -e "$recovery_log/pending/stale.marker" ] && echo present || echo pruned)" pruned
+ok "a fresh marker survives the prune" \
+   "$([ -e "$recovery_log/pending/fresh.marker" ] && echo present || echo pruned)" present
 
 # ------------------------------------------------------------------ report --
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
