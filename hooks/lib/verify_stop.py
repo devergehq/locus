@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
-"""Stop-hook verifier — enforce the classification line, and measure itself.
+"""Stop-hook verifier — enforce skill invocation, and measure itself.
 
 Two jobs, one object:
 
-1. Enforcement. A turn that produced no classification line, or that classified
-   itself non-trivial and then never invoked the ``locus-algorithm`` skill, gets
-   blocked exactly once and told what it missed.
+1. Enforcement. A turn that classified itself non-trivial and then never invoked
+   the ``locus-algorithm`` skill gets blocked exactly once and told what it
+   missed.
 
-2. Measurement. Every turn appends one JSONL record. The block rate in that file
-   *is* the activation-failure rate — deterministic, per prompt, no statistics.
-   It cannot say whether the Algorithm helps; it can say whether the Algorithm
-   runs when it should, which today is not measurable at all.
+   The block deliberately does **not** fire on a missing classification line.
+   The line is nearly free to emit; the skill invocation is the expensive
+   behaviour. Gating on either would teach the model to produce the cheap half
+   and would improve the block rate for reasons that are not improvement —
+   Goodhart on the one metric this project exists to produce. The line is still
+   recorded on every turn; it is a signal, never a gate.
+
+2. Measurement. Each turn appends a ``turn`` record, and a turn that was blocked
+   appends a ``recovery`` record once the model continues. The two share a
+   ``prompt_id``. That separation matters: without it a turn that was blocked and
+   then did the right thing is indistinguishable from one that simply failed, and
+   the log reads as worse compliance than the user actually experienced.
+
+   The turn record is written immediately rather than deferred to the recovery
+   pass, because the recovery Stop does not always arrive — a max-turns abort or
+   a user interrupt would otherwise erase the data point entirely.
 
 Every failure path exits 0. A verifier that can wedge a session is worse than no
-verifier, so anything unexpected ends the turn normally and is recorded as
-``error`` in the log rather than raised.
+verifier, so anything unexpected ends the turn normally rather than raising.
 """
 
 from __future__ import annotations
@@ -83,6 +94,66 @@ def _append_record(record: dict) -> None:
         pass
 
 
+def _marker_path(prompt_id: str) -> str | None:
+    """Where the "we blocked this prompt" marker lives.
+
+    ``stop_hook_active`` says only that *some* Stop hook blocked — it does not
+    say it was ours. Another plugin's hook blocking would otherwise make us
+    append a recovery record for a turn we never touched, inventing data in the
+    one file that is supposed to be trustworthy. The marker is what tells the
+    two cases apart.
+    """
+    directory = _log_dir()
+    if not directory or not prompt_id:
+        return None
+    safe = "".join(c for c in prompt_id if c.isalnum() or c in "-_")
+    return os.path.join(directory, "pending", f"{safe}.marker")
+
+
+# A blocked turn whose recovery Stop never arrives — a max-turns abort, a user
+# interrupt — leaves its marker behind. Nothing reads a stale marker (prompt ids
+# are UUIDs), but they would accumulate forever, so each write sweeps the old
+# ones. An hour is far longer than any turn and far shorter than "forever".
+_MARKER_TTL_SECONDS = 3600
+
+
+def _prune_markers(directory: str) -> None:
+    try:
+        cutoff = _dt.datetime.now().timestamp() - _MARKER_TTL_SECONDS
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            if name.endswith(".marker") and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+    except OSError:
+        pass
+
+
+def _set_marker(prompt_id: str) -> None:
+    path = _marker_path(prompt_id)
+    if not path:
+        return
+    try:
+        directory = os.path.dirname(path)
+        os.makedirs(directory, exist_ok=True)
+        _prune_markers(directory)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("")
+    except OSError:
+        pass
+
+
+def _take_marker(prompt_id: str) -> bool:
+    """Consume the marker, returning whether we were the hook that blocked."""
+    path = _marker_path(prompt_id)
+    if not path or not os.path.exists(path):
+        return False
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+    return True
+
+
 def _classification(message: str) -> str | None:
     """Which classification line the turn opened with, if any.
 
@@ -148,9 +219,12 @@ def _scan_transcript(path: str, prompt_id: str) -> tuple[str, bool]:
         for block in content:
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
-            # Catches both `Skill(skill="locus-algorithm")` and a direct
-            # Read of the skill file, which is how Locus has always loaded
-            # skills and remains a legitimate way to satisfy the check.
+            # Substring, not equality, and deliberately so. A live session
+            # invokes this as `Skill(skill="locus:locus-algorithm")` — Claude
+            # Code namespaces plugin skills by plugin name — while a bare
+            # `locus-algorithm` and a direct Read of the SKILL.md are both
+            # legitimate too. Matching the substring covers all three; matching
+            # the exact id would silently miss the form real sessions use.
             if SKILL_ID in json.dumps(block.get("input", {})):
                 skill_fired = True
 
@@ -161,12 +235,6 @@ def main() -> int:
     try:
         event = _read_event()
     except ValueError:
-        return 0
-
-    # The one-block-per-turn ceiling. Claude Code sets this on the Stop that
-    # follows a block, so honouring it makes a deadlock structurally
-    # impossible however wrong the classification logic gets.
-    if _truthy(event.get("stop_hook_active")):
         return 0
 
     prompt_id = event.get("prompt_id", "")
@@ -182,39 +250,57 @@ def main() -> int:
     escaped = ESCAPE_PHRASE in prompt_text.lower()
     classification = _classification(message)
 
-    reason = None
-    if escaped:
-        pass
-    elif classification is None:
-        reason = (
-            "Locus: this turn produced no classification line. Open your reply "
-            "with `**Classification: Trivial**` or `**Classification: "
-            "Non-trivial**`, and for a non-trivial request invoke the "
-            "`locus-algorithm` skill before continuing."
+    def record(event_kind: str, outcome: str, blocked: bool, reason=None) -> None:
+        _append_record(
+            {
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "session_id": event.get("session_id", ""),
+                "prompt_id": prompt_id,
+                "event": event_kind,
+                "classification": classification,
+                "skill_fired": skill_fired,
+                "escaped": escaped,
+                "blocked": blocked,
+                "outcome": outcome,
+                "reason": reason,
+            }
         )
-    elif classification == "non-trivial" and not skill_fired:
+
+    # The one-block-per-turn ceiling. Claude Code sets this on the Stop that
+    # follows a block, so honouring it makes a deadlock structurally impossible
+    # however wrong the gate logic gets. This pass never blocks; its only job is
+    # to record what the model did with the second chance — and only if the
+    # block was ours, which the marker is what establishes.
+    if _truthy(event.get("stop_hook_active")):
+        if _take_marker(prompt_id):
+            record(
+                "recovery",
+                "recovered" if skill_fired else "unrecovered",
+                blocked=False,
+            )
+        return 0
+
+    reason = None
+    if not escaped and classification == "non-trivial" and not skill_fired:
         reason = (
             "Locus: you classified this request non-trivial but never invoked "
             "the `locus-algorithm` skill. Invoke it and follow its phases, or "
             "reclassify the request as trivial if that is what it is."
         )
 
-    _append_record(
-        {
-            "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-            "session_id": event.get("session_id", ""),
-            "prompt_id": prompt_id,
-            "classification": classification,
-            "skill_fired": skill_fired,
-            "escaped": escaped,
-            "blocked": reason is not None,
-            "reason": reason,
-        }
-    )
+    if reason is not None:
+        outcome = "blocked"
+    elif escaped:
+        outcome = "escaped"
+    else:
+        outcome = "passed"
+
+    record("turn", outcome, blocked=reason is not None, reason=reason)
 
     if reason is None:
         return 0
 
+    _set_marker(prompt_id)
     sys.stderr.write(reason + "\n")
     return 2
 
