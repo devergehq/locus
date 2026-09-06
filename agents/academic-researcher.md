@@ -1,6 +1,7 @@
 ---
 id: academic-researcher
 name: Academic Researcher
+description: Scholarly research specialist. Prioritises peer-reviewed and preprint literature, citation discipline, and the strongest empirical evidence available.
 model_preference: opus
 ---
 

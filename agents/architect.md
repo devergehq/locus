@@ -1,6 +1,7 @@
 ---
 id: architect
 name: Architect
+description: System design specialist. Shapes structure, patterns, and long-term architectural direction.
 model_preference: opus
 ---
 

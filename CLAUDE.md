@@ -29,3 +29,19 @@ After editing, the user runs `locus platform add claude-code` (or `opencode`) to
 - `skills/` — skill definitions (copied to `~/.locus/skills/` on install)
 - `agents/` — agent definitions and traits.yaml (copied to `~/.locus/agents/` on install)
 - `protocols/` — protocol definitions (copied to `~/.locus/protocols/` on install)
+- `.claude-plugin/plugin.json` — Claude Code plugin manifest (the plugin install path)
+- `hooks/` — plugin hook scripts and `hooks.json`
+- `skills/locus-algorithm/SKILL.md` — **generated** from `algorithm/v2.0.md` by
+  `scripts/gen-algorithm-skill.sh`; edit the spec, not the skill
+
+## Plugin manifest guardrail
+
+Two fields in `.claude-plugin/plugin.json` fail silently if added, both verified
+against claude 2.1.263 and both pinned by tests in `crates/locus-cli/src/bundled.rs`:
+
+- **`agents`** *replaces* the default `./agents/` scan instead of extending it, and
+  only accepts `.md` file paths (a directory is rejected as `Invalid input`). Omitting
+  it is correct — the default scan picks up all 17 agents with no list to drift.
+- **`hooks`** — `hooks/hooks.json` is already loaded automatically. Naming it as well
+  loads it twice and the plugin fails with `hook-load-failed`. `claude plugin validate
+  --strict` does **not** catch this; only the `system/init` event reports it.

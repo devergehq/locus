@@ -1,6 +1,7 @@
 ---
 id: ui-reviewer
 name: UI Reviewer
+description: User-story validator. Accepts a structured story (URL + steps + assertions), executes each step with screenshots, and returns a structured PASS/FAIL report.
 model_preference: sonnet
 ---
 

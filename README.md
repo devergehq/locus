@@ -117,6 +117,62 @@ locus upgrade --check  # just report whether a newer version exists
 `locus upgrade` pulls the correct prebuilt asset for your platform from the
 GitHub Releases above and replaces the running binary.
 
+### As a Claude Code plugin (preview)
+
+Locus also ships as a Claude Code plugin. The plugin installs, disables and
+uninstalls like any other — it never edits `~/.claude/settings.json`, and
+sharing it with someone else does not involve talking them through hand-edits
+to their own `CLAUDE.md`.
+
+The two install paths **coexist**. Nothing about the binary install changes;
+the plugin is additive, so you can load it alongside and compare.
+
+```sh
+./scripts/build-plugin.sh            # assemble dist/plugin/
+claude --plugin-dir dist/plugin      # load it for one session
+```
+
+What the plugin does differently:
+
+| | Binary install | Plugin |
+|---|---|---|
+| Algorithm | ~32 KB always-on in `CLAUDE.md` | `locus-algorithm` skill, ~110 tok always-on |
+| Classification | asked for in prose | injected next to **every** prompt, then verified at turn end |
+| Hooks | merged into your `settings.json` | registered by the plugin, removed when you remove it |
+
+Three hooks carry it:
+
+- **`UserPromptSubmit`** injects `hooks/dispatcher.txt` (781 bytes) as
+  `additionalContext`. Compliance decay is a distance problem; injecting on
+  every turn resets the distance instead of loading the instruction once and
+  hoping it is still salient thirty thousand tokens later.
+- **`Stop`** checks that the turn actually classified itself, and that a
+  non-trivial turn actually invoked the skill. If not it blocks **once** and
+  says what was missed.
+- **`SessionStart`** re-injects the dispatcher after a compaction
+  (`source: "compact"`), which is the one point where a turn can run without a
+  fresh `UserPromptSubmit`.
+
+**Turning the verifier off.** Put `locus: skip` anywhere in your prompt to skip
+the check for that turn, or set `LOCUS_VERIFY=off` to disable it entirely. The
+phrase is only honoured in *your* prompt, never in the model's reply — otherwise
+a model could switch off its own check. The hook also blocks at most once per
+turn (it honours `stop_hook_active`), so a misclassification costs you one extra
+turn and can never wedge a session.
+
+**The activation log.** Every turn appends one JSONL record — prompt id,
+classification, whether the skill fired, whether the hook blocked:
+
+```jsonl
+{"ts":"…","prompt_id":"3c45dabc…","classification":null,"skill_fired":false,"escaped":false,"blocked":true,"reason":"…"}
+```
+
+The block rate in that file *is* the activation-failure rate. It cannot tell you
+whether the Algorithm helps; it can tell you whether the Algorithm **runs when
+it should**, which previously could not be measured at all. It lands in your
+configured data directory, or the plugin's own data directory if you have not
+set one; `LOCUS_ACTIVATION_LOG_DIR` overrides both.
+
 ---
 
 ## Platform adapters

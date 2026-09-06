@@ -1,6 +1,7 @@
 ---
 id: adversarial-verifier
 name: Adversarial Verifier
+description: Per-claim fact-checker. Takes a single factual assertion with its source and supporting quote, then tries to refute it. Default disposition is skeptical — claims survive only with positive evidence of correctness.
 model_preference: opus
 ---
 

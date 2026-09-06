@@ -5,3 +5,7 @@ session-*.md
 AGENTS.md
 AGENTS.old.md
 .claude/
+
+# Built plugin artifact — regenerate with scripts/build-plugin.sh
+/dist
+__pycache__/

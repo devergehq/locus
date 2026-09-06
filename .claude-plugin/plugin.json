@@ -1,0 +1,39 @@
+{
+  "name": "locus",
+  "description": "Structured phased decomposition for agentic execution. Injects the Locus dispatcher next to every prompt, enforces the classification line at turn end, and ships the Algorithm as a progressively-disclosed skill.",
+  "version": "0.3.0",
+  "author": {
+    "name": "Deverge",
+    "email": "accounts@deverge.com.au"
+  },
+  "homepage": "https://github.com/deverge/locus",
+  "license": "MIT",
+  "keywords": [
+    "algorithm",
+    "orchestration",
+    "workflow",
+    "delegation"
+  ],
+  "mcpServers": {
+    "allele": {
+      "command": "${user_config.alleleBinary}",
+      "args": [
+        "--mcp-serve"
+      ]
+    }
+  },
+  "userConfig": {
+    "dataDir": {
+      "type": "directory",
+      "title": "Locus data directory",
+      "description": "Where Locus keeps learnings, work artifacts, checkpoints and the activation log. Left unset, the plugin uses its own data directory.",
+      "default": "~/.locus/data"
+    },
+    "alleleBinary": {
+      "type": "string",
+      "title": "allele binary",
+      "description": "Path to the allele binary that serves the delegation MCP. Leave as `allele` to resolve it from PATH.",
+      "default": "allele"
+    }
+  }
+}

@@ -1,6 +1,7 @@
 ---
 id: algorithm-agent
 name: Algorithm
+description: ISC-specialist. Evolves Ideal State Criteria as part of the Algorithm's core discipline. Continuously refines criteria toward perfect verification and euphoric surprise.
 model_preference: opus
 ---
 

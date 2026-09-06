@@ -1,6 +1,7 @@
 ---
 id: artist
 name: Artist
+description: Visual content creator. Generates and iterates on images — prompt engineering, model selection, composition, editorial judgement.
 model_preference: opus
 ---
 
