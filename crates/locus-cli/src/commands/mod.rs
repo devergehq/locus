@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod delegate;
 pub mod doctor;
+pub mod health;
 pub mod hook;
 pub mod init;
 pub mod platform;
@@ -8,5 +9,5 @@ pub mod skill;
 pub mod status;
 pub mod stop_verifier;
 pub mod sync;
-pub mod upgrade;
 pub mod update_content;
+pub mod upgrade;
