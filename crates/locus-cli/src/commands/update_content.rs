@@ -266,16 +266,15 @@ pub fn check_platform_configs(home: &Path) -> Vec<String> {
                 }
             }
             Platform::ClaudeCode => {
+                // CLAUDE.md and hook entries come from the plugin now; only the
+                // settings.json Locus still writes (permissions, statusLine) is
+                // worth reporting as missing.
                 let config_dir = user_home.join(".claude");
-                if !config_dir.join("CLAUDE.md").exists() {
-                    warnings.push(format!(
-                        "Claude Code CLAUDE.md missing. Run `locus platform add claude-code`."
-                    ));
-                }
                 if !config_dir.join("settings.json").exists() {
-                    warnings.push(format!(
+                    warnings.push(
                         "Claude Code settings.json missing. Run `locus platform add claude-code`."
-                    ));
+                            .to_string(),
+                    );
                 }
             }
             _ => {}
@@ -447,7 +446,10 @@ mod tests {
         prune_superseded_algorithm_versions(tmp.path()).unwrap();
 
         assert!(alg.join("notes.txt").exists(), "pruned a non-spec file");
-        assert!(tmp.path().join("stray.md").exists(), "pruned outside algorithm/");
+        assert!(
+            tmp.path().join("stray.md").exists(),
+            "pruned outside algorithm/"
+        );
     }
 
     #[test]

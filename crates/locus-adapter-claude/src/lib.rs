@@ -1,20 +1,21 @@
 //! Claude Code platform adapter for Locus.
 //!
-//! The Claude Code adapter takes a minimal approach: Locus content stays
-//! entirely in `~/.locus/`. The adapter only touches two files in Claude
-//! Code's global config directory (`~/.claude/`):
+//! Locus content stays entirely in `~/.locus/`. The Claude Code **plugin**
+//! (see `.claude-plugin/`) supplies the directive and the hooks, so this
+//! adapter no longer generates `~/.claude/CLAUDE.md` and no longer registers
+//! `locus hook *` entries in `settings.json`.
 //!
-//! - `CLAUDE.md` — bootstrap with Algorithm inlined and pointers to `~/.locus/`
-//! - `settings.json` — merged `hooks` entries calling `locus hook <event>`
+//! What it still writes is what a plugin manifest cannot express —
+//! `statusLine` and `permissions.allow` are `settings.json` fields with no
+//! manifest equivalent. See [`config_gen`].
 //!
-//! Zero files are written to `~/.claude/skills/` or `~/.claude/agents/`. The
-//! Algorithm is the sole orchestration layer — skills and agents are loaded
-//! by the Algorithm via the Read tool, not surfaced natively. This matches
-//! the OpenCode adapter's philosophy.
+//! [`teardown`] undoes what older versions wrote, for
+//! `locus platform remove claude-code`.
 
 pub mod capabilities;
 pub mod config_gen;
 pub mod events;
+pub mod teardown;
 
 use locus_core::capabilities::CapabilityManifest;
 use locus_core::error::LocusError;
@@ -44,18 +45,27 @@ impl ClaudeAdapter {
 
     /// Set up Locus for use with Claude Code.
     ///
-    /// Writes `~/.claude/CLAUDE.md` (backing up any non-Locus existing file)
-    /// and merges Locus hook entries into `~/.claude/settings.json`. Returns
-    /// paths of files that were modified plus whether a backup occurred.
+    /// Writes `statusLine` and `permissions.allow` into
+    /// `~/.claude/settings.json` and nothing else. No `CLAUDE.md` is generated
+    /// and no hook entries are registered — the plugin owns both.
     pub fn setup(&self, locus_home: &Path) -> Result<SetupResult, LocusError> {
-        let write_result = config_gen::write_claude_md(locus_home)?;
-        let settings_path = config_gen::update_settings_json(locus_home)?;
+        let settings_path = config_gen::write_locus_settings(locus_home)?;
 
-        Ok(SetupResult {
-            claude_md_path: write_result.path,
-            settings_path,
-            backed_up_claude_md: write_result.backed_up,
-        })
+        Ok(SetupResult { settings_path })
+    }
+
+    /// Remove the Locus-owned Claude Code configuration older versions wrote.
+    ///
+    /// Touches only the generated `~/.claude/CLAUDE.md` (and only when it
+    /// carries the `# Locus` marker) and `locus hook *` entries in
+    /// `settings.json`. Permissions, the statusline and every non-Locus hook
+    /// survive. With `dry_run`, nothing is written.
+    pub fn teardown(&self, dry_run: bool) -> Result<teardown::Removal, LocusError> {
+        let config_dir = config_gen::global_config_dir()?;
+        if !config_dir.exists() {
+            return Ok(teardown::Removal::default());
+        }
+        teardown::remove_claude_config(&config_dir, dry_run)
     }
 }
 
@@ -67,14 +77,8 @@ impl Default for ClaudeAdapter {
 
 /// Result of setting up Locus for Claude Code.
 pub struct SetupResult {
-    /// Path to the generated CLAUDE.md.
-    pub claude_md_path: PathBuf,
-
     /// Path to the updated settings.json.
     pub settings_path: PathBuf,
-
-    /// Whether an existing non-Locus CLAUDE.md was backed up.
-    pub backed_up_claude_md: bool,
 }
 
 #[cfg(test)]
@@ -87,13 +91,11 @@ mod tests {
         let adapter = ClaudeAdapter::new();
         assert_eq!(adapter.platform(), Platform::ClaudeCode);
     }
-
     #[test]
     fn capabilities_include_native_delegation() {
         let adapter = ClaudeAdapter::new();
         assert!(adapter.capabilities().has_native_delegation());
     }
-
     #[test]
     fn capabilities_include_session_events() {
         let adapter = ClaudeAdapter::new();
@@ -102,7 +104,6 @@ mod tests {
         assert!(caps.supports_lifecycle(&LifecycleEvent::SessionEnd));
         assert!(caps.supports_lifecycle(&LifecycleEvent::ContextCompact));
     }
-
     #[test]
     fn capabilities_exclude_suspend_resume() {
         let adapter = ClaudeAdapter::new();
@@ -110,7 +111,6 @@ mod tests {
         assert!(!caps.supports_lifecycle(&LifecycleEvent::SessionSuspend));
         assert!(!caps.supports_lifecycle(&LifecycleEvent::SessionResume));
     }
-
     #[test]
     fn capabilities_include_tool_hooks() {
         let adapter = ClaudeAdapter::new();
@@ -120,156 +120,11 @@ mod tests {
         assert!(caps.supports_hook(&HookEvent::UserPromptSubmit));
         assert!(caps.supports_hook(&HookEvent::Notification));
     }
-
     #[test]
     fn capabilities_mcp_supported() {
         let adapter = ClaudeAdapter::new();
         assert!(adapter.capabilities().mcp_support);
     }
-
-    #[test]
-    fn claude_md_contains_locus_directive() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        assert!(content.contains("# Locus"));
-        assert!(content.contains(&format!(
-            "/home/test/.locus/algorithm/{}",
-            locus_core::ALGORITHM_FILE
-        )));
-        assert!(content.contains("/home/test/.locus/skills/"));
-        assert!(content.contains("/home/test/.locus/agents/"));
-        assert!(content.contains("MANDATORY"));
-        assert!(content.contains("OBSERVE"));
-        assert!(content.contains("VERIFY"));
-        assert!(content.contains("LEARN"));
-    }
-
-    #[test]
-    fn claude_md_lists_platform_tools() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        assert!(content.contains("Platform Tools (Claude Code)"));
-        assert!(content.contains("web_search"));
-        assert!(content.contains("web_fetch"));
-        assert!(content.contains("bash"));
-    }
-
-    #[test]
-    fn claude_md_contains_dispatch_section() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        assert!(content.contains("## Delegation Guardrail"));
-        assert!(content.contains("## Dispatching Sessions (allele MCP)"));
-        assert!(content.contains("prohibited for Locus delegation"));
-
-        // Every lifecycle tool must be named, or a session cannot complete the
-        // loop it is told to run.
-        for tool in [
-            "allele_projects_list",
-            "allele_sessions_create",
-            "allele_sessions_list",
-            "allele_sessions_status",
-            "allele_sessions_interrupt",
-            "allele_sessions_discard",
-        ] {
-            assert!(content.contains(tool), "directive never names {tool}");
-        }
-
-        // The report shape downstream synthesis parses.
-        for field in ["summary", "findings", "evidence", "risks", "files_referenced"] {
-            assert!(content.contains(field), "report shape missing {field}");
-        }
-    }
-
-    /// `locus delegate run` appears in the directive only as the standalone
-    /// fallback for sessions outside allele — never as the primary route. The
-    /// distinction is the whole point: a session told to use both as equals
-    /// will pick whichever it read last.
-    #[test]
-    fn claude_md_names_delegate_run_only_as_the_fallback() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-
-        // The fallback must exist, or a session outside allele has no way to
-        // delegate at all and the guardrail becomes a dead end.
-        assert!(
-            content.contains("locus delegate run"),
-            "no standalone fallback — sessions outside allele cannot delegate"
-        );
-        assert!(
-            content.contains("When allele is not available"),
-            "fallback is present but not framed as a fallback"
-        );
-
-        // It must be conditional on allele's absence, not offered as an
-        // alternative primary route.
-        assert!(
-            content.contains("allele is not running"),
-            "fallback must state the condition that triggers it"
-        );
-
-        // And the guardrail must still forbid the thing it always forbade.
-        assert!(
-            content.contains("never to native Task/Agent delegation")
-                || content.contains("Do not use platform-native Task/Agent"),
-            "native subagents must remain prohibited"
-        );
-    }
-
-    /// These three are silent when broken: a cached address fails only later, a
-    /// misread ListAgents looks like success, and an undiscarded session just
-    /// consumes a slot.
-    #[test]
-    fn claude_md_states_the_three_silent_dispatch_rules() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        let lower = content.to_lowercase();
-
-        assert!(
-            lower.contains("not an address") || lower.contains("never an address"),
-            "must say sessions_create does not return an address"
-        );
-        assert!(
-            lower.contains("awaiting_input") && lower.contains("response_ready"),
-            "must name the states that distinguish blocked from finished"
-        );
-        assert!(
-            lower.contains("discard"),
-            "must state the discard obligation"
-        );
-    }
-
-    #[test]
-    fn claude_md_dispatch_lists_when_to_use() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        let section_start = content
-            .find("## Dispatching Sessions (allele MCP)")
-            .expect("dispatch section present");
-        let section_end = content[section_start..]
-            .find("## Platform Tools")
-            .expect("section bounded by Platform Tools heading")
-            + section_start;
-        let section = &content[section_start..section_end];
-
-        assert!(section.contains("**When to dispatch:**"));
-        assert!(section.contains("**When NOT to dispatch:**"));
-
-        let when_to = section
-            .split("**When to dispatch:**")
-            .nth(1)
-            .and_then(|s| s.split("**When NOT to dispatch:**").next())
-            .unwrap_or("");
-        let bullets = when_to
-            .lines()
-            .filter(|l| l.trim_start().starts_with("- "))
-            .count();
-        assert!(bullets >= 3, "expected at least 3 when-to bullets, got {bullets}");
-    }
-
-    /// Depth and the cap are what stop the Algorithm's own dispatch rule from
-    /// recursing in every child.
-    #[test]
-    fn claude_md_states_dispatch_limits() {
-        let content = config_gen::generate_claude_md(Path::new("/home/test/.locus"));
-        assert!(content.contains("depth 3"), "depth limit not stated");
-        assert!(content.contains("20"), "global cap not stated");
-    }
-
     #[test]
     fn capabilities_lists_claude_tools() {
         let adapter = ClaudeAdapter::new();
@@ -283,71 +138,6 @@ mod tests {
         assert!(caps.has_tool("glob"));
         assert!(caps.has_tool("grep"));
     }
-
-    #[test]
-    fn settings_merge_preserves_non_locus_hooks() {
-        let mut settings = serde_json::json!({
-            "otherSetting": true,
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "matcher": "",
-                        "hooks": [
-                            { "type": "command", "command": "user-owned-command" }
-                        ]
-                    }
-                ],
-                "UserDefinedHook": [
-                    { "matcher": "", "hooks": [{ "type": "command", "command": "keep-me" }] }
-                ]
-            }
-        });
-
-        config_gen::merge_locus_hooks(&mut settings);
-
-        // Non-hook root keys preserved.
-        assert_eq!(settings.get("otherSetting"), Some(&serde_json::json!(true)));
-
-        // User's hook group preserved.
-        let ss = &settings["hooks"]["SessionStart"][0]["hooks"];
-        let user_cmd = ss
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h["command"] == "user-owned-command");
-        assert!(user_cmd, "user's hook command must survive the merge");
-
-        // Locus hook appended under the same matcher group.
-        let locus_cmd = ss
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|h| h["command"] == "locus hook session-start");
-        assert!(locus_cmd, "locus hook must be injected");
-
-        // Non-Locus top-level hook key preserved intact.
-        assert!(settings["hooks"]["UserDefinedHook"].is_array());
-    }
-
-    #[test]
-    fn settings_merge_is_idempotent() {
-        let mut settings = serde_json::json!({});
-        config_gen::merge_locus_hooks(&mut settings);
-        let first = settings.clone();
-        config_gen::merge_locus_hooks(&mut settings);
-        assert_eq!(first, settings, "second merge must be a no-op");
-    }
-
-    #[test]
-    fn settings_merge_writes_all_expected_hooks() {
-        let mut settings = serde_json::json!({});
-        config_gen::merge_locus_hooks(&mut settings);
-        let hooks = settings["hooks"].as_object().unwrap();
-        for (name, _, _) in config_gen::locus_hook_entries() {
-            assert!(hooks.contains_key(*name), "missing hook: {}", name);
-        }
-    }
-
     #[test]
     fn statusline_merge_sets_locus_script_when_absent() {
         let mut settings = serde_json::json!({});
@@ -359,7 +149,6 @@ mod tests {
             .unwrap()
             .ends_with("scripts/statusline.sh"));
     }
-
     #[test]
     fn statusline_merge_preserves_non_locus_statusline() {
         let mut settings = serde_json::json!({
@@ -371,7 +160,6 @@ mod tests {
             "/opt/custom/statusline.sh"
         );
     }
-
     #[test]
     fn statusline_merge_replaces_existing_locus_entry() {
         let mut settings = serde_json::json!({
@@ -383,7 +171,6 @@ mod tests {
             .unwrap()
             .starts_with("/new/.locus/scripts/statusline.sh"));
     }
-
     #[test]
     fn permissions_merge_sets_allow_entries() {
         let locus_home = std::path::Path::new("/home/test/.locus");
@@ -399,7 +186,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn permissions_merge_preserves_non_locus_allows() {
         let mut settings = serde_json::json!({
@@ -423,7 +209,6 @@ mod tests {
             "user-owned read entry must survive the merge"
         );
     }
-
     #[test]
     fn permissions_merge_sets_additional_directories() {
         let locus_home = std::path::Path::new("/home/test/.locus");
@@ -437,7 +222,6 @@ mod tests {
             "locus_home must be in additionalDirectories"
         );
     }
-
     #[test]
     fn permissions_merge_is_idempotent() {
         let locus_home = std::path::Path::new("/home/test/.locus");
@@ -447,7 +231,6 @@ mod tests {
         config_gen::merge_locus_permissions(&mut settings, locus_home);
         assert_eq!(first, settings, "second permissions merge must be a no-op");
     }
-
     #[test]
     fn permissions_merge_sets_allele_allow_entries() {
         let locus_home = std::path::Path::new("/home/test/.locus");
@@ -472,7 +255,6 @@ mod tests {
             "allele Write entry must exist"
         );
     }
-
     #[test]
     fn permissions_merge_sets_allele_additional_directories() {
         let locus_home = std::path::Path::new("/home/test/.locus");
@@ -487,7 +269,6 @@ mod tests {
             "allele home must be in additionalDirectories"
         );
     }
-
     #[test]
     fn event_mapping_round_trip() {
         let ss = events::map_lifecycle_event(&LifecycleEvent::SessionStart).unwrap();

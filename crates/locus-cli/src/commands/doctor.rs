@@ -295,22 +295,15 @@ fn check_claude_integration(
     issues: &mut Vec<String>,
     warnings: &mut Vec<String>,
 ) {
+    // CLAUDE.md is no longer generated — the plugin supplies the directive. A
+    // CLAUDE.md here is the user's own file, so its absence is not a finding.
     let claude_md = config_dir.join("CLAUDE.md");
-    match std::fs::read_to_string(&claude_md) {
-        Ok(content) if content.contains("# Locus") => {
-            output::success("Claude Code CLAUDE.md — Locus bootstrap detected");
-        }
-        Ok(_) => {
-            output::warn("Claude Code CLAUDE.md exists but is not a Locus bootstrap");
+    if let Ok(content) = std::fs::read_to_string(&claude_md) {
+        if content.contains("# Locus") {
+            output::warn("Claude Code CLAUDE.md still carries generated Locus content");
             warnings.push(
-                "CLAUDE.md does not contain '# Locus'. Run `locus platform add claude-code`."
+                "~/.claude/CLAUDE.md holds generated Locus content the plugin now supplies. Run `locus platform remove claude-code` to clear it."
                     .into(),
-            );
-        }
-        Err(_) => {
-            output::error("Claude Code CLAUDE.md not found");
-            issues.push(
-                "CLAUDE.md missing. Run `locus platform add claude-code` to generate it.".into(),
             );
         }
     }
@@ -318,18 +311,19 @@ fn check_claude_integration(
     let settings = config_dir.join("settings.json");
     if let Ok(content) = std::fs::read_to_string(&settings) {
         if content.contains("locus hook ") {
-            output::success("Claude Code settings.json — Locus hooks detected");
-        } else {
-            output::warn("Claude Code settings.json has no Locus hooks");
-            warnings
-                .push("settings.json missing Locus hooks. Re-run `locus platform add claude-code`.".into());
+            output::warn("Claude Code settings.json still registers `locus hook` entries");
+            warnings.push(
+                "settings.json registers `locus hook` entries the plugin now supplies, so hooks may fire twice. Run `locus platform remove claude-code`."
+                    .into(),
+            );
         }
         if content.contains("scripts/statusline.sh") {
             output::success("Claude Code statusLine — Locus script wired");
         } else {
             output::warn("Claude Code statusLine — Locus script not configured");
             warnings.push(
-                "settings.json statusLine not set to Locus. Re-run `locus platform add claude-code`.".into(),
+                "settings.json statusLine not set to Locus. Re-run `locus platform add claude-code`."
+                    .into(),
             );
         }
     } else {
