@@ -78,10 +78,22 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+      # rustup reads rust-toolchain.toml, so release builds use the same pinned
+      # toolchain as CI and as every contributor's machine — one source of
+      # truth for the version, rather than a second copy here that drifts the
+      # moment the toml is bumped.
+      #
+      # The `rustup target add` step is load-bearing: rustup installs targets
+      # PER TOOLCHAIN. Adding the target to a separately-installed `stable`
+      # would leave the pinned toolchain with no std for x86_64-apple-darwin —
+      # the one target here that is genuinely cross-compiled (from the arm64
+      # macOS runner), and so the one that would fail. The other four are each
+      # their runner's own host triple.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
