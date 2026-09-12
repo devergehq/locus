@@ -248,12 +248,34 @@ fn build_health_env(data_dir: &Path) -> HealthEnv {
 /// DEV-505 work, which is a separate open PR. Duplicating ten lines keeps this
 /// change mergeable in either order instead of stacking it behind that one. See
 /// DEV-612 to collapse the two once DEV-505 has landed.
+/// Both candidates are probed, in order, and the first that exists wins —
+/// because the rest of the stack does not agree on the answer.
+/// `locus-adapter-opencode::run::seed_opencode_auth` hardcodes
+/// `~/.local/share/opencode/auth.json` and ignores `XDG_DATA_HOME`, contradicting
+/// its own doc comment. Honouring only the variable would leave both credential
+/// checks silently disabled for anyone who sets it, while the adapter carried on
+/// writing somewhere else. Checking both is correct under either behaviour, and
+/// stays correct when the adapter is fixed. Tracked as DEV-614.
 fn canonical_opencode_auth() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_DATA_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => dirs::home_dir()?.join(".local").join("share"),
-    };
-    Some(base.join("opencode").join("auth.json"))
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        if !dir.is_empty() {
+            candidates.push(PathBuf::from(dir).join("opencode").join("auth.json"));
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(
+            home.join(".local")
+                .join("share")
+                .join("opencode")
+                .join("auth.json"),
+        );
+    }
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 /// Every `locus` the PATH resolves to, in PATH order.

@@ -112,6 +112,17 @@ pub const MAX_SYNC_AGE_DAYS: u64 = 14;
 /// directories. Walking all of it to produce a number whose only use is a
 /// `>` comparison makes an interactive command wait on the filesystem for no
 /// added information — see [`dir_size_capped`].
+///
+/// # This must be >= 1. It is correctness, not tuning.
+///
+/// It reads like a performance knob and it is not one. The walk abandons once
+/// the running total exceeds `threshold * SIZE_WALK_HEADROOM`, so at `0` it
+/// abandons after the first file and every size check silently reports nothing:
+/// a 600 MB `.git` spread over six 100 MB packs — the shape a real repository
+/// has — goes unreported. Lowering this to speed doctor up converts both size
+/// checks into permanent false negatives.
+///
+/// `the_size_walk_must_keep_headroom_above_one` fails if anyone does.
 const SIZE_WALK_HEADROOM: u64 = 2;
 
 /// Run every state check and return what is wrong.
@@ -211,16 +222,40 @@ pub fn check_stray_credentials(env: &HealthEnv) -> Vec<Finding> {
     ))]
 }
 
-/// The credential the whole delegation path depends on has expired.
+/// What the canonical credential file actually contains.
 ///
-/// **Fires when** the canonical `auth.json` records an `expires` in the past.
-/// Nothing else in the stack reports this until a run fails with a `401` that
-/// reads like a user problem.
+/// Distinguishing these states is the whole point. An earlier version collapsed
+/// every parse failure into "no finding" with a single `.ok()?`, which meant the
+/// check went **silent on precisely the states that break delegation** — a
+/// zero-byte file, a truncated write — and spoke up only for the one state that
+/// is merely inconvenient. A credential that cannot be read is not a credential.
+#[derive(Debug, PartialEq, Eq)]
+enum CredentialState {
+    /// The file exists but could not be read at all.
+    Unreadable,
+    /// Zero bytes. This is the DEV-505 signature: a delegation sandbox
+    /// truncating the credential it copied from.
+    Empty,
+    /// Present, non-empty, and not valid JSON — an interrupted write.
+    Malformed,
+    /// Valid, but no provider records an expiry. Legitimate: an API-key entry
+    /// (`{"type":"api","key":...}`) has nothing to expire.
+    NoExpiry,
+    /// The furthest-future expiry across providers, in seconds.
+    ExpiresAt(i64),
+}
+
+/// The credential the whole delegation path depends on is unusable.
+///
+/// **Fires when** the canonical `auth.json` is zero bytes, is unreadable, is not
+/// valid JSON, or records an `expires` in the past. All four are `Error`:
+/// delegation cannot work in any of them, and nothing else in the stack reports
+/// it until a run fails with a `401` that reads like a user problem.
+///
+/// **Stays silent** when the file parses and simply has no expiry to check — an
+/// API-key-only configuration is perfectly healthy.
 pub fn check_credential_expiry(env: &HealthEnv) -> Vec<Finding> {
     let Some(path) = env.opencode_auth.as_ref() else {
-        return Vec::new();
-    };
-    let Some(expiry) = latest_expiry_secs(path) else {
         return Vec::new();
     };
     let now = env
@@ -229,15 +264,31 @@ pub fn check_credential_expiry(env: &HealthEnv) -> Vec<Finding> {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    if expiry < now {
-        return vec![Finding::error(format!(
+    match read_credential(path) {
+        CredentialState::Empty => vec![Finding::error(format!(
+            "OpenCode credential at {} is empty (0 bytes). A delegation sandbox \
+             truncated the file it copied from — see DEV-505. Delegation will \
+             fail with `Token refresh failed: 401`. Run `opencode auth login`.",
+            path.display()
+        ))],
+        CredentialState::Unreadable => vec![Finding::error(format!(
+            "OpenCode credential at {} exists but cannot be read. Delegation \
+             will fail. Check its permissions.",
+            path.display()
+        ))],
+        CredentialState::Malformed => vec![Finding::error(format!(
+            "OpenCode credential at {} is not valid JSON — an interrupted \
+             write. Delegation will fail. Run `opencode auth login`.",
+            path.display()
+        ))],
+        CredentialState::ExpiresAt(expiry) if expiry < now => vec![Finding::error(format!(
             "OpenCode credential at {} expired {} ago — delegation will fail \
              with `Token refresh failed: 401`. Run `opencode auth login`.",
             path.display(),
             format_duration((now - expiry) as u64)
-        ))];
+        ))],
+        CredentialState::ExpiresAt(_) | CredentialState::NoExpiry => Vec::new(),
     }
-    Vec::new()
 }
 
 /// The data directory's git repository grows without bound if large artifacts
@@ -376,16 +427,40 @@ fn collect_auth_files(dir: &Path, expected: Option<&Path>, out: &mut Vec<PathBuf
 }
 
 /// The furthest-future `expires` across providers, normalised to seconds.
-fn latest_expiry_secs(path: &Path) -> Option<i64> {
-    let body = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
-    let raw = parsed
-        .as_object()?
+fn read_credential(path: &Path) -> CredentialState {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return CredentialState::Unreadable;
+    };
+    if body.trim().is_empty() {
+        return CredentialState::Empty;
+    }
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return CredentialState::Malformed;
+    };
+    let Some(object) = parsed.as_object() else {
+        return CredentialState::Malformed;
+    };
+    match object
         .values()
-        .filter_map(|entry| entry.get("expires").and_then(|v| v.as_i64()))
-        .max()?;
-    // OpenCode records milliseconds; tolerate seconds so the check does not
-    // depend on a format detail it has no control over.
+        .filter_map(|entry| entry.get("expires").and_then(expiry_as_secs))
+        .max()
+    {
+        Some(secs) => CredentialState::ExpiresAt(secs),
+        None => CredentialState::NoExpiry,
+    }
+}
+
+/// One provider's `expires`, normalised to seconds.
+///
+/// OpenCode records milliseconds; seconds are tolerated so the check does not
+/// depend on a format detail it has no control over. Floats and numeric strings
+/// are accepted too — JSON has one number type and a producer is free to emit
+/// `1.0e9` or `"1000"`, neither of which `as_i64` alone will read.
+fn expiry_as_secs(value: &serde_json::Value) -> Option<i64> {
+    let raw = value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|f| f as i64))
+        .or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))?;
     Some(if raw > 100_000_000_000 {
         raw / 1000
     } else {
@@ -624,9 +699,70 @@ mod tests {
         let root = temp_root("expiry-units");
         let path = root.join("auth.json");
         std::fs::write(&path, br#"{"a":{"expires":1788000000}}"#).unwrap();
-        assert_eq!(latest_expiry_secs(&path), Some(1_788_000_000));
+        assert_eq!(
+            read_credential(&path),
+            CredentialState::ExpiresAt(1_788_000_000)
+        );
         std::fs::write(&path, br#"{"a":{"expires":1788000000000}}"#).unwrap();
-        assert_eq!(latest_expiry_secs(&path), Some(1_788_000_000));
+        assert_eq!(
+            read_credential(&path),
+            CredentialState::ExpiresAt(1_788_000_000)
+        );
+        // JSON has one number type, and a producer may emit either of these.
+        std::fs::write(&path, br#"{"a":{"expires":1.788e9}}"#).unwrap();
+        assert_eq!(
+            read_credential(&path),
+            CredentialState::ExpiresAt(1_788_000_000)
+        );
+        std::fs::write(&path, br#"{"a":{"expires":"1788000000"}}"#).unwrap();
+        assert_eq!(
+            read_credential(&path),
+            CredentialState::ExpiresAt(1_788_000_000)
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A credential that cannot be read is not a credential.
+    ///
+    /// Every one of these states breaks delegation, and an earlier version was
+    /// silent on all of them — it collapsed each parse failure into "no
+    /// finding" with a single `.ok()?`, so the check spoke up only for the one
+    /// state that is merely inconvenient. The zero-byte case is not
+    /// hypothetical: it is DEV-505's signature and it happened on the
+    /// development machine while this branch was being written.
+    #[test]
+    fn an_unusable_credential_is_an_error_not_silence() {
+        let root = temp_root("broken-creds");
+        let path = root.join("auth.json");
+        let mut env = env_at(&root);
+        env.opencode_auth = Some(path.clone());
+
+        for (label, body) in [
+            ("zero-byte (the DEV-505 wipe)", ""),
+            ("whitespace only", "   \n"),
+            ("truncated json", r#"{"openai":{"exp"#),
+            ("json but not an object", "[1,2,3]"),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let findings = check_credential_expiry(&env);
+            assert_eq!(findings.len(), 1, "{}: {:#?}", label, findings);
+            assert_eq!(
+                findings[0].severity,
+                Severity::Error,
+                "{} must be an Error",
+                label
+            );
+        }
+
+        // An API-key entry has nothing to expire. That is healthy, not broken.
+        std::fs::write(&path, br#"{"opencode-go":{"type":"api","key":"sk-x"}}"#).unwrap();
+        assert_eq!(read_credential(&path), CredentialState::NoExpiry);
+        assert_eq!(
+            check_credential_expiry(&env),
+            Vec::new(),
+            "an api-key-only credential is a healthy configuration"
+        );
+
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -778,9 +914,83 @@ mod tests {
         assert_eq!(findings.len(), 1, "{:#?}", findings);
         assert!(findings[0].message.contains("Run `locus sync`"));
 
-        // And a fresh sync is not a finding.
-        env.now = SystemTime::now();
-        assert_eq!(check_sync_age(&env), Vec::new());
+        // And a recent sync is not a finding.
+        //
+        // Deliberately several days old rather than `SystemTime::now()`. At
+        // age ~0 this assertion holds only while the commit and the assertion
+        // land in the same second — a race on a loaded CI box — and it would
+        // also pass with the threshold set to 0, leaving MAX_SYNC_AGE_DAYS
+        // unpinned. Three days is comfortably inside 14 and outside 0.
+        env.now = SystemTime::now() + std::time::Duration::from_secs(3 * 86_400);
+        assert_eq!(
+            check_sync_age(&env),
+            Vec::new(),
+            "a 3-day-old sync is inside the {}-day threshold",
+            MAX_SYNC_AGE_DAYS
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Delegation directories that exist but are small produce **nothing**.
+    ///
+    /// This pins the size arm's silent direction and, with it,
+    /// `MAX_DELEGATION_BYTES` itself. Without it the threshold could be wrong by
+    /// six orders of magnitude — 250 bytes rather than 250 MB — and the suite
+    /// would stay green while doctor warned on every install holding any
+    /// delegation directory at all.
+    ///
+    /// The healthy-install fixture cannot cover this: its delegations root is
+    /// *empty*, so `roots` is empty and the size arm never executes.
+    #[test]
+    fn small_delegation_directories_are_not_reported() {
+        let root = temp_root("small-delegations");
+        let delegations = root.join("data").join("delegations");
+        for i in 0..3 {
+            let dir = delegations.join(format!("d{}", i));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("blob"), vec![0u8; 4096]).unwrap();
+        }
+
+        let env = env_at(&root);
+        assert_eq!(
+            check_delegation_footprint(&env),
+            Vec::new(),
+            "3 small directories are a healthy install, not a footprint warning"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// `SIZE_WALK_HEADROOM` is correctness, not tuning — at 0 every size check
+    /// becomes a silent false negative.
+    ///
+    /// Deliberately spreads the bytes over **several** files. A single
+    /// over-threshold file is settled by the first `stat`, so it would pass at
+    /// any headroom and prove nothing.
+    #[test]
+    fn the_size_walk_must_keep_headroom_above_one() {
+        assert!(
+            SIZE_WALK_HEADROOM >= 1,
+            "headroom below 1 abandons the walk before the threshold can be \
+             reached, silently disabling every size check"
+        );
+
+        let root = temp_root("headroom");
+        let git = root.join("data").join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        let chunk = MAX_DATA_GIT_BYTES / 5;
+        for i in 0..6 {
+            sparse_file(&git.join(format!("pack-{}", i)), chunk);
+        }
+
+        let env = env_at(&root);
+        let findings = check_data_git_size(&env);
+        assert_eq!(
+            findings.len(),
+            1,
+            "{} spread over 6 packs must still be reported: {:#?}",
+            format_bytes(chunk * 6),
+            findings
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
