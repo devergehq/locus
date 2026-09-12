@@ -1,0 +1,11 @@
+[toolchain]
+# Pinned so every contributor and every CI job formats and lints with the same
+# rustfmt/clippy. Without this, `cargo fmt` output varies by whatever toolchain
+# a contributor happens to have installed, which is what caused the formatting
+# drift this pin exists to stop (DEV-611).
+#
+# `minimal` + the two components is all the CI jobs need. Allele's equivalent
+# also pins `rust-src`; that is for its rust-analyzer setup and is not needed here.
+channel = "1.93"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
