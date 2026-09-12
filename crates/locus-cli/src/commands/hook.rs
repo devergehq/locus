@@ -94,24 +94,33 @@ fn write_stdout_json(value: &serde_json::Value) -> Result<(), LocusError> {
 
 // ---------- individual hook handlers ----------
 
-fn handle_session_start(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    // Inject additional context informing the model that Locus is active,
-    // where the Algorithm lives, and how to classify modes.
-    let ctx = format!(
-        "Locus is active on this session. The Algorithm at ~/.locus/algorithm/{} \
-governs non-trivial requests: OBSERVE -> THINK -> PLAN -> BUILD -> EXECUTE -> VERIFY -> LEARN. \
-Classify every request as trivial (single file/concept) or non-trivial (multi-step, investigation, \
-design). Non-trivial enters the Algorithm. Skills live at ~/.locus/skills/ and load via Read.",
-        locus_core::ALGORITHM_FILE
-    );
+/// The dispatcher injected next to every prompt.
+///
+/// A data file rather than a string literal so the wording stays editable
+/// without touching Rust, and so its size can be asserted — it is paid on every
+/// turn of every session, which is the whole reason it is small.
+const DISPATCHER: &str = include_str!("dispatcher.txt");
 
-    let out = serde_json::json!({
+fn dispatcher_context(event_name: &str) -> serde_json::Value {
+    serde_json::json!({
         "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": ctx
+            "hookEventName": event_name,
+            "additionalContext": DISPATCHER
         }
-    });
-    write_stdout_json(&out)
+    })
+}
+
+fn handle_session_start(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
+    // Only re-enter on compaction. On startup, resume and clear the next
+    // UserPromptSubmit carries the dispatcher anyway, so injecting here as well
+    // would pay for the same context twice.
+    //
+    // The field is `source`, not `session_start_reason` — verified against
+    // claude 2.1.263 and 2.1.270, neither of which contains that string.
+    if event.get("source").and_then(|v| v.as_str()) != Some("compact") {
+        return Ok(());
+    }
+    write_stdout_json(&dispatcher_context("SessionStart"))
 }
 
 fn handle_session_end(_event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
@@ -128,9 +137,15 @@ fn handle_pre_compact(event: &serde_json::Value, data_dir: &Path) -> Result<(), 
     Ok(())
 }
 
-fn handle_user_prompt_submit(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    // Reserved for future use (e.g., learning capture on prompt submit).
-    Ok(())
+fn handle_user_prompt_submit(
+    _event: &serde_json::Value,
+    _data_dir: &Path,
+) -> Result<(), LocusError> {
+    // The load-bearing injection. Compliance decay is a distance problem, so
+    // the classification rule arrives adjacent to the prompt on every turn
+    // rather than being loaded once and hoped to still be salient thirty
+    // thousand tokens later.
+    write_stdout_json(&dispatcher_context("UserPromptSubmit"))
 }
 
 fn handle_pre_tool_use(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
@@ -382,12 +397,29 @@ fn handle_post_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<()
     Ok(())
 }
 
-fn handle_stop(_event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
+fn handle_stop(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
+    // The activation gate runs first and may end the process with exit 2. The
+    // PRD warning below is advisory and must not be what decides the turn.
+    let verdict = crate::commands::stop_verifier::verify(event);
+
+    warn_on_unwritten_learnings(data_dir);
+
+    if let crate::commands::stop_verifier::Verdict::Block(reason) = verdict {
+        eprintln!("{}", reason);
+        // Hooks signal "block and feed stderr back to the model" with exit 2.
+        // `continueReason` does not exist in the binary (0 occurrences at
+        // 2.1.270); DEV-580 established this as the mechanism.
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn warn_on_unwritten_learnings(data_dir: &Path) {
     // Warn (via stderr — hooks should not corrupt stdout) if any recent PRD
     // reached phase:learn without a corresponding learning file.
     let work_dir = data_dir.join("memory").join("work");
     if !work_dir.exists() {
-        return Ok(());
+        return;
     }
 
     let learning_dir = data_dir.join("memory").join("learning").join("session");
@@ -407,7 +439,6 @@ fn handle_stop(_event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusE
             }
         }
     }
-    Ok(())
 }
 
 fn handle_notification(_event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {

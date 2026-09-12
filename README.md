@@ -156,17 +156,21 @@ Three hooks carry it:
   (`source: "compact"`), which is the one point where a turn can run without a
   fresh `UserPromptSubmit`.
 
-Three more are bridged straight to the `locus` binary rather than reimplemented —
-they already exist in Rust and are covered by the crate's tests:
+All six are implemented in the `locus` binary and run through one wrapper. The
+wrapper exists for exactly one reason the binary cannot serve: noticing that the
+binary is missing.
 
 - **`PreToolUse`** denies native agent delegation, so the guardrail is enforced
   rather than requested.
 - **`PostToolUse`** repairs PRD frontmatter after `sed`/`perl -i` edits.
 - **`PreCompact`** writes an emergency checkpoint so compaction cannot lose state.
 
-All three fail open: no `locus` on PATH, or `LOCUS_HOOKS=off`, and the event ends
-normally. `PreToolUse` is deny-capable, so failing closed there would block
-legitimate tool calls in any session where the binary happens to be missing.
+**If the binary is missing, Locus says so.** The plugin ships the binary and
+cannot function without it, so a missing binary is a broken install, not a
+supported configuration — `SessionStart` tells the model, which tells you, once
+per session. `LOCUS_HOOKS=off` stays completely silent, because that is a
+deliberate choice rather than an accident. Neither ever blocks: nothing exits 2
+on a missing binary, so a broken install costs you a warning, never a session.
 
 **Turning the verifier off.** Put `locus: skip` anywhere in your prompt to skip
 the check for that turn, or set `LOCUS_VERIFY=off` to disable it entirely. The

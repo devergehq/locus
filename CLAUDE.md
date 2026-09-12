@@ -30,9 +30,31 @@ After editing, the user runs `locus platform add claude-code` (or `opencode`) to
 - `agents/` — agent definitions and traits.yaml (copied to `~/.locus/agents/` on install)
 - `protocols/` — protocol definitions (copied to `~/.locus/protocols/` on install)
 - `.claude-plugin/plugin.json` — Claude Code plugin manifest (the plugin install path)
-- `hooks/` — plugin hook scripts and `hooks.json`
+- `hooks/` — exactly two files: `hooks.json` and one wrapper. All six hooks are
+  implemented in the binary (`locus hook <event>`); the wrapper exists only to
+  detect that the binary is missing, which the binary cannot do for itself
 - `skills/locus-algorithm/SKILL.md` — **generated** from `algorithm/v2.0.md` by
   `scripts/gen-algorithm-skill.sh`; edit the spec, not the skill
+- `crates/locus-cli/src/commands/dispatcher.txt` — the per-turn dispatcher payload,
+  `include_str!`'d into the binary. Editable prose, budgeted under 1 KB by a test
+
+## Hook behaviour guardrail
+
+Two absences mean different things, and conflating them is how this project keeps
+shipping checks whose passing carries no information:
+
+| Condition | Behaviour |
+|---|---|
+| `LOCUS_HOOKS=off` | silent, exit 0 — a deliberate opt-out |
+| `locus` not on PATH | **loud**, exit 0 — a broken install |
+
+Loud is never blocking. Nothing may exit 2 on a missing binary: `PreToolUse`
+would block legitimate tool calls and `Stop` would deadlock the session.
+
+The activation log's field order **is** its on-disk format. Records are
+`#[derive(Serialize)]` structs, not `serde_json::json!` maps, because
+`serde_json::Map` is a `BTreeMap` and would emit keys alphabetically — silently
+breaking every chart built on the file.
 
 ## Plugin manifest guardrail
 
