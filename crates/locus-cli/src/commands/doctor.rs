@@ -6,11 +6,41 @@ use locus_core::config::LocusConfig;
 use locus_core::platform::Platform;
 use locus_core::LocusError;
 
+use crate::commands::health::{self, HealthEnv, Severity};
 use crate::commands::update_content;
 use crate::output;
 
+/// What doctor concluded, and what the process should exit with.
+///
+/// The three states are distinct on purpose. Before DEV-506 doctor always
+/// returned success, so no script could act on its verdict and no defect it
+/// found could stop anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DoctorOutcome {
+    pub issues: usize,
+    pub warnings: usize,
+}
+
+impl DoctorOutcome {
+    /// `0` clean, `1` degrading, `2` broken.
+    ///
+    /// Warnings are deliberately non-zero: a warning that cannot fail a check
+    /// is the exact failure mode DEV-506 exists to remove. They are kept
+    /// distinct from errors so a caller can choose to tolerate one and not the
+    /// other.
+    pub fn exit_code(&self) -> i32 {
+        if self.issues > 0 {
+            2
+        } else if self.warnings > 0 {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 /// Run the doctor command.
-pub fn run() -> Result<(), LocusError> {
+pub fn run() -> Result<DoctorOutcome, LocusError> {
     output::print_header();
     output::section("System Check");
 
@@ -125,6 +155,27 @@ pub fn run() -> Result<(), LocusError> {
     check_binary("git", "Git (required for sync)", &mut issues);
     check_plugin_binary_reachable(&mut issues);
 
+    // 7. State checks — the ones that can report a problem with something that
+    // exists, rather than only with something that is missing.
+    output::section("Health");
+    let findings = health::check_all(&build_health_env(&data_dir));
+    if findings.is_empty() {
+        output::success("No degradation detected");
+    } else {
+        for finding in &findings {
+            match finding.severity {
+                Severity::Error => {
+                    output::error(&finding.message);
+                    issues.push(finding.message.clone());
+                }
+                Severity::Warning => {
+                    output::warn(&finding.message);
+                    warnings.push(finding.message.clone());
+                }
+            }
+        }
+    }
+
     // Summary.
     output::section("Summary");
     if issues.is_empty() && warnings.is_empty() {
@@ -146,10 +197,104 @@ pub fn run() -> Result<(), LocusError> {
             issues.len(),
             warnings.len()
         ));
+        output::info(match (issues.is_empty(), warnings.is_empty()) {
+            (false, _) => "Exit 2 — something is broken.",
+            (true, false) => "Exit 1 — nothing is broken yet.",
+            _ => "Exit 0.",
+        });
     }
 
     println!();
-    Ok(())
+    Ok(DoctorOutcome {
+        issues: issues.len(),
+        warnings: warnings.len(),
+    })
+}
+
+/// Assemble what the state checks read from the live machine.
+///
+/// This is the only place in the health path that touches the real
+/// filesystem or spawns a process; everything in [`health`] is a pure function
+/// over what this returns.
+fn build_health_env(data_dir: &Path) -> HealthEnv {
+    let delegation_roots = [
+        data_dir.join("delegations"),
+        data_dir.join("memory").join("work").join("delegations"),
+    ]
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect();
+
+    let locus_on_path = locus_binaries_on_path();
+
+    HealthEnv {
+        data_dir: data_dir.to_path_buf(),
+        delegation_roots,
+        opencode_auth: canonical_opencode_auth().filter(|p| p.exists()),
+        locus_on_path_version: locus_version_on_path(),
+        locus_on_path,
+        running_version: env!("CARGO_PKG_VERSION").to_string(),
+        now: std::time::SystemTime::now(),
+    }
+}
+
+/// Where OpenCode keeps the credential the delegation path depends on.
+///
+/// OpenCode resolves it as `$XDG_DATA_HOME/opencode/auth.json`, falling back to
+/// `~/.local/share/opencode/auth.json`.
+///
+/// Resolved here rather than imported from the OpenCode adapter deliberately:
+/// `locus-adapter-opencode` gains an equivalent `canonical_auth_path` in the
+/// DEV-505 work, which is a separate open PR. Duplicating ten lines keeps this
+/// change mergeable in either order instead of stacking it behind that one. See
+/// DEV-612 to collapse the two once DEV-505 has landed.
+fn canonical_opencode_auth() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => dirs::home_dir()?.join(".local").join("share"),
+    };
+    Some(base.join("opencode").join("auth.json"))
+}
+
+/// Every `locus` the PATH resolves to, in PATH order.
+///
+/// `which -a` rather than `which`: one binary is the healthy case, and the
+/// interesting condition is the second one, which the plugin's hooks will never
+/// invoke no matter how carefully the user upgrades it.
+fn locus_binaries_on_path() -> Vec<PathBuf> {
+    let Ok(output) = std::process::Command::new("which")
+        .args(["-a", "locus"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    let mut seen: Vec<PathBuf> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let path = PathBuf::from(line.trim());
+        if !line.trim().is_empty() && !seen.contains(&path) {
+            seen.push(path);
+        }
+    }
+    seen
+}
+
+/// The version of the `locus` binary the plugin's hooks will actually invoke.
+fn locus_version_on_path() -> Option<String> {
+    let output = std::process::Command::new("locus")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // `locus 0.2.1` -> `0.2.1`
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .last()
+        .map(|s| s.to_string())
 }
 
 fn resolve_home() -> Result<PathBuf, LocusError> {

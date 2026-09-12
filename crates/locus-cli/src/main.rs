@@ -321,7 +321,11 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init { bare } => commands::init::run(bare),
-        Commands::Doctor => commands::doctor::run(),
+        Commands::Doctor => match commands::doctor::run() {
+            // Doctor's verdict is its exit code: 0 clean, 1 degrading, 2 broken.
+            Ok(outcome) => std::process::exit(outcome.exit_code()),
+            Err(e) => Err(e),
+        },
         Commands::Status => commands::status::run(),
         Commands::Platform { command } => match command {
             PlatformCommands::List => commands::platform::list(),
@@ -336,9 +340,7 @@ fn main() {
         },
         Commands::Sync { init_remote } => commands::sync::run(init_remote),
         Commands::Upgrade { check } => commands::upgrade::run(check),
-        Commands::UpdateContent { skip_platforms } => {
-            commands::update_content::run(skip_platforms)
-        }
+        Commands::UpdateContent { skip_platforms } => commands::update_content::run(skip_platforms),
         Commands::Hook { command } => {
             let kind = match command {
                 HookCommands::SessionStart => commands::hook::HookEventKind::SessionStart,
