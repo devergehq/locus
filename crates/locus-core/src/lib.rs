@@ -51,8 +51,8 @@ pub use agents::{ComposedAgent, Trait, Traits};
 pub use capabilities::CapabilityManifest;
 pub use config::{DelegationConfig, DelegationDefaults, LocusConfig};
 pub use delegation::{
-    DelegationBackend, DelegationMode, DelegationRequest, DelegationResult, DelegationStatus,
-    DelegationTaskKind, ExecutionMode, TokenUsage,
+    DelegationBackend, DelegationManifest, DelegationMode, DelegationRequest, DelegationResult,
+    DelegationStatus, DelegationTaskKind, ExecutionMode, TokenUsage,
 };
 pub use error::LocusError;
 pub use events::{EventKind, HookEvent, LifecycleEvent};
