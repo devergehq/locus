@@ -126,10 +126,14 @@ enum PlatformCommands {
         platform: String,
     },
 
-    /// Remove a platform adapter.
+    /// Remove a platform adapter and the configuration it wrote.
     Remove {
         /// Platform to remove.
         platform: String,
+
+        /// Print what would be removed without writing anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -322,7 +326,9 @@ fn main() {
         Commands::Platform { command } => match command {
             PlatformCommands::List => commands::platform::list(),
             PlatformCommands::Add { platform } => commands::platform::add(&platform),
-            PlatformCommands::Remove { platform } => commands::platform::remove(&platform),
+            PlatformCommands::Remove { platform, dry_run } => {
+                commands::platform::remove(&platform, dry_run)
+            }
         },
         Commands::Skill { command } => match command {
             SkillCommands::List => commands::skill::list(),
