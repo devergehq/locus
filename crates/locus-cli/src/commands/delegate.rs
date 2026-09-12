@@ -891,6 +891,7 @@ fn format_bytes(bytes: u64) -> String {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn sample_args() -> RunArgs {
         RunArgs {
@@ -962,11 +963,22 @@ mod tests {
     }
 
     fn unique_root() -> PathBuf {
+        // A nanosecond clock alone is not unique: the tests run in parallel
+        // threads and the clock's resolution is coarser than the gap between
+        // two calls, so two roots could collide and each test would then
+        // enumerate the other's fixtures. The counter makes it unique within
+        // the process; the pid, across concurrently running test binaries.
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("locus-delegate-test-{}", nanos))
+        std::env::temp_dir().join(format!(
+            "locus-delegate-test-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     fn write_delegation(

@@ -871,6 +871,7 @@ mod tests {
     use locus_core::{
         DelegationBackend, DelegationMode, DelegationRequest, DelegationTaskKind, ExecutionMode,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample_request() -> DelegationRequest {
@@ -893,11 +894,19 @@ mod tests {
     }
 
     fn unique_id() -> String {
+        // Same collision hazard as locus-cli's unique_root: see the comment
+        // there. Parallel threads can read the same nanosecond.
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        format!("delegate-test-{}", nanos)
+        format!(
+            "delegate-test-{}-{}-{}",
+            std::process::id(),
+            nanos,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     #[test]
