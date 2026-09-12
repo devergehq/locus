@@ -450,7 +450,15 @@ mod drift_tests {
                 let path = entry.path();
                 if path.is_dir() {
                     stack.push(path);
-                } else if path.extension().is_some_and(|x| x == "md") {
+                } else if path
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    // Not just markdown. A skill may ship an executable
+                    // companion, and filtering on `.md` alone made those
+                    // invisible here *and* absent from `locus init` — the
+                    // check passed while the skill shipped half-working.
+                    .is_some_and(|x| matches!(x, "md" | "py" | "sh"))
+                {
                     let rel = path
                         .strip_prefix(&root)
                         .expect("under repo root")

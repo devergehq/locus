@@ -8,6 +8,15 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh" } ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh pre-tool-use" } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh post-tool-use" } ] }
+    ],
+    "PreCompact": [
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh pre-compact" } ] }
     ]
   }
 }
