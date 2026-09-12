@@ -38,6 +38,24 @@ cp -R "$root/algorithm"      "$out/algorithm"
 cp "$root/LICENSE"   "$out/LICENSE"
 cp "$root/README.md" "$out/README.md"
 
+# bin/ is a directory convention, not a manifest field. Claude Code puts a
+# plugin's bin/ on the Bash tool's PATH by scanning the directory — verified
+# against 2.1.270, including with no `bin` key present. Declaring one is worse
+# than useless: `bin` is an unrecognised manifest field and fails --strict.
+#
+# The repo commits no binary — `locus` is per-platform and built, not vendored.
+# A release build drops one here so a packaged plugin carries it; from a git
+# checkout bin/ stays empty and the hook bridge falls back to PATH.
+mkdir -p "$out/bin"
+for candidate in "${LOCUS_BIN:-}" "$root/target/release/locus"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    cp "$candidate" "$out/bin/locus"
+    chmod +x "$out/bin/locus"
+    echo "  bundled locus binary from $candidate"
+    break
+  fi
+done
+
 # cp -R does not preserve the executable bit on every platform's cp.
 chmod +x "$out"/hooks/*.sh
 

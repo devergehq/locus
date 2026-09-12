@@ -156,6 +156,18 @@ Three hooks carry it:
   (`source: "compact"`), which is the one point where a turn can run without a
   fresh `UserPromptSubmit`.
 
+Three more are bridged straight to the `locus` binary rather than reimplemented —
+they already exist in Rust and are covered by the crate's tests:
+
+- **`PreToolUse`** denies native agent delegation, so the guardrail is enforced
+  rather than requested.
+- **`PostToolUse`** repairs PRD frontmatter after `sed`/`perl -i` edits.
+- **`PreCompact`** writes an emergency checkpoint so compaction cannot lose state.
+
+All three fail open: no `locus` on PATH, or `LOCUS_HOOKS=off`, and the event ends
+normally. `PreToolUse` is deny-capable, so failing closed there would block
+legitimate tool calls in any session where the binary happens to be missing.
+
 **Turning the verifier off.** Put `locus: skip` anywhere in your prompt to skip
 the check for that turn, or set `LOCUS_VERIFY=off` to disable it entirely. The
 phrase is only honoured in *your* prompt, never in the model's reply — otherwise

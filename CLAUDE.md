@@ -45,3 +45,18 @@ against claude 2.1.263 and both pinned by tests in `crates/locus-cli/src/bundled
 - **`hooks`** — `hooks/hooks.json` is already loaded automatically. Naming it as well
   loads it twice and the plugin fails with `hook-load-failed`. `claude plugin validate
   --strict` does **not** catch this; only the `system/init` event reports it.
+
+Three more fields **do not exist** in a plugin manifest. All three fail `--strict` as
+`Unknown field`, and Claude Code ignores them at load time, so declaring one buys a
+broken build and nothing else (verified against 2.1.270):
+
+- **`bin`** — but a `bin/` **directory** IS scanned and lands on the Bash tool's PATH.
+  Ship the directory, declare nothing.
+- **`statusLine`** — a settings.json field, not a plugin field. **A plugin cannot
+  provide a statusline.**
+- **`permissions`** — **a plugin cannot grant permission rules.**
+
+The last two matter for the plugin-only cutover (DEV-608): the binary's
+`merge_locus_statusline` and `merge_locus_permissions` have no plugin equivalent, so
+removing them loses the statusline and the `~/.locus` allow-rules outright unless a
+minimal opt-in install path is kept.

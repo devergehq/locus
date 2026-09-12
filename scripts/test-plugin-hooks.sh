@@ -168,6 +168,91 @@ ok "fails open on malformed stdin" \
 ok "fails open with no python3 on PATH" \
    "$(PATH=/nonexistent run_stop "$(stop_event 'nothing at all' false)")" 0
 
+# ------------------------------------------------ binary-bridged hooks --
+# PreToolUse, PostToolUse and PreCompact are implemented in the `locus` binary
+# and invoked, not reimplemented. These tests cover the bridge: that it forwards
+# the event, and — far more important — that it fails OPEN. PreToolUse is
+# deny-capable, so a bridge that errored closed would block legitimate tool
+# calls in any session where the binary is missing.
+echo "Binary-bridged hooks"
+
+bridge () {
+  set +e
+  printf '%s' "$2" | "$root/hooks/via-locus-binary.sh" "$1" > "$work/bridge.out" 2>/dev/null
+  code=$?
+  set -e
+  echo "$code"
+}
+
+ok "bridge is executable" \
+   "$([ -x "$root/hooks/via-locus-binary.sh" ] && echo yes || echo no)" yes
+ok "bridge exits 0 with no event argument" "$(bridge '' '{}')" 0
+
+# Two different binaries are in play and conflating them hides real bugs: the
+# bridge invokes whatever `locus` is on PATH (the *installed* build), while the
+# denial text this PR edits lives in the *repo* build. Assert each against the
+# binary that actually carries the behaviour.
+repo_locus="$root/target/debug/locus"
+
+decision () {
+  printf '%s' "$2" | "$root/hooks/via-locus-binary.sh" "$1" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["hookSpecificOutput"].get("permissionDecision", "none"))
+except Exception: print("none")'
+}
+
+if command -v locus >/dev/null 2>&1; then
+  ok "PreToolUse denies a native Task call" \
+     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{"description":"x"}}')" deny
+  ok "PreToolUse denies the Workflow tool" \
+     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Workflow","tool_input":{}}')" deny
+  ok "PreToolUse leaves an ordinary tool call alone" \
+     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}')" none
+  ok "PostToolUse exits 0 on an ordinary edit" \
+     "$(bridge post-tool-use '{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/tmp/x"}}')" 0
+  ok "PreCompact exits 0" \
+     "$(bridge pre-compact '{"hook_event_name":"PreCompact"}')" 0
+else
+  echo "  skip  locus not on PATH — bridge forwarding tests skipped"
+fi
+
+if [ -x "$repo_locus" ]; then
+  reason=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{"description":"x"}}' \
+    | "$repo_locus" hook pre-tool-use | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"])')
+  ok "repo build: denial leads with allele_sessions_create" \
+     "$(printf '%s' "$reason" | python3 -c '
+import sys
+r = sys.stdin.read()
+print("yes" if r.find("allele_sessions_create") < r.find("locus delegate run") else "no")')" yes
+  ok "repo build: denial no longer cites ~/.locus/agents" \
+     "$(printf '%s' "$reason" | grep -q '~/.locus/agents' && echo no || echo yes)" yes
+else
+  echo "  skip  target/debug/locus not built — denial-text tests skipped"
+fi
+
+# The guarantee that matters most: no binary, no block.
+ok "FAILS OPEN: PreToolUse exits 0 with locus off PATH" \
+   "$(PATH=/nonexistent bridge pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{}}')" 0
+ok "FAILS OPEN: PostToolUse exits 0 with locus off PATH" \
+   "$(PATH=/nonexistent bridge post-tool-use '{"hook_event_name":"PostToolUse"}')" 0
+ok "FAILS OPEN: PreCompact exits 0 with locus off PATH" \
+   "$(PATH=/nonexistent bridge pre-compact '{"hook_event_name":"PreCompact"}')" 0
+ok "FAILS OPEN: LOCUS_HOOKS=off exits 0" \
+   "$(LOCUS_HOOKS=off bridge pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{}}')" 0
+
+# ---------------------------------------------------------- hooks.json --
+echo "hooks.json"
+ok "declares exactly six events" \
+   "$(python3 -c 'import json;print(len(json.load(open("'"$root"'/hooks/hooks.json"))["hooks"]))')" 6
+ok "Notification deliberately absent" \
+   "$(python3 -c 'import json;print("absent" if "Notification" not in json.load(open("'"$root"'/hooks/hooks.json"))["hooks"] else "present")')" absent
+for ev in SessionStart UserPromptSubmit Stop PreToolUse PostToolUse PreCompact; do
+  ok "registers $ev" \
+     "$(python3 -c 'import json,sys;print("yes" if sys.argv[1] in json.load(open("'"$root"'/hooks/hooks.json"))["hooks"] else "no")' "$ev")" yes
+done
+
 # --------------------------------------------------------- activation log --
 echo "Activation log"
 

@@ -202,21 +202,21 @@ fn native_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Val
          That defeats the purpose of delegation (keeping the orchestrator context clean) \
          and wastes a frontier model on work you already judged as delegatable. \
          \n\n\
-         IMPORTANT — compose-then-delegate workflow:\n\
-         If this delegation involves research, investigation, council, red-team, or any \
-         specialist cognitive work, you MUST compose a trait-based prompt first using \
-         `locus agent compose`, then pass the result to `locus delegate run`. Read the \
-         relevant agent definition from ~/.locus/agents/ to find the canonical trait bundle. \
-         Example:\n\n\
+         IMPORTANT — compose-then-dispatch workflow:\n\
+         Compose a trait-based prompt with `locus agent compose`, then dispatch it as a \
+         real allele session. Agent definitions ship with Locus — read the relevant one \
+         from the plugin\'s agents/ directory for the canonical trait bundle.\n\n\
          PROMPT=$(locus agent compose \\\n  \
          --traits \"research,systematic,empirical\" \\\n  \
          --role \"Research analyst\" \\\n  \
          --task \"<your task description>\" \\\n  \
          --output prompt)\n\n\
-         locus delegate run --backend opencode --task-kind research --mode native \
-         --dir . --prompt \"$PROMPT\" --output json\n\n\
-         For simple bounded tasks (grep, summarize, classify), you may call delegate run \
-         directly:\n\n\
+         Then call the allele MCP with that text:\n\n\
+         allele_sessions_create(project: \"<project>\", name: \"<specific name>\", \
+         prompt: \"$PROMPT\")\n\n\
+         If the allele_* tools are not present, allele is not running and this session is \
+         outside it. Only then fall back to the standalone path, which gives you no \
+         workspace, no branch and no conversation:\n\n\
          locus delegate run --backend opencode --task-kind {} --mode native \
          --dir . --prompt \"{}\" --output json",
         task_kind,
