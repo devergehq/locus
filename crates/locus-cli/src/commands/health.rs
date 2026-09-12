@@ -639,21 +639,54 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// An oversized `data/.git` is reported. Uses a deliberately tiny cap via a
-    /// real file so the walk is exercised rather than mocked.
+    /// Allocate a file that *reports* `len` bytes without writing them.
+    ///
+    /// `set_len` leaves a sparse file on every filesystem this runs on, and the
+    /// size checks read `metadata.len()`, which is the logical length. That lets
+    /// a test cross a 500 MB threshold in microseconds and, more importantly,
+    /// exercise the **real** production constant rather than one lowered to make
+    /// the test convenient.
+    fn sparse_file(path: &Path, len: u64) {
+        let file = std::fs::File::create(path).unwrap();
+        file.set_len(len).unwrap();
+    }
+
+    /// An oversized `data/.git` is reported.
+    ///
+    /// This test exists because its absence was caught by mutation: replacing
+    /// the body of `check_data_git_size` with `Vec::new()` failed no test at
+    /// all. The previous version asserted only that an *under*-threshold
+    /// repository stays silent — which a permanently dead check also satisfies.
     #[test]
     fn an_oversized_data_git_is_reported() {
         let root = temp_root("big-git");
         let git = root.join("data").join(".git");
         std::fs::create_dir_all(&git).unwrap();
+        sparse_file(&git.join("pack"), MAX_DATA_GIT_BYTES + 1);
+
+        let env = env_at(&root);
+        let findings = check_data_git_size(&env);
+        assert_eq!(findings.len(), 1, "{:#?}", findings);
+        assert!(
+            findings[0].message.starts_with("data/.git is"),
+            "{}",
+            findings[0].message
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// ...and an under-threshold one stays silent, so the check discriminates
+    /// rather than firing unconditionally.
+    #[test]
+    fn a_normal_sized_data_git_is_not_reported() {
+        let root = temp_root("small-git");
+        let git = root.join("data").join(".git");
+        std::fs::create_dir_all(&git).unwrap();
         std::fs::write(git.join("pack"), vec![0u8; 1024]).unwrap();
 
         let env = env_at(&root);
-        // Below the real threshold, so nothing fires — the size path is live
-        // but the verdict is negative.
         assert_eq!(check_data_git_size(&env), Vec::new());
 
-        // And the walk itself counts what is there.
         let (bytes, complete) = dir_size_capped(&git, u64::MAX);
         assert_eq!(bytes, 1024);
         assert!(complete);
@@ -761,7 +794,7 @@ mod tests {
         for i in 0..2 {
             let dir = delegations.join(format!("d{}", i));
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("blob"), vec![0u8; 140 * 1024 * 1024]).unwrap();
+            sparse_file(&dir.join("blob"), MAX_DELEGATION_BYTES);
         }
 
         let env = env_at(&root);
