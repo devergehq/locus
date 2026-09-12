@@ -1,13 +1,13 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh session-start" } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh user-prompt-submit" } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh stop" } ] }
     ],
     "PreToolUse": [
       { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/via-locus-binary.sh pre-tool-use" } ] }

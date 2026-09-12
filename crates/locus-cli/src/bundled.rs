@@ -506,8 +506,8 @@ mod drift_tests {
     /// design set; without a test, prose grows and nobody notices the bill.
     #[test]
     fn dispatcher_payload_stays_under_one_kilobyte() {
-        let payload = std::fs::read(repo_root().join("hooks/dispatcher.txt"))
-            .expect("hooks/dispatcher.txt missing");
+        let payload = std::fs::read(repo_root().join("crates/locus-cli/src/commands/dispatcher.txt"))
+            .expect("dispatcher.txt missing");
 
         assert!(
             payload.len() < 1024,

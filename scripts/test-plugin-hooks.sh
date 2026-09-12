@@ -1,11 +1,15 @@
 #!/bin/sh
-# Unit tests for the Locus plugin hooks.
+# Unit tests for the plugin's hook wrapper.
 #
-# Runs the hook scripts the way Claude Code runs them — JSON on stdin, verdict
-# in the exit code — with no Claude Code involved. The Stop verifier is the
-# reason this file exists: a hook that can block is a hook that can deadlock,
-# and the guards against that need to be checked on every commit, not once by
-# hand on the day they were written.
+# Everything about hook *behaviour* — the Stop gate, the dispatcher, the
+# activation log — now lives in the binary and is covered by `cargo test`. What
+# remains here is the one thing the binary cannot test about itself: what
+# happens when the binary is missing.
+#
+# That case is why this file still exists. A wrapper that failed closed would
+# wedge every session; a wrapper that failed silently would make "the Algorithm
+# never ran" indistinguishable from "the Algorithm was never needed". Both are
+# tested below.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -13,366 +17,76 @@ export CLAUDE_PLUGIN_ROOT="$root"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-export LOCUS_ACTIVATION_LOG_DIR="$work/log"
+export CLAUDE_PLUGIN_DATA="$work/plugindata"
+export CLAUDE_CODE_SESSION_ID="test-session"
+
+# The usual tools, deliberately without `locus`.
+NOLOCUS="/usr/bin:/bin:/usr/sbin:/sbin"
 
 pass=0
 fail=0
-
 ok () {
   if [ "$2" = "$3" ]; then
-    pass=$((pass + 1))
-    printf '  ok    %-58s %s\n' "$1" "$2"
+    pass=$((pass + 1)); printf '  ok    %-54s %s\n' "$1" "$2"
   else
-    fail=$((fail + 1))
-    printf '  FAIL  %-58s expected %s, got %s\n' "$1" "$3" "$2"
+    fail=$((fail + 1)); printf '  FAIL  %-54s expected %s, got %s\n' "$1" "$3" "$2"
   fi
 }
 
-# ---------------------------------------------------------------- fixtures --
-transcript="$work/transcript.jsonl"
-write_transcript () {
-  # $1 = user prompt text, $2 = "skill" to include a locus-algorithm tool_use
-  {
-    printf '{"type":"user","promptId":"P1","isMeta":true,"message":{"role":"user","content":"injected dispatcher context"}}\n'
-    printf '{"type":"user","promptId":"P1","message":{"role":"user","content":%s}}\n' \
-      "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-    if [ "${2:-}" = "skill" ]; then
-      printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"locus-algorithm"}}]}}\n'
-    fi
-    # The form a real session actually emits: Claude Code namespaces plugin
-    # skills, so the live invocation is `locus:locus-algorithm`.
-    if [ "${2:-}" = "nsskill" ]; then
-      printf '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Skill","input":{"skill":"locus:locus-algorithm","args":"x"}}]}}\n'
-    fi
-  } > "$transcript"
-}
+wrapper="$root/hooks/via-locus-binary.sh"
+run ()   { set +e; env PATH="$1" "$wrapper" "$2" >"$work/out" 2>"$work/err"; c=$?; set -e; echo "$c"; }
+runoff() { set +e; env PATH="$1" LOCUS_HOOKS=off "$wrapper" "$2" >"$work/out" 2>"$work/err"; c=$?; set -e; echo "$c"; }
+fresh () { rm -rf "$CLAUDE_PLUGIN_DATA"; }
+bytes () { wc -c < "$1" | tr -d ' '; }
 
-stop_event () {
-  # $1 = last_assistant_message, $2 = stop_hook_active (true|false)
-  python3 -c '
-import json, sys
-print(json.dumps({
-    "session_id": "S1",
-    "prompt_id": "P1",
-    "hook_event_name": "Stop",
-    "transcript_path": sys.argv[1],
-    "last_assistant_message": sys.argv[2],
-    "stop_hook_active": sys.argv[3] == "true",
-}))' "$transcript" "$1" "$2"
-}
-
-run_stop () {
-  set +e
-  printf '%s' "$1" | "$root/hooks/stop.sh" >/dev/null 2>"$work/stderr"
-  code=$?
-  set -e
-  echo "$code"
-}
-
-# ------------------------------------------------------------- dispatcher --
-echo "UserPromptSubmit dispatcher"
-
-out=$(printf '{"prompt":"hi"}' | "$root/hooks/user-prompt-submit.sh")
-ok "emits valid JSON" \
-   "$(printf '%s' "$out" | python3 -c 'import json,sys; json.load(sys.stdin); print("yes")' 2>/dev/null || echo no)" yes
-ok "hookEventName is UserPromptSubmit" \
-   "$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["hookEventName"])')" \
-   UserPromptSubmit
-ok "additionalContext is under 1024 bytes" \
-   "$(printf '%s' "$out" | python3 -c 'import json,sys; print("yes" if len(json.load(sys.stdin)["hookSpecificOutput"]["additionalContext"].encode()) < 1024 else "no")')" \
-   yes
-ok "names the locus-algorithm skill" \
-   "$(printf '%s' "$out" | grep -c 'locus-algorithm' >/dev/null && echo yes || echo no)" yes
-ok "states the classification rule" \
-   "$(printf '%s' "$out" | grep -c 'Classification: Non-trivial' >/dev/null && echo yes || echo no)" yes
-
-# ----------------------------------------------------------- SessionStart --
-echo "SessionStart re-entry"
-
-ok "silent on source=startup" \
-   "$(printf '{"hook_event_name":"SessionStart","source":"startup"}' | "$root/hooks/session-start.sh" | wc -c | tr -d ' ')" 0
-ok "injects on source=compact" \
-   "$(printf '{"hook_event_name":"SessionStart","source":"compact"}' | "$root/hooks/session-start.sh" | grep -c 'locus-algorithm' | tr -d ' ')" 1
-ok "compact envelope names SessionStart" \
-   "$(printf '{"hook_event_name":"SessionStart","source":"compact"}' | "$root/hooks/session-start.sh" | python3 -c 'import json,sys; print(json.load(sys.stdin)["hookSpecificOutput"]["hookEventName"])')" \
-   SessionStart
-
-# ----------------------------------------------------------- Stop verifier --
-echo "Stop verifier"
-
-write_transcript "please refactor the auth module"
-ok "blocks non-trivial with no skill invocation" \
-   "$(run_stop "$(stop_event '**Classification: Non-trivial**
-
-I will wing it.' false)")" 2
-ok "block reason is non-empty" \
-   "$([ -s "$work/stderr" ] && echo yes || echo no)" yes
-ok "block reason names the skill, not the line" \
-   "$(grep -c 'locus-algorithm' "$work/stderr" | tr -d ' ')" 1
-ok "allows a trivial classification" \
-   "$(run_stop "$(stop_event '**Classification: Trivial**
-
-Renamed it.' false)")" 0
-
-# DEV-580: the classification line is a logged signal, never a gate. Blocking on
-# a missing line as well would reward emitting the cheap half of the behaviour.
-ok "GATE: missing line, no skill — allowed (was 2 before DEV-580)" \
-   "$(run_stop "$(stop_event 'Here you go, all done.' false)")" 0
-
-write_transcript "please refactor the auth module" skill
-ok "allows non-trivial when the skill fired" \
-   "$(run_stop "$(stop_event '**Classification: Non-trivial**
-
-Phase 1 OBSERVE.' false)")" 0
-ok "GATE: missing line but skill fired — allowed" \
-   "$(run_stop "$(stop_event 'Straight to work, no preamble.' false)")" 0
-write_transcript "please refactor the auth module" nsskill
-ok "detects the namespaced locus:locus-algorithm form" \
-   "$(run_stop "$(stop_event '**Classification: Non-trivial**
-
-Phase 1 OBSERVE.' false)")" 0
-
-write_transcript "please refactor the auth module" skill
-ok "GATE: trivial line but skill fired — allowed" \
-   "$(run_stop "$(stop_event '**Classification: Trivial**
-
-Done.' false)")" 0
-
-# --- the two guards that stop this becoming a footgun ---
-write_transcript "please refactor the auth module"
-ok "GUARD ceiling: never blocks twice in a turn" \
-   "$(run_stop "$(stop_event 'still no classification line' true)")" 0
-
-write_transcript "just do it, locus: skip"
-ok "GUARD escape: honours the escape phrase" \
-   "$(run_stop "$(stop_event 'no classification line at all' false)")" 0
-
-write_transcript "just do it, LOCUS: SKIP"
-ok "GUARD escape: is case-insensitive" \
-   "$(run_stop "$(stop_event 'no classification line at all' false)")" 0
-
-write_transcript "please refactor the auth module"
-ok "GUARD escape: the model cannot escape for itself" \
-   "$(run_stop "$(stop_event '**Classification: Non-trivial**
-
-locus: skip — I decided this does not need the skill.' false)")" 2
-
-ok "GUARD kill switch: LOCUS_VERIFY=off allows" \
-   "$(LOCUS_VERIFY=off run_stop "$(stop_event 'nothing at all' false)")" 0
-
-# --- fail-open paths ---
-ok "fails open on an unreadable transcript" \
-   "$(run_stop "$(python3 -c 'import json; print(json.dumps({"prompt_id":"P1","transcript_path":"/nonexistent","last_assistant_message":"**Classification: Trivial**","stop_hook_active":False}))')")" 0
-ok "fails open on malformed stdin" \
-   "$(run_stop 'not json at all')" 0
-ok "fails open with no python3 on PATH" \
-   "$(PATH=/nonexistent run_stop "$(stop_event 'nothing at all' false)")" 0
-
-# ------------------------------------------------ binary-bridged hooks --
-# PreToolUse, PostToolUse and PreCompact are implemented in the `locus` binary
-# and invoked, not reimplemented. These tests cover the bridge: that it forwards
-# the event, and — far more important — that it fails OPEN. PreToolUse is
-# deny-capable, so a bridge that errored closed would block legitimate tool
-# calls in any session where the binary is missing.
-echo "Binary-bridged hooks"
-
-bridge () {
-  set +e
-  printf '%s' "$2" | "$root/hooks/via-locus-binary.sh" "$1" > "$work/bridge.out" 2>/dev/null
-  code=$?
-  set -e
-  echo "$code"
-}
-
-ok "bridge is executable" \
-   "$([ -x "$root/hooks/via-locus-binary.sh" ] && echo yes || echo no)" yes
-ok "bridge exits 0 with no event argument" "$(bridge '' '{}')" 0
-
-# Two different binaries are in play and conflating them hides real bugs: the
-# bridge invokes whatever `locus` is on PATH (the *installed* build), while the
-# denial text this PR edits lives in the *repo* build. Assert each against the
-# binary that actually carries the behaviour.
-repo_locus="$root/target/debug/locus"
-
-decision () {
-  printf '%s' "$2" | "$root/hooks/via-locus-binary.sh" "$1" 2>/dev/null | python3 -c '
-import json, sys
-try: print(json.load(sys.stdin)["hookSpecificOutput"].get("permissionDecision", "none"))
-except Exception: print("none")'
-}
-
-if command -v locus >/dev/null 2>&1; then
-  ok "PreToolUse denies a native Task call" \
-     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{"description":"x"}}')" deny
-  ok "PreToolUse denies the Workflow tool" \
-     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Workflow","tool_input":{}}')" deny
-  ok "PreToolUse leaves an ordinary tool call alone" \
-     "$(decision pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/tmp/x"}}')" none
-  ok "PostToolUse exits 0 on an ordinary edit" \
-     "$(bridge post-tool-use '{"hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{"file_path":"/tmp/x"}}')" 0
-  ok "PreCompact exits 0" \
-     "$(bridge pre-compact '{"hook_event_name":"PreCompact"}')" 0
-else
-  echo "  skip  locus not on PATH — bridge forwarding tests skipped"
-fi
-
-if [ -x "$repo_locus" ]; then
-  reason=$(printf '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{"description":"x"}}' \
-    | "$repo_locus" hook pre-tool-use | python3 -c '
-import json, sys
-print(json.load(sys.stdin)["hookSpecificOutput"]["permissionDecisionReason"])')
-  ok "repo build: denial leads with allele_sessions_create" \
-     "$(printf '%s' "$reason" | python3 -c '
-import sys
-r = sys.stdin.read()
-print("yes" if r.find("allele_sessions_create") < r.find("locus delegate run") else "no")')" yes
-  ok "repo build: denial no longer cites ~/.locus/agents" \
-     "$(printf '%s' "$reason" | grep -q '~/.locus/agents' && echo no || echo yes)" yes
-else
-  echo "  skip  target/debug/locus not built — denial-text tests skipped"
-fi
-
-# The guarantee that matters most: no binary, no block.
-ok "FAILS OPEN: PreToolUse exits 0 with locus off PATH" \
-   "$(PATH=/nonexistent bridge pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{}}')" 0
-ok "FAILS OPEN: PostToolUse exits 0 with locus off PATH" \
-   "$(PATH=/nonexistent bridge post-tool-use '{"hook_event_name":"PostToolUse"}')" 0
-ok "FAILS OPEN: PreCompact exits 0 with locus off PATH" \
-   "$(PATH=/nonexistent bridge pre-compact '{"hook_event_name":"PreCompact"}')" 0
-ok "FAILS OPEN: LOCUS_HOOKS=off exits 0" \
-   "$(LOCUS_HOOKS=off bridge pre-tool-use '{"hook_event_name":"PreToolUse","tool_name":"Task","tool_input":{}}')" 0
-
-# ---------------------------------------------------------- hooks.json --
-echo "hooks.json"
-ok "declares exactly six events" \
-   "$(python3 -c 'import json;print(len(json.load(open("'"$root"'/hooks/hooks.json"))["hooks"]))')" 6
+echo "Wrapper shape"
+ok "wrapper is executable"          "$([ -x "$wrapper" ] && echo yes || echo no)" yes
+ok "exits 0 with no event argument" "$(run "$PATH" '')" 0
+ok "hooks.json declares six events" \
+   "$(python3 -c "import json;print(len(json.load(open('$root/hooks/hooks.json'))['hooks']))")" 6
 ok "Notification deliberately absent" \
-   "$(python3 -c 'import json;print("absent" if "Notification" not in json.load(open("'"$root"'/hooks/hooks.json"))["hooks"] else "present")')" absent
-for ev in SessionStart UserPromptSubmit Stop PreToolUse PostToolUse PreCompact; do
-  ok "registers $ev" \
-     "$(python3 -c 'import json,sys;print("yes" if sys.argv[1] in json.load(open("'"$root"'/hooks/hooks.json"))["hooks"] else "no")' "$ev")" yes
+   "$(python3 -c "import json;print('absent' if 'Notification' not in json.load(open('$root/hooks/hooks.json'))['hooks'] else 'present')")" absent
+ok "all six entries share one shape" \
+   "$(python3 -c "
+import json,re
+h=json.load(open('$root/hooks/hooks.json'))['hooks']
+pat=re.compile(r'^\\\$\{CLAUDE_PLUGIN_ROOT\}/hooks/via-locus-binary\.sh [a-z-]+\$')
+print('yes' if all(pat.match(v[0]['hooks'][0]['command']) for v in h.values()) else 'no')")" yes
+ok "no python remains under hooks/" "$(find "$root/hooks" -name '*.py' | wc -l | tr -d ' ')" 0
+ok "hooks/ is wrapper plus config only" "$(find "$root/hooks" -type f | wc -l | tr -d ' ')" 2
+
+echo "Deliberate opt-out is silent"
+fresh
+ok "LOCUS_HOOKS=off exits 0"        "$(runoff "$NOLOCUS" session-start)" 0
+ok "LOCUS_HOOKS=off says nothing"   "$(bytes "$work/out")" 0
+ok "LOCUS_HOOKS=off warns nothing"  "$(bytes "$work/err")" 0
+
+echo "Missing binary is loud, never blocking"
+fresh
+ok "SessionStart exits 0"           "$(run "$NOLOCUS" session-start)" 0
+ok "emits valid JSON" \
+   "$(python3 -c 'import json,sys;json.load(open(sys.argv[1]));print("yes")' "$work/out" 2>/dev/null || echo no)" yes
+ok "names the problem"              "$(grep -q 'not on PATH' "$work/out" && echo yes || echo no)" yes
+ok "names the fix, not just the fault" "$(grep -q 'cargo install' "$work/out" && echo yes || echo no)" yes
+ok "tells the model to tell the user"  "$(grep -q 'Tell the user' "$work/out" && echo yes || echo no)" yes
+ok "carries a systemMessage" \
+   "$(python3 -c 'import json,sys;print("yes" if "systemMessage" in json.load(open(sys.argv[1])) else "no")' "$work/out")" yes
+ok "also warns on stderr"           "$([ -s "$work/err" ] && echo yes || echo no)" yes
+
+echo "Missing binary speaks at most once per session"
+fresh
+run "$NOLOCUS" session-start >/dev/null
+ok "first event speaks"  "$([ "$(bytes "$work/out")" -gt 0 ] && echo yes || echo no)" yes
+run "$NOLOCUS" user-prompt-submit >/dev/null
+ok "second event silent" "$(bytes "$work/out")" 0
+run "$NOLOCUS" stop >/dev/null
+ok "third event silent"  "$(bytes "$work/out")" 0
+
+echo "No hook ever exits 2 when degraded"
+for ev in session-start user-prompt-submit stop pre-tool-use post-tool-use pre-compact; do
+  fresh
+  ok "$ev does not block" "$(run "$NOLOCUS" "$ev")" 0
 done
 
-# --------------------------------------------------------- activation log --
-echo "Activation log"
-
-logfile=$(find "$LOCUS_ACTIVATION_LOG_DIR" -name 'activation-*.jsonl' 2>/dev/null | head -1)
-ok "a log file was written" "$([ -n "$logfile" ] && echo yes || echo no)" yes
-ok "every line is standalone JSON" \
-   "$(python3 -c '
-import json, sys
-for line in open(sys.argv[1]):
-    if line.strip(): json.loads(line)
-print("yes")' "$logfile" 2>/dev/null || echo no)" yes
-for field in prompt_id classification blocked skill_fired escaped session_id; do
-  ok "records carry $field" \
-     "$(python3 -c '
-import json, sys
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-print("yes" if rows and all(sys.argv[2] in r for r in rows) else "no")' "$logfile" "$field")" yes
-done
-ok "every turn logs its classification key" \
-   "$(python3 -c '
-import json, sys
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-print("yes" if all("classification" in r for r in rows) else "no")' "$logfile")" yes
-ok "records carry event" \
-   "$(python3 -c '
-import json, sys
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-print("yes" if all("event" in r for r in rows) else "no")' "$logfile")" yes
-ok "records carry outcome" \
-   "$(python3 -c '
-import json, sys
-rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-print("yes" if all("outcome" in r for r in rows) else "no")' "$logfile")" yes
-
-# ------------------------------------------------- DEV-580 recovery outcome --
-echo "Post-recovery outcome"
-
-recovery_log="$work/rec"
-fresh_log () { rm -rf "$recovery_log"; export LOCUS_ACTIVATION_LOG_DIR="$recovery_log"; }
-outcomes () {
-  python3 -c '
-import json, glob, sys
-rows = []
-for p in glob.glob(sys.argv[1] + "/activation-*.jsonl"):
-    rows += [json.loads(l) for l in open(p) if l.strip()]
-print(",".join(r["event"] + ":" + r["outcome"] for r in rows))' "$1"
-}
-
-# blocked, then the model invokes the skill on the retry
-fresh_log
-write_transcript "please refactor the auth module"
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-winging it' false)" >/dev/null
-write_transcript "please refactor the auth module" skill
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-Phase 1 OBSERVE.' true)" >/dev/null
-ok "blocked then recovered logs turn+recovery" "$(outcomes "$recovery_log")" "turn:blocked,recovery:recovered"
-
-# blocked, and the model still does not invoke the skill
-fresh_log
-write_transcript "please refactor the auth module"
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-winging it' false)" >/dev/null
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-still winging it' true)" >/dev/null
-ok "blocked then not recovered logs unrecovered" "$(outcomes "$recovery_log")" "turn:blocked,recovery:unrecovered"
-
-# a clean turn writes exactly one record and no recovery
-fresh_log
-write_transcript "please refactor the auth module" skill
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-Phase 1 OBSERVE.' false)" >/dev/null
-ok "a passing turn logs one record only" "$(outcomes "$recovery_log")" "turn:passed"
-
-# another plugin's Stop hook caused the continue — we must not invent a record
-fresh_log
-write_transcript "please refactor the auth module"
-run_stop "$(stop_event 'someone else blocked this' true)" >/dev/null
-ok "no recovery record when the block was not ours" "$(outcomes "$recovery_log")" ""
-
-# the recovery record joins its turn record on prompt_id
-fresh_log
-write_transcript "please refactor the auth module"
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-winging it' false)" >/dev/null
-write_transcript "please refactor the auth module" skill
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-ok' true)" >/dev/null
-ok "recovery shares the turn prompt_id" \
-   "$(python3 -c '
-import json, glob, sys
-rows = []
-for p in glob.glob(sys.argv[1] + "/activation-*.jsonl"):
-    rows += [json.loads(l) for l in open(p) if l.strip()]
-print("yes" if len({r["prompt_id"] for r in rows}) == 1 and len(rows) == 2 else "no")' "$recovery_log")" yes
-ok "the marker is consumed, not left behind" \
-   "$(find "$recovery_log/pending" -name '*.marker' 2>/dev/null | wc -l | tr -d ' ')" 0
-
-# A blocked turn aborted before its recovery Stop (max-turns, user interrupt)
-# leaves its marker behind. Harmless but unbounded, so writes sweep old ones.
-fresh_log
-mkdir -p "$recovery_log/pending"
-touch -t 202001010000 "$recovery_log/pending/stale.marker"
-touch "$recovery_log/pending/fresh.marker"
-write_transcript "please refactor the auth module"
-run_stop "$(stop_event '**Classification: Non-trivial**
-
-winging it' false)" >/dev/null
-ok "a stale marker is pruned on the next block" \
-   "$([ -e "$recovery_log/pending/stale.marker" ] && echo present || echo pruned)" pruned
-ok "a fresh marker survives the prune" \
-   "$([ -e "$recovery_log/pending/fresh.marker" ] && echo present || echo pruned)" present
-
-# ------------------------------------------------------------------ report --
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -6,6 +6,7 @@ pub mod init;
 pub mod platform;
 pub mod skill;
 pub mod status;
+pub mod stop_verifier;
 pub mod sync;
 pub mod upgrade;
 pub mod update_content;

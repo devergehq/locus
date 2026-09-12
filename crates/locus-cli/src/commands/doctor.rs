@@ -1,6 +1,6 @@
 //! `locus doctor` — validate the Locus installation.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use locus_core::config::LocusConfig;
 use locus_core::platform::Platform;
@@ -123,6 +123,7 @@ pub fn run() -> Result<(), LocusError> {
     // 5. Check platform binaries.
     output::section("External Tools");
     check_binary("git", "Git (required for sync)", &mut issues);
+    check_plugin_binary_reachable(&mut issues);
 
     // Summary.
     output::section("Summary");
@@ -341,6 +342,81 @@ fn check_claude_integration(
         output::error("`locus` binary not on PATH — hooks will fail to execute");
         issues.push("locus must be on PATH for Claude Code hooks to fire. Add it.".into());
     }
+}
+
+/// A Locus plugin with no `locus` on PATH is a broken install, not a
+/// configuration.
+///
+/// The plugin's hooks all shell out to the binary. If it is not resolvable from
+/// a hook's environment, every hook is inert: the Algorithm is not enforced, the
+/// Stop gate never fires, and the activation log stays empty — while everything
+/// still *looks* fine. That is the failure this whole workstream keeps meeting,
+/// so doctor treats it as an error rather than a warning.
+///
+/// Note the asymmetry: `locus doctor` is itself the binary, so reaching this
+/// code proves it exists. What it does not prove is that it is on PATH — it may
+/// have been invoked by absolute path — which is the thing hooks actually need.
+fn check_plugin_binary_reachable(issues: &mut Vec<String>) {
+    let Some(config_dir) = dirs::home_dir().map(|h| h.join(".claude")) else {
+        return;
+    };
+    let installed = plugin_is_installed(&config_dir);
+    if !installed {
+        return;
+    }
+
+    let on_path = std::process::Command::new("which")
+        .arg("locus")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if on_path {
+        output::success("Locus plugin — binary reachable on PATH");
+    } else {
+        output::error("Locus plugin — installed, but `locus` is not on PATH");
+        issues.push(
+            "The Locus plugin is installed but `locus` is not on PATH. Every plugin \
+             hook is inert until it is: the Algorithm is not enforced and the \
+             activation log is not written. Put the binary on PATH and restart \
+             Claude Code."
+                .into(),
+        );
+    }
+}
+
+/// Detect an installed Locus plugin without depending on Claude Code internals
+/// beyond the directory layout it already publishes.
+fn plugin_is_installed(config_dir: &Path) -> bool {
+    let cache = config_dir.join("plugins");
+    if !cache.exists() {
+        return false;
+    }
+    let mut stack: Vec<PathBuf> = vec![cache];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Only descend a couple of levels; the marketplace cache nests
+                // as plugins/cache/<marketplace>/<plugin>/.
+                if path.components().count() < dir.components().count() + 4 {
+                    stack.push(path);
+                }
+            } else if path.file_name().and_then(|n| n.to_str()) == Some("plugin.json") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if v.get("name").and_then(|n| n.as_str()) == Some("locus") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn check_binary(name: &str, label: &str, issues: &mut Vec<String>) {
