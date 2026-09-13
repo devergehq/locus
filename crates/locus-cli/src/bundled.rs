@@ -549,4 +549,67 @@ mod drift_tests {
              `validate --strict` does not catch it."
         );
     }
+
+    /// The marketplace entry must source the plugin from a path that is
+    /// actually in the repository. `dist/plugin` is the obvious-looking answer
+    /// and it is wrong: `/dist` is gitignored, so `claude plugin marketplace
+    /// add devergehq/locus` — which fetches a git ref — resolves the source to
+    /// a directory that does not exist for anyone who has not already cloned
+    /// *and* run `scripts/build-plugin.sh`. That is precisely the audience the
+    /// marketplace manifest exists to serve.
+    #[test]
+    fn marketplace_entry_sources_a_committed_path_not_the_build_output() {
+        let manifest = std::fs::read_to_string(repo_root().join(".claude-plugin/marketplace.json"))
+            .expect("marketplace manifest missing");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&manifest).expect("marketplace.json is not valid JSON");
+
+        // `claude plugin install locus@locus` is <plugin>@<marketplace>; both
+        // halves are pinned because the README documents that exact line.
+        assert_eq!(parsed["name"], "locus", "marketplace name feeds `@locus`");
+
+        let plugins = parsed["plugins"]
+            .as_array()
+            .expect("marketplace.json declares no plugins array");
+        let entry = plugins
+            .iter()
+            .find(|p| p["name"] == "locus")
+            .expect("no plugin entry named `locus`");
+
+        // A relative path string is the only source type that resolves both
+        // for `marketplace add /path/to/locus` and for `marketplace add
+        // devergehq/locus`. A github source object would pin distribution to
+        // GitHub and stop local development testing uncommitted work.
+        let source = entry["source"]
+            .as_str()
+            .expect("source must be a relative path string");
+        assert!(
+            source.starts_with("./"),
+            "source {source:?} must start with `./` — bare names require \
+             metadata.pluginRoot, which claude.ai organization settings reject"
+        );
+        assert!(
+            !source.contains("dist"),
+            "source {source:?} points into the build output, which is \
+             gitignored and therefore absent from every git-fetched copy"
+        );
+
+        // Version lives in plugin.json and nowhere else. Declaring it here too
+        // means a release has to bump two files in step, and the day they
+        // disagree the marketplace silently pins the stale one.
+        assert!(
+            entry.get("version").is_none(),
+            "marketplace entry declares `version`; plugin.json already owns it"
+        );
+
+        // Plugins distributed through claude.ai organization settings are
+        // rejected outright if they carry a top-level `bin/`. The repo root has
+        // none — only `scripts/build-plugin.sh` creates one, inside
+        // `dist/plugin`, which this entry deliberately does not point at.
+        assert!(
+            !repo_root().join("bin").exists(),
+            "a top-level bin/ has appeared; plugins carrying one are rejected \
+             during claude.ai organization-settings sync"
+        );
+    }
 }

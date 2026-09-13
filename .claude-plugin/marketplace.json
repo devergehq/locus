@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "locus",
+  "owner": {
+    "name": "Deverge",
+    "email": "accounts@deverge.com.au",
+    "url": "https://github.com/devergehq/locus"
+  },
+  "description": "The Locus marketplace: structured phased decomposition for agentic execution.",
+  "plugins": [
+    {
+      "name": "locus",
+      "source": "./",
+      "description": "Structured phased decomposition for agentic execution. Injects the Locus dispatcher next to every prompt, enforces the classification line at turn end, and ships the Algorithm as a progressively-disclosed skill.",
+      "author": {
+        "name": "Deverge",
+        "email": "accounts@deverge.com.au"
+      },
+      "homepage": "https://github.com/devergehq/locus",
+      "repository": "https://github.com/devergehq/locus",
+      "license": "MIT",
+      "keywords": [
+        "algorithm",
+        "orchestration",
+        "workflow",
+        "delegation"
+      ],
+      "category": "workflow"
+    }
+  ]
+}
