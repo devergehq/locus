@@ -1,0 +1,139 @@
+name: CI
+
+# Per-PR checks. Kept separate from release.yml, which only fires on `v*` tags.
+#
+# Modelled on Allele's ci.yml, with three deliberate departures:
+#
+#   * No `architecture` job. That one gates Allele's tests/architecture.rs.
+#     Locus has no equivalent test, and a job that asserts nothing is worse
+#     than no job at all -- it reports green for work it never did.
+#   * `rustfmt` and `clippy` run on ubuntu-latest, not macOS. Allele pins
+#     macOS because it links cocoa/objc/core-text; Locus has no such
+#     dependency, and release.yml already builds five targets. Linux runners
+#     are faster and cheaper for platform-independent checks.
+#   * `test` runs on both ubuntu-latest and macos-14. macOS is the primary
+#     user platform and the hook/adapter code touches real filesystem paths,
+#     so a Linux-only test run would miss the failures that matter most.
+#
+# All three are blocking. `clippy` was going to ship advisory
+# (`continue-on-error: true`) until its warnings were cleared, and that turned
+# out to be the wrong shape for two reasons, both measured rather than assumed.
+#
+# First, `continue-on-error` does not do what it is usually taken to do: on run
+# 34730034287 the workflow RUN reported success while the clippy JOB and its
+# check run both reported failure. It does not make a job green, it makes the
+# run ignore a red job.
+#
+# Second, that would have meant a red X on every pull request, which is exactly
+# the thing Allele's ci.yml warns about and for the right reason: "a
+# permanently-red one is a check everyone learns to ignore." Shipping one here,
+# in the workflow that introduces linting, would have been self-defeating.
+#
+# So the warnings were cleared in this PR instead and clippy is blocking from
+# its first run. No count is written down -- a number in a comment is a
+# precondition that rots.
+#
+# Toolchain install is NOT `rustup show`. Since rustup 1.28.0 (March 2025)
+# rustup no longer auto-installs the toolchain named in rust-toolchain.toml, so
+# `rustup show` alone leaves the job running whatever Rust the runner image
+# happens to ship -- silently defeating the pin it appears to honour.
+# `rustup show active-toolchain || rustup toolchain install` is the migration
+# command from the 1.28.0 release notes. The explicit `rustup component add` is
+# belt and braces: reports differ on whether a component-less install picks up
+# the `components` key from the file, and a missing rustfmt fails the job
+# outright. Both calls are idempotent.
+#
+# release.yml still uses bare `rustup show`. It has never run against the pin
+# (the pin landed after the last release tag), so that is a latent failure on
+# the next `v*` tag rather than a known-good pattern to copy. See DEV-611.
+#
+# None of these block a merge until they are marked as required status checks
+# in the branch-protection rule for `master` -- a repo setting, not a file.
+# Per the doctrine above, do not mark a check required until it is green.
+#
+# The four contexts this workflow emits, for whoever fills in that rule. A
+# matrix job reports one check per combination, so there is NO context named
+# bare `test` and requiring one would never be satisfied:
+#
+#     rustfmt
+#     clippy
+#     test (ubuntu-latest)
+#     test (macos-14)
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded PR runs, but never a master run. Cancelling on
+  # `push: master` would leave that commit untested -- and once these are
+  # marked required, a cancelled run reports as failed rather than skipped.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      # Report both platforms. Knowing a failure is macOS-only is most of the
+      # diagnosis; fail-fast would hide it.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: test-${{ matrix.os }}
+
+      - name: Run tests
+        run: cargo test --workspace --all-features

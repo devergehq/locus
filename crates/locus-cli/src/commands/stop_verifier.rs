@@ -149,7 +149,11 @@ fn append_record(record: &ActivationRecord<'_>) {
     };
     line.push('\n');
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -345,7 +349,11 @@ pub fn verify(event: &serde_json::Value) -> Verdict {
                 skill_fired,
                 escaped,
                 blocked: false,
-                outcome: if skill_fired { "recovered" } else { "unrecovered" },
+                outcome: if skill_fired {
+                    "recovered"
+                } else {
+                    "unrecovered"
+                },
                 reason: None,
             });
         }
@@ -422,8 +430,10 @@ mod tests {
                                "message":{"role":"user","content":prompt}}),
         ];
         if let Some(id) = skill {
-            rows.push(serde_json::json!({"type":"assistant","message":{"role":"assistant",
-                "content":[{"type":"tool_use","name":"Skill","input":{"skill":id}}]}}));
+            rows.push(
+                serde_json::json!({"type":"assistant","message":{"role":"assistant",
+                "content":[{"type":"tool_use","name":"Skill","input":{"skill":id}}]}}),
+            );
         }
         let body = rows
             .iter()
@@ -478,7 +488,11 @@ mod tests {
     fn blocks_non_trivial_with_no_skill_invocation() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
-        let v = verify(&stop_event(&c, "**Classification: Non-trivial**\n\nwinging it", false));
+        let v = verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nwinging it",
+            false,
+        ));
         assert!(blocked(&v));
         if let Verdict::Block(r) = v {
             assert!(
@@ -493,7 +507,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", Some("locus-algorithm"));
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Non-trivial**\n\nOBSERVE", false)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Non-trivial**\n\nOBSERVE",
+                false
+            )),
             Verdict::Allow
         );
     }
@@ -506,7 +524,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", Some("locus:locus-algorithm"));
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Non-trivial**\n\nOBSERVE", false)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Non-trivial**\n\nOBSERVE",
+                false
+            )),
             Verdict::Allow
         );
     }
@@ -525,7 +547,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("rename a variable", None);
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Trivial**\n\ndone", false)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Trivial**\n\ndone",
+                false
+            )),
             Verdict::Allow
         );
     }
@@ -537,7 +563,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Non-trivial**\n\nstill nothing", true)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Non-trivial**\n\nstill nothing",
+                true
+            )),
             Verdict::Allow
         );
     }
@@ -547,7 +577,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("just do it, locus: skip", None);
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Non-trivial**\n\nno skill", false)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Non-trivial**\n\nno skill",
+                false
+            )),
             Verdict::Allow
         );
     }
@@ -557,7 +591,11 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("just do it, LOCUS: SKIP", None);
         assert_eq!(
-            verify(&stop_event(&c, "**Classification: Non-trivial**\n\nno skill", false)),
+            verify(&stop_event(
+                &c,
+                "**Classification: Non-trivial**\n\nno skill",
+                false
+            )),
             Verdict::Allow
         );
     }
@@ -614,7 +652,11 @@ mod tests {
     fn turn_record_field_order_matches_the_python_format() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nx", false));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nx",
+            false,
+        ));
 
         let path = std::fs::read_dir(&c.log)
             .unwrap()
@@ -654,14 +696,22 @@ mod tests {
         let ts = now_iso();
         assert!(ts.ends_with("+00:00"), "expected a +00:00 offset: {ts}");
         let frac = ts.split('.').nth(1).expect("fractional seconds");
-        assert_eq!(frac.trim_end_matches("+00:00").len(), 6, "microseconds: {ts}");
+        assert_eq!(
+            frac.trim_end_matches("+00:00").len(),
+            6,
+            "microseconds: {ts}"
+        );
     }
 
     #[test]
     fn a_passing_turn_logs_exactly_one_record() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", Some("locus-algorithm"));
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nOBSERVE", false));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nOBSERVE",
+            false,
+        ));
         let r = records(&c);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0]["event"], "turn");
@@ -682,7 +732,11 @@ mod tests {
     fn blocked_then_recovered_logs_turn_then_recovery() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nx", false));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nx",
+            false,
+        ));
 
         // The retry invokes the skill.
         let c2 = Case {
@@ -698,7 +752,11 @@ mod tests {
         );
         std::fs::write(&c2.transcript, rows).unwrap();
 
-        verify(&stop_event(&c2, "**Classification: Non-trivial**\n\nOBSERVE", true));
+        verify(&stop_event(
+            &c2,
+            "**Classification: Non-trivial**\n\nOBSERVE",
+            true,
+        ));
 
         let r = records(&c2);
         assert_eq!(r.len(), 2);
@@ -712,8 +770,16 @@ mod tests {
     fn blocked_then_not_recovered_logs_unrecovered() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nx", false));
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nstill nothing", true));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nx",
+            false,
+        ));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nstill nothing",
+            true,
+        ));
         let r = records(&c);
         assert_eq!(r.len(), 2);
         assert_eq!(r[1]["outcome"], "unrecovered");
@@ -734,9 +800,17 @@ mod tests {
     fn the_marker_is_consumed_not_left_behind() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let c = case("refactor the auth module", None);
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nx", false));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nx",
+            false,
+        ));
         assert!(c.log.join("pending").join("P1.marker").exists());
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\ny", true));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\ny",
+            true,
+        ));
         assert!(!c.log.join("pending").join("P1.marker").exists());
     }
 
@@ -763,7 +837,11 @@ mod tests {
             .set_modified(old)
             .unwrap();
 
-        verify(&stop_event(&c, "**Classification: Non-trivial**\n\nx", false));
+        verify(&stop_event(
+            &c,
+            "**Classification: Non-trivial**\n\nx",
+            false,
+        ));
 
         assert!(!stale.exists(), "a marker past the TTL should be pruned");
         assert!(fresh.exists(), "a fresh marker must survive the sweep");

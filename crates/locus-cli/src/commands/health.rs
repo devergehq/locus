@@ -968,11 +968,17 @@ mod tests {
     /// any headroom and prove nothing.
     #[test]
     fn the_size_walk_must_keep_headroom_above_one() {
-        assert!(
-            SIZE_WALK_HEADROOM >= 1,
-            "headroom below 1 abandons the walk before the threshold can be \
-             reached, silently disabling every size check"
-        );
+        // A const block, so this is a COMPILE error rather than a test
+        // failure. clippy is right that the condition is constant -- but the
+        // assertion is a guard against someone setting the constant to 0, not
+        // noise, so it is strengthened rather than removed.
+        const {
+            assert!(
+                SIZE_WALK_HEADROOM >= 1,
+                "headroom below 1 abandons the walk before the threshold can be \
+                 reached, silently disabling every size check"
+            )
+        };
 
         let root = temp_root("headroom");
         let git = root.join("data").join(".git");

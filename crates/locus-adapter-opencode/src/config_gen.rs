@@ -267,11 +267,7 @@ pub fn update_opencode_json(locus_home: &Path) -> Result<PathBuf, LocusError> {
     // Build the Locus instruction paths using ~ for portability.
     let home_relative = tilde_path(locus_home);
     let locus_instructions: Vec<String> = vec![
-        format!(
-            "{}/algorithm/{}",
-            home_relative,
-            locus_core::ALGORITHM_FILE
-        ),
+        format!("{}/algorithm/{}", home_relative, locus_core::ALGORITHM_FILE),
         format!("{}/protocols/degradation.md", home_relative),
         format!("{}/protocols/context-management.md", home_relative),
         format!("{}/protocols/memory-schema.md", home_relative),

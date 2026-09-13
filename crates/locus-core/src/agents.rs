@@ -270,9 +270,7 @@ approach:
             .contains("You reason adversarially about systems."));
         assert!(composed.prompt.contains("You demand evidence"));
         assert!(composed.prompt.contains("Be exhaustive"));
-        assert!(composed
-            .prompt
-            .contains("Your task: Review the login flow"));
+        assert!(composed.prompt.contains("Your task: Review the login flow"));
     }
 
     #[test]
@@ -307,9 +305,7 @@ approach:
     #[test]
     fn compose_aggregates_keywords_deduplicated() {
         let t = sample_traits();
-        let c = t
-            .compose(&["security", "skeptical"], None, None)
-            .unwrap();
+        let c = t.compose(&["security", "skeptical"], None, None).unwrap();
         assert!(c.keywords.contains(&"security".to_string()));
         assert!(c.keywords.contains(&"skeptical".to_string()));
     }

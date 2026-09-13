@@ -1,6 +1,6 @@
 //! `locus sync` — synchronise user data between machines via git.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use locus_core::LocusError;
@@ -22,9 +22,7 @@ pub fn run(init_remote: Option<String>) -> Result<(), LocusError> {
     if !data_dir.join(".git").exists() {
         output::error("Data directory is not a git repository.");
         output::info("Initialize with: locus sync --init <remote-url>");
-        output::info(&format!(
-            "  e.g. locus sync --init git@github.com:you/locus-data.git"
-        ));
+        output::info("  e.g. locus sync --init git@github.com:you/locus-data.git");
         return Ok(());
     }
 
@@ -157,7 +155,7 @@ fn init_data_repo(data_dir: &PathBuf, remote: &str) -> Result<(), LocusError> {
 /// cause false positives, whereas the angle-bracket markers never occur in real
 /// synced files. Unreadable or binary files are skipped rather than treated as
 /// conflicts.
-fn files_with_conflict_markers(dir: &PathBuf, files: &[String]) -> Vec<String> {
+fn files_with_conflict_markers(dir: &Path, files: &[String]) -> Vec<String> {
     files
         .iter()
         .filter(|rel| match std::fs::read_to_string(dir.join(rel)) {
@@ -259,7 +257,9 @@ mod tests {
         assert!(!is_conflict_marker("======= Section Heading (RST)"));
         assert!(!is_conflict_marker("<<<< not a marker"));
         assert!(!is_conflict_marker("normal text"));
-        assert!(!is_conflict_marker("  <<<<<<< indented is not at line start"));
+        assert!(!is_conflict_marker(
+            "  <<<<<<< indented is not at line start"
+        ));
     }
 
     #[test]
