@@ -15,12 +15,13 @@ triggers:
 > **One dispatcher per repo.** Its config and its runtime state live in
 > `~/.locus/data/dispatcher/<slug>/`, never in this skill directory. Create one with
 > `python3 dispatcher.py init --instance <slug> --team-key KEY`, which is the only step that
-> cannot be done by typing: it mints the nine workspace-specific label ids.
+> cannot be done by typing: it mints the eleven workspace-specific label ids.
 >
-> **`workers/decide.md` ships but nothing routes to it.** There is no `decide` trigger label and
-> no `decide` entry in `linear.modes`, so the poller can never raise one. It is reachable only by
-> a coordinator or a human pointing a session at it deliberately. Wiring it up means adding two
-> labels and a mode, which is a product decision nobody has taken.
+> **An instance created before this version has nine of those eleven.** Re-run the same `init`
+> with the same `--team-key` to pick up `Agent - Decide` and `Agent - Blocked`: it fills in
+> vocabulary the config has never heard of, creates only the labels the workspace lacks, and
+> leaves every existing id alone. Until you do, `D label <KEY> blocked` fails with
+> `unknown label state 'blocked'`. `--dry-run` shows you what it would create first.
 
 # Dispatcher
 
@@ -57,9 +58,13 @@ allele sidebar, and stop.
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
-3. Start the poller:
-   `Monitor(command: "python3 ~/.locus/data/dispatcher/dispatcher.py poll", persistent: true,
+3. Start the poller, with **the same `D` you were given**, `poll` on the end:
+   `Monitor(command: "<D> poll", persistent: true,
    description: "dispatcher: Linear labels + GitHub review requests")`.
+   Expand `<D>` yourself — it is `python3 <this skill's directory>/dispatcher.py --instance <slug>`.
+   `dispatcher.py` lives in the **code** root beside this file and never in
+   `~/.locus/data/dispatcher/`, which holds config and runtime only; and the `--instance` flag is
+   not optional once a second instance exists, or the poller exits with `several instances`.
 4. Events marked `"backlog": true` arrive on the first tick:
    - **Linear triggers:** dispatch them. A label is your principal's explicit ask. Respect the cap.
    - **Review requests:** list them (PR, author, `opened`) and ask your principal once which to take. Some may
@@ -72,8 +77,14 @@ allele sidebar, and stop.
 
 ## Capacity
 
-- Working = ledger status `claimed`, `active` or `needs-input`. Cap `limits.max_workers` — read it fresh from `D status`, never from memory.
-  `D status` shows `working N/<max>`.
+- Working = ledger status `claimed`, `active`, `needs-input` or `blocked`. Cap
+  `limits.max_workers` — read it fresh from `D status`, never from memory.
+- `D status` prints **two** counts and they measure different things. `ledger working N/<max>`
+  is **advisory**: nothing in `dispatcher.py` refuses a dispatch at that number, and it counts
+  ledger entries. `allele dispatched N/<max>` is **enforced** — allele returns a capacity error
+  at its own cap — and it counts sessions, including every reviewer a worker dispatches, which
+  never reach the ledger. Budget against the second. A `?` for the limit means allele's settings
+  could not be read, which is not the same as headroom.
 - At the cap: `D ledger put <KEY> status=queued ... --by dispatcher`. The poller re-emits queued
   items every 15 minutes. Whenever a worker reports done, failed or stopped, check
   `D ledger list` for `queued` items and dispatch the oldest.
@@ -113,7 +124,7 @@ If anything fails after step 3, put the trigger label back (`D label <KEY> <trig
 
 A trigger on a ticket **with sub-issues** is dispatched exactly like any other implement ticket:
 same claim, same brief, same verification. The fork happens inside the worker — `implement.md`
-sends it to `stack.md`, and it becomes a **coordinator** that dispatches one session per child
+sends it to `stack.v2.md`, and it becomes a **coordinator** that dispatches one session per child
 and closes the parent last. You do not dispatch the children; it does, from depth 1, so they land
 at depth 2.
 
@@ -167,7 +178,7 @@ Nothing goes to GitHub from you. Ever.
 | `review_cleared` | Report the reason and ask: "Discard `<session>`?" Discard only on a yes. |
 | `session_blocked` | **PushNotification**: "`<KEY>` worker is waiting on a prompt in allele." A blocked worker gets nowhere until a human acts. |
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
-| `session_lost` | Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |
+| `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |
 | `session_archived` | Someone discarded it outside you. `D ledger put <KEY> status=discarded`. If the ticket still carries a working label, ask whether to clear it. |
 | `error` | A single one is fine. The same error across several ticks, or any auth error: report it. |
 
@@ -182,6 +193,11 @@ Acknowledge nothing; act:
 - `done` → **PushNotification** (PR ready / findings posted / sub-issues created / review ready),
   then check the queue.
 - `needs-input` → **PushNotification** with the question's one-line gist and the ticket link.
+- `blocked` → **PushNotification**, and it is not a question. A coordinator writes `blocked` when
+  it has analysed a parent and concluded the work cannot usefully start: nothing was asked and no
+  thread is open, so there is nobody to chase for an answer. Relay **what has to change about the
+  work** and who can change it. `needs-input` is somebody owing an answer; `blocked` is the work
+  not being ready. **Do not re-trigger it** — see the `session_lost` row.
 - `failed` or `stopped` → report it, then check the queue.
 - Anything that isn't a status change → answer it if it's in your remit; otherwise point the worker at your principal.
 

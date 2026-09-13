@@ -1,22 +1,17 @@
 # Mode: implement, parent ticket (`Agent - Todo` on a ticket with sub-issues)
 
-> # ⚠️ UNVALIDATED — THIS FILE IS NOT IN USE
+> **This is the protocol in service.** `implement.md` step 0 and the Dispatcher's `SKILL.md`
+> both route here.
 >
-> **Nothing routes here, and nothing should.** `implement.md` and the Dispatcher's `SKILL.md`
-> both name `stack.md`, which is the protocol in service. This file ships so that the work in
-> it is not lost, and for no other reason.
->
-> **It has never executed against a real fan-out.** Its only exercise was a single read-only
-> dry run — no sessions created, no ledger writes, no labels changed, no branch, no PR.
+> **It has still never executed against a real fan-out.** Its only exercise has been read-only
+> dry runs — no sessions created, no ledger writes, no labels changed, no branch, no PR. Being
+> the live path is not evidence it works; it is a decision that its predecessor was worse.
 >
 > **Its own strongest finding is against itself.** Every worked example in this document is
 > the *same parent ticket* — the one parent where "the rules produced this answer" cannot be
-> told apart from "the author wrote the rules to match the answer". Until it has been run
-> against a parent it has never seen, treat every worked answer below as an illustration of
-> the author's judgement, not as evidence the rules reproduce it.
->
-> **Before arming it:** validate against an unseen parent, then change the two routing
-> references in `implement.md` and `SKILL.md`. Do not route to it by editing this banner away.
+> told apart from "the author wrote the rules to match the answer". Treat every worked answer
+> below as an illustration of the author's judgement, not as evidence the rules reproduce it,
+> and when a worked answer and the rule beside it disagree, **trust the rule** and say so.
 
 You are a **coordinator**. You write no production code. Your job, in order: work out what
 **shape** the delivery should take, verify the order the tickets claim, dispatch one session
@@ -100,15 +95,17 @@ D ledger children <KEY>          # every ledger entry whose parent is this key
 allele_sessions_list             # what is actually alive
 ```
 
-If `ledger children` is not in your `dispatcher.py` yet, the equivalent is
-`grep -l '"parent": "<KEY>"' ~/.locus/data/dispatcher/runtime/ledger/*.json`. Use it and say
-in your first comment that you used the fallback.
+`ledger children` prints **every** status, not only the live ones, and that is the point: a
+replacement that cannot see the discarded and failed children will dispatch them again.
 
-**That fallback is untested against real data** — no ledger file carries a `parent` field today,
-because nothing has written one. It should match `json.dumps(indent=2)` output, but the first
-person to find out otherwise will be doing a recovery, which is the worst time. Run it once
-against a child you have just dispatched and confirm it returns that child, *before* you need
-it. If it returns nothing, fall back to reading every file in `runtime/ledger/` and say so.
+If your `dispatcher.py` predates the subcommand — `D ledger children <KEY>` answers
+`invalid choice: 'children'` — the equivalent is
+`grep -l '"parent": "<KEY>"' <instance>/runtime/ledger/*.json`, where `<instance>` is the path
+`D doctor` prints. Say in your first comment that you used the fallback, and note that it
+matches on text: a key that is a prefix of another (`DEV-1` against `DEV-12`) is not a risk
+here, because the grep includes the closing quote, but a ledger written by some other tool
+might not be `json.dumps(indent=2)`. If it returns nothing, read every file in
+`runtime/ledger/` and say so.
 
 **Use the `allele_sessions_*` MCP tools, not `D status`, and the difference is not stylistic.**
 `dispatcher.py`'s `allele_state()` reads `~/.allele/state.json`, and that file **lags**:
@@ -128,13 +125,33 @@ what is running. A child is **live** if its session is live — not if its ledge
 A child is **finished** if its ledger says a terminal status *and* you can see its artefact.
 Reconcile both lists before you dispatch anything:
 
+**Join on `session_id`, and when there is none, join on the session NAME.** That order matters,
+because the one window that loses work is the one where a session exists and the ledger never
+learned its id — so an id-only reconciliation reports "never started" about a session that is
+running right now, and the remedy for "never started" is to dispatch another one.
+
+**First: does the entry name a `session_id`?**
+
 | Ledger | allele | It means | Do |
 |---|---|---|---|
-| working | session alive | still running | leave it alone; adopt it |
-| `active` | session gone | it ran and died | **`D ledger put <CHILD> status=lost --note "session gone"`**, then report to the Dispatcher. Do not silently restart it |
-| `claimed` | session gone | **it never started** — section 6 writes `claimed` before the create, so this is a coordinator that died in that window | `status=queued --note "claim never reached a create"`, then dispatch it normally. There is no prior session and nothing to collide with |
+| `claimed`, **no** `session_id` | **no** session named `<CHILD> · <mode>` | **it never started.** §6 writes `claimed` before the create, so the coordinator died in that window | `status=queued --note "claim never reached a create"`, then dispatch normally. No prior session, nothing to collide with |
+| `claimed`, **no** `session_id` | a session named `<CHILD> · <mode>` **exists** | **the create landed and the id write did not.** The work is running and unreachable through the ledger | **Do not dispatch.** Record the id you just found (`D ledger put <CHILD> session_id=… session_name=… status=active`), then treat it as live. Nothing in `dispatcher.py` can see this state: `liveness()` skips any entry without a `session_id`, so it emits no event about it, ever |
+| no entry at all | a session named `<CHILD> · <mode>` | dispatched with no ledger entry written | **stop.** Tell the Dispatcher. Do not dispatch a second one |
+
+**Then, for every entry that does name one** — and note this covers `needs-input` and `blocked`
+as much as `active`, because both are working statuses and neither implies a live session:
+
+| Ledger | allele | It means | Do |
+|---|---|---|---|
+| any working status | session alive | still running | leave it alone; adopt it |
+| any working status | session gone | it ran and died | **`D ledger put <CHILD> status=lost --note "session gone"`**, then report to the Dispatcher. Do not silently restart it. A `needs-input` child also loses its open question — say what it had asked |
+| `queued` or `lost` | session gone | already redispatchable; this is the resting state after the row above | dispatch it when its gate allows, exactly as a fresh child |
+| terminal (`done`, `merged`, `failed`, `discarded`, `stopped`, `deferred`) | session gone | finished and reclaimed — **healthy.** Most of the ledger looks like this | nothing. Read its artefact when you verify, §8 |
 | terminal | session alive | finished, not discarded | list it for your principal; it holds an allele slot |
-| no entry | session named `<CHILD> · <mode>` | dispatched without a ledger entry | **stop.** Tell the Dispatcher. Do not dispatch a second one |
+
+If a state you are looking at is in neither table, say so in your first comment rather than
+picking the nearest row. These were derived by enumerating the real product of statuses against
+liveness, and the rows that were missing the first time round were the *commonest* ones.
 
 Writing `lost` is not bookkeeping — it is what makes the child dispatchable again. A child left
 on `claimed` or `active` with a dead session matches neither `REDISPATCHABLE` nor any terminal
@@ -198,9 +215,15 @@ actually governs a fan-out — **how expensive it is to unblock**. Classify ever
 every non-code child, and put the category on its face in the plan comment. This is a starting
 taxonomy, not a closed set; add a row rather than forcing a question into the wrong one.
 
+**Check the resolver will actually have the reader before you price anything as cheap.**
+`D doctor` prints a `production mcp` line, and `cmd_brief` names the MCP to a child only when
+`tools.production_mcp` is set in your instance's `config.json`. Where it is unset, a **data**
+gate is not seconds — it is a question your resolver cannot reach, and pricing it as trivial
+is how a cheap gate silently becomes an unbounded one. Say which you found.
+
 | Category | Who can answer | Cost |
 |---|---|---|
-| **data** | an agent, via the read-only the production MCP MCP | trivial — seconds |
+| **data** | an agent, via the read-only production MCP | trivial — seconds |
 | **access pattern** | an agent, given access-log reads | cheap, with a caveat below |
 | **production config** | a human, or an agent with ECS read | small, but may need a person |
 | **retention / architecture** | human judgement | a conversation |
@@ -601,9 +624,15 @@ that thread. A coordinator that analysed a parent and concluded the work is not 
 begin has **asked nothing** and is waiting on no thread — it is reporting a property of the work.
 `D label <KEY> blocked`, `D ledger put <KEY> status=blocked`, message the Dispatcher.
 
-That label does not exist in `config.json` yet; the proposal is in `PROPOSED-CHANGES-stack-v2.md`.
-Until it lands, use `needs-input` **and say in the comment that you mean blocked** — the distinction
-is the useful part and the label is how it becomes visible at a glance.
+Both halves exist: `Agent - Blocked` is in `linear.labels` and `blocked` is in `dispatcher.py`'s
+`WORKING` set. Being in `WORKING` is what stops the poller re-triggering the parent and keeps it
+on `D status` — a held parent is *owned*, not free. If `D label` answers `unknown label state
+'blocked'`, your instance's `config.json` predates it: say so and have your principal re-run
+`init`. Until they do, use `needs-input` **and say in the comment that you mean blocked**.
+
+`SKILL.md` also tells the Dispatcher not to re-queue a `blocked` entry when its session dies.
+Say in your handover message that you are handing back blocked rather than lost, so that if your
+session is later reaped nobody reads the gap as a crash and starts this again.
 
 You have not failed. You produced the one artefact that was available, dispatched the one session
 that can cheapen the gate, and declined to spend five more producing something worse.
@@ -624,18 +653,22 @@ with the tip's (3b), and if it ships alone it does not.
 | an explanation | `investigate` | one findings comment |
 | sub-issues | `decompose` | children created |
 
-`decide` is **not installed today** — `config.json` has no `decide` entry in `traits`, `modes`
-or `labels` — and it fails earlier and differently than you might expect. Section 6's order is
-`ledger put` → `label` → `brief`, so `D label <CHILD> deciding` dies first with `unknown label
-state 'deciding'`; `D brief` would then raise `KeyError: 'decide'` on `cfg["traits"][mode]`.
-**Use the `investigating` label for a decision child** — the closest existing working label, and
-an honest description of what the session is doing.
+`decide` **is installed**: `config.json` carries `traits.decide`, a `linear.modes.decide` entry
+and an `Agent - Decide` trigger label. Dispatch it like any other mode.
 
-With `decide` unavailable, dispatch `investigate` instead **and do not accept its `done`**. An investigate session's finish line
-is posting findings; a decision child's finish line is *answers existing*. On EX-527 an
-investigate session can answer Q2 and Q4 itself and would then report done with Q1 and Q3
-unanswered — and you would unblock EX-532 on a ticket that is half finished. Verify the
-artefact, not the status. See section 8.
+**Its working label is `investigating`, not a label of its own**, and that is deliberate rather
+than an oversight — eleven labels cover five modes, and no code reads a mode's working label at
+all (`linear_triggers` reads only `trigger`). So `D label <CHILD> investigating` is the correct
+claim for a decision child, and the board shows it alongside investigate workers while it runs.
+`D label <CHILD> deciding` fails with `unknown label state 'deciding'`; there is no such label.
+
+**If you are running against an instance created before `decide` landed**, `D brief` raises
+`KeyError: 'decide'` and `D label` refuses `decide`. That is a config that has not been
+reconciled, not a missing feature: say so, and tell your principal to re-run
+`dispatcher.py init --instance <slug> --team-key KEY`. Do not silently substitute `investigate`
+— its finish line is *posting findings*, a decision child's is *answers existing*, and on EX-527
+an investigate session answers Q2 and Q4 and reports done with Q1 and Q3 open. You would then
+unblock EX-532 on a ticket that is half finished. Verify the artefact, not the status; section 8.
 
 **Rejecting a `done` is not a state on its own, so say what happens next.** When a child reports
 `done` and the artefact test fails, you have three moves and must pick one out loud:
@@ -762,12 +795,17 @@ depth 2  one session per child
 depth 3  a child's reviewer.  Depth 3 CANNOT dispatch.
 ```
 
-`D status` prints `working N/max_workers`, and **that number enforces nothing** —
-`max_workers` appears three times in `dispatcher.py` — a comment, a telemetry field and this
-print — and no call site refuses a dispatch. It also counts ledger entries, while allele counts sessions, and the two diverge: every child's
-reviewer is real to allele and invisible to the ledger. Do not budget from it.
+`D status` now prints **two** counts, labelled, and the labels are the whole point:
+`ledger working N/max_workers (advisory)` beside `allele dispatched N/M (enforced)`.
+`max_workers` enforces nothing — no call site in `dispatcher.py` refuses a dispatch at it — and
+it counts ledger entries, while allele counts sessions. (Earlier drafts of this paragraph and of
+`PROPOSED-CHANGES` gave a count of how many times the name appears, and disagreed with each
+other; a number in prose about code is a precondition that rots. Grep it if you care.) The
+two diverge by exactly the reviewers, which are real to allele and invisible to the ledger.
+Read the second number. A `?` where the limit should be means allele's settings file could not
+be read, and an unknown cap is not headroom.
 
-Budget from allele:
+Budget from allele anyway, because `D status` is a snapshot of a file that lags:
 
 1. `dispatch.max_sessions` from `~/.config/allele/settings.json`, read fresh. It is 35 today.
 2. `allele_sessions_list`, counting **every row with `dispatched: true` whatever its state**.
@@ -802,7 +840,7 @@ Before each create, check **both** locks, unconditionally:
   fails the other way and is worse: it is strictly stronger than `dispatcher.py`'s own
   `REDISPATCHABLE` set, so a child whose session died would be permanently undispatchable by
   anyone, with no `ledger rm` to clear it and no terminal outcome to close on. Those four statuses are `REDISPATCHABLE` minus
-  `None`, which `dispatcher.py:46` also includes and which means "no entry at all" — handled by
+  `None`, which the set also includes and which means "no entry at all" — handled by
   section 0's table rather than here. Match that set rather than inventing a stricter one.
 - `allele_sessions_list` contains a session named `<CHILD> · <mode>` → do not dispatch.
 
@@ -825,7 +863,7 @@ Then, per child:
 ```
 D ledger put <CHILD> mode=<mode> status=claimed title="…" url=… project=<project> \
   parent=<KEY> "why=child of <KEY>, dispatched by coordinator" --by coordinator
-D label <CHILD> <working label> --state "In Progress"
+D label <CHILD> <working label> --state "In Progress" --by coordinator
 D brief <CHILD>   →   allele_sessions_create(project, name: "<CHILD> · <mode>", prompt: <brief + appendix>)
 allele_sessions_status(<session_id>)    # your requested name, dispatched: true, past provisioning
 D ledger put <CHILD> session_id=… session_name=… reply_to=… status=active --by coordinator
@@ -834,8 +872,19 @@ D ledger put <CHILD> session_id=… session_name=… reply_to=… status=active 
 `parent=<KEY>` is load-bearing — it is what section 0 queries. Set it on the `claimed` put,
 before the create, so a coordinator that dies mid-create still leaves a findable child.
 
-**Children never get a Todo label.** A Todo on a child makes the Dispatcher's poller dispatch
-it a second time, from depth 1, outside your control. Straight to the working label.
+**Write it in the same `ledger put` as the claim, not in a later one.** `ledger_put` merges
+under a lock now, so a concurrent write from the Dispatcher no longer discards your fields —
+that was a real defect, demonstrated: unlocked, the whole of one writer's update vanished, and
+a child left with `status=lost` and no `parent` is invisible to `ledger children`, invisible to
+`SKILL.md`'s guard, and passes this section's own lock. The lock closes the interleaving; it
+does not close the gap between two of *your* puts. One put, every field.
+
+**Children never get a trigger label** — not `Agent - Todo`, and not `Agent - Investigate`,
+`Agent - Decompose` or `Agent - Decide` either. Any of the four makes the Dispatcher's poller
+see the child and dispatch it a second time, from depth 1, outside your control. `cmd_label`
+will happily set one, so this is a rule about what you type, not a thing the tool prevents.
+Straight to the working label. (For a `decide` child that working label is `investigating`;
+there is no `deciding`.)
 
 ### The stale-state hazard, and the one line that defuses it
 
@@ -899,7 +948,14 @@ Depth:        you are at depth 2, so your reviewer is a leaf and cannot dispatch
 
 Non-code children get no branch lines. They get the acceptance criteria restated as the
 output shape, and the instruction that a question only a person can answer leaves the process
-(section 8).
+(section 8). Add two lines to a `decide` child's brief:
+
+```
+Record on:    <the ticket each acceptance criterion names — often this parent, not your ticket>
+Sign as you:  commenting on any ticket that is not your own, pass `--key <CHILD>` to
+              `D comment`, or it signs with the OTHER ticket's marker and my watcher on that
+              ticket skips your answers as its own.
+```
 
 ---
 
@@ -1259,22 +1315,24 @@ Getting this backwards in either direction is expensive: treating work as a gate
 stack waiting for a human who has nothing to add, and treating a business question as work
 gets an agent guessing at something a customer or a supplier would notice.
 
-**Watch for the answer.** Run `D watch` on the parent as a persistent Monitor, and on any
-ticket you are holding work behind — the answer often lands on the gating child rather than
-the parent, and if that child is not yet dispatched, nobody else is looking at it. On EX-525
-that is a watch on EX-525 and one on EX-527.
+**Watch for the answer, and pass `--as`.** Run `D watch <KEY> --as coordinator` on the parent as
+a persistent Monitor, and the same on any ticket you are holding work behind — the answer often
+lands on the gating child rather than the parent, and if that child is not yet dispatched,
+nobody else is looking at it. On EX-525 that is a watch on EX-525 and one on EX-527.
 
-**When the answer arrives, relay it to the held child. Do not just restore its label.** The
-watcher keeps one state file per ticket — `dispatcher.py:404`, `WATCH_DIR / f"{key}.json"` — and
-`issue()` advances `comments_since` past every comment it emits. You and the child watching the
-same ticket are two processes sharing one file on a 90-second interval, last writer wins. If
-your tick lands first, the child's next query asks for comments newer than the one you just
-consumed and gets nothing: **it never learns the answer arrived.** And on a decision child, the
-child is the only session that records answers on the ticket. The result is the worst kind of
-stall — the answer is visible to a human reading Linear, and no session is acting on it.
+**`--as` is not decoration.** A watcher keeps one state file per ticket and `issue()` advances
+`comments_since` past every comment it emits, so two readers of one ticket share one cursor
+unless they are told apart. You and the resolver both watch EX-527 — `_common.md` step 3 makes
+every child watch its own ticket — and the comment you would collide over is the answer the
+whole stack is held behind. `--as <name>` gives this watcher its own file,
+`<key>.<name>.json`. A `dispatcher.py` that predates the flag answers
+`unrecognized arguments: --as`; drop it, and lean harder on the relay below.
 
-So: SendMessage the child the answer text itself, then restore its label. One extra message
-costs nothing and removes a coin-flip from the critical path.
+**When the answer arrives, relay it to the held child anyway. Do not just restore its label.**
+Separate cursors stop you *consuming* the child's comment; they do not make the child read it
+sooner, and on a decision child that child is the only session that records answers on the
+ticket. So: SendMessage the child the answer text itself, then restore its label. One extra
+message costs nothing and removes a coin-flip from the critical path.
 
 ### Child outcomes — all of them
 
@@ -1290,24 +1348,27 @@ costs nothing and removes a coin-flip from the critical path.
 | silent | no | **not an outcome.** `allele_sessions_status` distinguishes `response_ready` from `awaiting_input`; silence is one of those two, never `done` |
 
 **A `stopped` that lands right after a `done` on the same key is an echo, not a new event.**
-`dispatcher.py:454` emits `stop` whenever a ticket moves to a `completed` or `canceled` state,
-and `_common.md` tells a worker receiving `stop` to write `status=stopped`. So moving a finished
-child's ticket to Done, while its session is still alive with its watcher running, fires `stop`
-at it and **overwrites the `done` you just verified with `stopped`** — and section 8's `stopped`
-row says "report and wait", which is an instruction to wait arriving at the exact moment you are
-trying to close.
+The watcher emits `stop` when a ticket reaches a terminal workflow state, and `_common.md` tells
+a worker receiving `stop` to write `status=stopped`. So moving a finished child's ticket to Done,
+while its session is still alive with its watcher running, used to **overwrite the `done` you
+just verified** — and this section's `stopped` row says "report and wait", which is an
+instruction to wait arriving at the exact moment you are trying to close.
 
-Two things keep this from stalling you:
+`Watcher.issue` now suppresses that: a ticket moving to a **completed** state while the ledger
+already reads `done` or `merged` emits `state_changed` instead of `stop`. Two things still apply:
 
-- **Order it.** Let the child set its own Done where its brief already does (`decide.md` step 6,
-  `implement.md` step 8). Do not move a child's ticket to a completed state yourself while its
-  session is alive.
-- **Read it correctly if it happens anyway.** A `stopped` whose ledger history shows a `done`
-  immediately before it, with no intervening instruction to stop, is the Done transition echoing
-  back. Treat it as `done`, say so in the closing comment, and do not wait on it.
+- **`canceled` is deliberately not covered.** Cancelling a ticket is an abandon instruction
+  whatever the ledger says, so it still fires `stop` at a `done` child — correctly. If you see
+  that, the ticket was cancelled, not completed, and it is a real event.
+- **Order it anyway.** Let the child set its own Done where its brief already does
+  (`decide.md` step 6, `implement.md` step 8). Do not move a child's ticket to a completed state
+  yourself while its session is alive — the suppression depends on the ledger having been
+  written first, and you do not control the order in which a live child writes it.
 
-This is a tooling defect rather than a protocol one — `stop` should not fire when the ledger
-already reads `done` — and it is written up in `PROPOSED-CHANGES-stack-v2.md`.
+**Read it correctly if it happens anyway.** A `stopped` whose ledger history shows a `done`
+immediately before it, with no intervening instruction to stop, is the Done transition echoing
+back — an older `dispatcher.py`, or a cancel. Treat it as `done`, say so in the closing comment,
+and do not wait on it.
 
 **`deferred` is not failure, and not waiting.** A child whose gate is a merge, a deploy, or a
 release cannot be reached from inside a run whose finish line is *in review*. Waiting for it
@@ -1458,15 +1519,31 @@ so. And **the next validation should be run against a parent this document has n
 someone who has not read its worked examples. One blind run found fourteen places where a careful
 reader had to supply a missing half; a second parent will find a different fourteen.
 
-## Before this file does anything: nothing routes to it yet
+## What this file replaced, and what it needs installed
 
-`implement.md` step 0 and `SKILL.md` both send a coordinator to `workers/stack.md`. Neither
-mentions this file, and `stack.md` still carries the finish line this document was written to
+`implement.md` step 0 and `SKILL.md` both route here. The file they used to name, `stack.md`,
+is now a **signpost** pointing at this one. It carried the finish line this document exists to
 replace — *"every child done, and the parent verified against its own acceptance criteria"* —
-which is the claim section 10 exists to stop anyone making. Until your principal swaps the files, every
-rule here is inert. That is deliberate: he reads the diff first. It is recorded here so that a
-coordinator finding this file and following it knows it is not yet the live path, and so that
-whoever does the swap knows `stack.md` is the only name anything points at.
+which is exactly the claim section 10 stops you making.
+
+It was nearly deleted instead, and the reason it was not is worth a line, because deletion is
+the obvious move: `update_content.rs` never removes files from `~/.locus/`, so deleting it here
+would have removed it from no machine that had already installed it — leaving a full copy of the
+superseded protocol in the directory you are reading, invisible to `git grep`. A signpost gets
+overwritten by the same sync that would have left a deletion unapplied. `stack.md` says the rest.
+
+Five things had to exist before any of this was executable, and all five ship with it:
+
+| Needed by | What |
+|---|---|
+| §0 | `D ledger children <KEY>` — the only reader of the `parent` field the protocol writes |
+| §3e | `traits.decide`, `linear.modes.decide`, and an `Agent - Decide` trigger label |
+| §3d-ii | an `Agent - Blocked` label, and `blocked` inside `dispatcher.py`'s `WORKING` set |
+| §8 | `D watch --as <name>`, so you and a resolver do not share one comment cursor |
+| §8 | `stop` suppressed at a ticket whose ledger already reads `done` |
+
+An instance whose `config.json` predates them has nine labels and no `decide`. That is a
+reconcile, not a missing feature: re-run `dispatcher.py init --instance <slug> --team-key KEY`.
 
 ## If you die
 
