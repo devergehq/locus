@@ -27,7 +27,7 @@ pub fn run(check_only: bool) -> Result<(), LocusError> {
         }
         UpdateStatus::UpdateAvailable { latest_version } => {
             output::info(&format!("Latest version: {}", latest_version));
-            
+
             if check_only {
                 output::info("Update available (use `locus upgrade` to install)");
                 return Ok(());
@@ -99,7 +99,7 @@ fn check_for_update() -> Result<UpdateStatus, LocusError> {
 fn version_compare(current: &str, latest: &str) -> Result<bool, LocusError> {
     // Simple semver comparison: current >= latest means up to date
     // For now, just do string comparison (will upgrade to semver crate if needed)
-    
+
     let parse_version = |v: &str| -> Result<(u32, u32, u32), LocusError> {
         let parts: Vec<&str> = v.split('.').collect();
         if parts.len() != 3 {
@@ -132,14 +132,14 @@ fn install_update(version: &str) -> Result<(), LocusError> {
     const BIN_NAME: &str = "locus";
 
     let target = self_update::get_target();
-    
+
     output::info(&format!("Downloading {} for {}", version, target));
 
     let update = self_update::backends::github::Update::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .bin_name(BIN_NAME)
-        .target(&target)
+        .target(target)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()
         .map_err(|e| LocusError::Upgrade {
@@ -151,11 +151,10 @@ fn install_update(version: &str) -> Result<(), LocusError> {
         let err_str = e.to_string();
         if err_str.contains("Permission denied") || err_str.contains("permission") {
             LocusError::Upgrade {
-                message: format!(
-                    "Permission denied while updating binary.\n\
+                message: "Permission denied while updating binary.\n\
                      The binary might be installed in a system directory.\n\
                      Try running with sudo: sudo locus upgrade"
-                ),
+                    .to_string(),
             }
         } else if err_str.contains("404") || err_str.contains("Not Found") {
             LocusError::Upgrade {

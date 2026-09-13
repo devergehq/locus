@@ -83,6 +83,15 @@ jobs:
       # truth for the version, rather than a second copy here that drifts the
       # moment the toml is bumped.
       #
+      # It reads it, but since rustup 1.28.0 (March 2025) it no longer INSTALLS
+      # it: `rustup show` alone exits 0 having done nothing, leaving the job on
+      # whatever Rust the runner image ships. The next step then asks that
+      # uninstalled toolchain for a target and fails with
+      # `toolchain '1.93-…' is not installed`, taking all five targets with it.
+      # `rustup show active-toolchain || rustup toolchain install` is the
+      # migration command from the 1.28.0 release notes. `shell: bash` because
+      # this matrix includes windows-latest, where `run:` defaults to pwsh.
+      #
       # The `rustup target add` step is load-bearing: rustup installs targets
       # PER TOOLCHAIN. Adding the target to a separately-installed `stable`
       # would leave the pinned toolchain with no std for x86_64-apple-darwin —
@@ -90,7 +99,8 @@ jobs:
       # macOS runner), and so the one that would fail. The other four are each
       # their runner's own host triple.
       - name: Install pinned Rust toolchain
-        run: rustup show
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}

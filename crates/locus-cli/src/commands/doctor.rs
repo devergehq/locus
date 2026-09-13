@@ -346,7 +346,7 @@ fn resolve_home() -> Result<PathBuf, LocusError> {
         })
 }
 
-fn check_directory(path: &PathBuf, label: &str, issues: &mut Vec<String>) {
+fn check_directory(path: &Path, label: &str, issues: &mut Vec<String>) {
     if path.exists() {
         output::success(&format!("{} ({})", label, path.display()));
     } else {
@@ -355,7 +355,7 @@ fn check_directory(path: &PathBuf, label: &str, issues: &mut Vec<String>) {
     }
 }
 
-fn check_config(path: &PathBuf, issues: &mut Vec<String>) -> Option<LocusConfig> {
+fn check_config(path: &Path, issues: &mut Vec<String>) -> Option<LocusConfig> {
     if !path.exists() {
         output::error(&format!("Config — not found ({})", path.display()));
         issues.push("locus.yaml not found. Run `locus init`.".into());
@@ -375,7 +375,7 @@ fn check_config(path: &PathBuf, issues: &mut Vec<String>) -> Option<LocusConfig>
     }
 }
 
-fn check_traits(home: &PathBuf, issues: &mut Vec<String>, warnings: &mut Vec<String>) {
+fn check_traits(home: &Path, issues: &mut Vec<String>, warnings: &mut Vec<String>) {
     let traits_path = home.join("agents").join("traits.yaml");
     match locus_core::Traits::from_file(&traits_path) {
         Ok(traits) => {

@@ -1,7 +1,7 @@
 //! `locus init` — scaffold a new Locus installation.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use locus_core::config::{
     AlgorithmConfig, InferenceConfig, LocusConfig, NotificationConfig, PathConfig, SkillConfig,
@@ -91,7 +91,7 @@ fn resolve_locus_home() -> Result<PathBuf, LocusError> {
 }
 
 /// Create the Locus directory structure and install content.
-fn create_directories(home: &PathBuf) -> Result<(), LocusError> {
+fn create_directories(home: &Path) -> Result<(), LocusError> {
     let dirs = [
         home.to_path_buf(),
         home.join("algorithm"),
@@ -130,7 +130,7 @@ fn create_directories(home: &PathBuf) -> Result<(), LocusError> {
 /// Install the bundled algorithm, skills, agents, and protocols.
 ///
 /// Content is embedded at compile time from the repo source directories.
-fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
+fn install_bundled_content(home: &Path) -> Result<(), LocusError> {
     for (relative_path, content) in crate::bundled::bundled_files() {
         if relative_path == "scripts/statusline.sh" {
             write_bundled_executable(home, &relative_path, content)?;
@@ -143,7 +143,7 @@ fn install_bundled_content(home: &PathBuf) -> Result<(), LocusError> {
 }
 
 /// Write a bundled file to the Locus home directory.
-fn write_bundled(home: &PathBuf, relative_path: &str, content: &str) -> Result<(), LocusError> {
+fn write_bundled(home: &Path, relative_path: &str, content: &str) -> Result<(), LocusError> {
     let target = home.join(relative_path);
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| LocusError::Filesystem {
@@ -159,7 +159,7 @@ fn write_bundled(home: &PathBuf, relative_path: &str, content: &str) -> Result<(
 
 /// Write a bundled file and chmod +x it (Unix only).
 fn write_bundled_executable(
-    home: &PathBuf,
+    home: &Path,
     relative_path: &str,
     content: &str,
 ) -> Result<(), LocusError> {
