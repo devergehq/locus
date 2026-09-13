@@ -785,10 +785,17 @@ def cmd_doctor(args) -> None:
 
 TEAM_Q = 'query($key: String!) { teams(filter: { key: { eq: $key } }) { nodes { id key name } } }'
 
+# `first` on both levels is deliberate and tuned: the outer default of 50 multiplied by a
+# 100-child inner page puts this over Linear's query-complexity ceiling (measured: 11,635
+# against a limit of 10,000, HTTP 400). Ten candidate groups is far more than a workspace
+# has by one name, and `hasNextPage` guards the child page rather than a bigger number.
 GROUPS_Q = """
 query($name: String!) {
-  issueLabels(filter: { name: { eq: $name } }) {
-    nodes { id name isGroup parent { id } team { id key } children(first: 50) { nodes { id name } } }
+  issueLabels(first: 10, filter: { name: { eq: $name } }) {
+    nodes {
+      id name isGroup parent { id } team { id key }
+      children(first: 50) { nodes { id name } pageInfo { hasNextPage } }
+    }
   }
 }"""
 
@@ -799,6 +806,25 @@ LABEL_COLOURS = {
 }
 
 
+def create_label(cfg: dict, fields: dict) -> dict:
+    """Create one label, and refuse to carry on if the mutation did not produce one.
+
+    `issueLabelCreate` can return `success: false` with a null `issueLabel`. Indexing straight
+    into it turns that into a TypeError three lines later, which reads as a bug in this script
+    rather than as a refused write.
+    """
+    result = linear(cfg, """
+        mutation($input: IssueLabelCreateInput!) {
+          issueLabelCreate(input: $input) { success issueLabel { id name } } }""",
+        {"input": fields})["issueLabelCreate"]
+    label = result.get("issueLabel")
+    if not result.get("success") or not label or not label.get("id"):
+        raise SystemExit(f"Linear refused to create the label {fields.get('name')!r}; "
+                         f"nothing further was written. Re-run once the cause is fixed — "
+                         f"labels are matched by name, so anything already created is reused.")
+    return label
+
+
 def cmd_init(args) -> None:
     """Create the Agent label group and its labels, and write config.json.
 
@@ -806,8 +832,11 @@ def cmd_init(args) -> None:
     minted by the workspace, and without them nothing in this program can claim a ticket.
     That is the whole reason this subcommand exists.
 
-    Safe to re-run. Labels are matched by name, so a second run against a workspace that
-    already has them creates nothing and rewrites the same ids.
+    Safe to re-run, including after a partial failure. Labels are matched by name against the
+    workspace rather than against config.json, so a run that created the group and four children
+    before dying leaves those four discoverable: the next run reuses them and creates the rest.
+    Linear is the source of truth for ids here, which is what makes the interrupted case benign
+    — config.json is only ever written once every id is in hand.
     """
     dest = DISPATCHER_HOME / args.instance
     config_path = dest / "config.json"
@@ -854,17 +883,17 @@ def cmd_init(args) -> None:
         group = {"id": "<new-group-id>", "children": {"nodes": []}}
         created.append(args.label_group)
     else:
-        group = linear(cfg, """
-            mutation($input: IssueLabelCreateInput!) {
-              issueLabelCreate(input: $input) { success issueLabel { id name } } }""",
-            {"input": {"name": args.label_group, "isGroup": True, "teamId": team["id"],
-                       "description": "Agent dispatch states. Managed by the Dispatcher."}}
-        )["issueLabelCreate"]["issueLabel"]
+        group = create_label(cfg, {"name": args.label_group, "isGroup": True, "teamId": team["id"],
+                                   "description": "Agent dispatch states. Managed by the Dispatcher."})
         group["children"] = {"nodes": []}
         created.append(args.label_group)
 
     cfg["linear"]["label_group_id"] = group["id"]
-    by_name = {c["name"]: c["id"] for c in group.get("children", {}).get("nodes", [])}
+    children = group.get("children") or {"nodes": []}
+    if (children.get("pageInfo") or {}).get("hasNextPage"):
+        raise SystemExit(f"the {args.label_group!r} group has more than 100 children; this would "
+                         f"re-create labels it simply could not see. Paginate before re-running.")
+    by_name = {c["name"]: c["id"] for c in children.get("nodes", [])}
 
     for key, spec in cfg["linear"]["labels"].items():
         name = spec["name"]
@@ -876,12 +905,8 @@ def cmd_init(args) -> None:
             spec["id"] = f"<new-{key}-id>"
             created.append(name)
             continue
-        label = linear(cfg, """
-            mutation($input: IssueLabelCreateInput!) {
-              issueLabelCreate(input: $input) { success issueLabel { id name } } }""",
-            {"input": {"name": name, "parentId": group["id"], "teamId": team["id"],
-                       "color": LABEL_COLOURS.get(key, "#95a2b3")}}
-        )["issueLabelCreate"]["issueLabel"]
+        label = create_label(cfg, {"name": name, "parentId": group["id"], "teamId": team["id"],
+                                   "color": LABEL_COLOURS.get(key, "#95a2b3")})
         spec["id"] = label["id"]
         created.append(name)
 
