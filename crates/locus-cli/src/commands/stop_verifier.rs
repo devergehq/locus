@@ -108,7 +108,10 @@ fn truthy(value: Option<&serde_json::Value>) -> bool {
 /// configured data directory, exposed to hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`
 /// for each `userConfig` key. Then the plugin's own data directory, which
 /// always exists. If none resolve we simply do not log — enforcement still works.
-fn log_dir() -> Option<PathBuf> {
+///
+/// `pub(crate)` so the delegation routing log lands in the same directory as the
+/// activation log rather than resolving it a second time and drifting.
+pub(crate) fn log_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("LOCUS_ACTIVATION_LOG_DIR") {
         if !dir.is_empty() {
             return Some(PathBuf::from(shellexpand_home(&dir)));

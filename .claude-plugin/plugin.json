@@ -6,7 +6,7 @@
     "name": "Deverge",
     "email": "accounts@deverge.com.au"
   },
-  "homepage": "https://github.com/deverge/locus",
+  "homepage": "https://github.com/devergehq/locus",
   "license": "MIT",
   "keywords": [
     "algorithm",
@@ -14,26 +14,12 @@
     "workflow",
     "delegation"
   ],
-  "mcpServers": {
-    "allele": {
-      "command": "${user_config.alleleBinary}",
-      "args": [
-        "--mcp-serve"
-      ]
-    }
-  },
   "userConfig": {
     "dataDir": {
       "type": "directory",
       "title": "Locus data directory",
       "description": "Where Locus keeps learnings, work artifacts, checkpoints and the activation log. Left unset, the plugin uses its own data directory.",
       "default": "~/.locus/data"
-    },
-    "alleleBinary": {
-      "type": "string",
-      "title": "allele binary",
-      "description": "Path to the allele binary that serves the delegation MCP. Leave as `allele` to resolve it from PATH.",
-      "default": "allele"
     }
   }
 }

@@ -44,6 +44,7 @@ pub mod events;
 pub mod memory;
 pub mod platform;
 pub mod skill;
+pub mod vehicles;
 
 // Re-export primary types at crate root for convenience.
 pub use adapter::PlatformAdapter;
@@ -57,3 +58,4 @@ pub use delegation::{
 pub use error::LocusError;
 pub use events::{EventKind, HookEvent, LifecycleEvent};
 pub use platform::Platform;
+pub use vehicles::{Vehicle, VehicleAvailability, NO_VEHICLE_ESCAPE};
