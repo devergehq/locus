@@ -343,10 +343,23 @@ fn route_delegation(
     }
 
     let tool_input = event.get("tool_input");
-    let prompt_hint = tool_input
-        .and_then(|v| v.get("prompt").or_else(|| v.get("description")))
-        .and_then(|v| v.as_str())
-        .unwrap_or("<bounded task>");
+    let field = |name: &str| -> &str {
+        tool_input
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    };
+    let prompt = field("prompt");
+    let description = field("description");
+    let prompt_hint = if prompt.is_empty() {
+        if description.is_empty() {
+            "<bounded task>"
+        } else {
+            description
+        }
+    } else {
+        prompt
+    };
 
     // The escape is checked before the probe, and that ordering is the point.
     //
@@ -357,16 +370,27 @@ fn route_delegation(
     // evidence, so the gate must accept being contradicted or it can be
     // permanently, unfalsifiably wrong. Running this first also means the
     // release survives a probe that is broken rather than merely mistaken.
-    if locus_core::vehicles::carries_escape(prompt_hint) {
+    //
+    // Both fields are checked independently, and that is not defensive
+    // padding. Claude Code's Task tool sends `prompt` *and* `description`, so
+    // reading only the first non-empty one would silently ignore a marker
+    // placed in the other — and the denial text tells the caller either will
+    // do. A caller following the instruction literally would be re-denied with
+    // the identical message, forever, at precisely the point the design
+    // promises one round trip.
+    if let Some(asserted) = [description, prompt]
+        .into_iter()
+        .find(|f| locus_core::vehicles::asserts_escape(f))
+    {
+        let stated = locus_core::vehicles::escape_reason(asserted);
+        let reason = if stated.is_empty() {
+            "caller asserted no sanctioned vehicle is usable, giving no reason".to_string()
+        } else {
+            format!("caller asserted no sanctioned vehicle is usable: {}", stated)
+        };
         return Routing::PermitDegraded {
             message: escape_acknowledgement(),
-            record: routing_record(
-                event,
-                tool_name,
-                probe(),
-                true,
-                "caller asserted no sanctioned vehicle is usable from this session",
-            ),
+            record: routing_record(event, tool_name, probe(), true, &reason),
         };
     }
 
@@ -527,8 +551,10 @@ fn native_delegation_denial(
              If the `allele_*` tools are not in your toolset, this session is not \
              connected to the running app. That is a real condition and it is not \
              something you can fix from here: say so, then re-issue this exact call \
-             with `{escape}` in the prompt or description. That marker permits the \
-             call and records the degradation.",
+             with the description STARTING with `{escape}` followed by your reason. \
+             It must be the first thing in the field — a mention anywhere else is \
+             read as a quotation, not an assertion. That permits the call and \
+             records both the assertion and your reason.",
             socket = locus_core::vehicles::allele_socket_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "~/.allele/control.sock".to_string()),
@@ -545,8 +571,9 @@ fn native_delegation_denial(
              locus delegate run --backend opencode --task-kind {task_kind} \
              --mode native --dir . --prompt \"{prompt}\" --output json\n\n\
              If that command cannot authenticate or the backend is unavailable, \
-             re-issue this Task call with `{escape}` in the prompt or description. \
-             That marker permits the call and records the degradation.",
+             re-issue this call with the description STARTING with `{escape}` \
+             followed by your reason — it must be the first thing in the field. \
+             That permits the call and records both the assertion and your reason.",
             socket = locus_core::vehicles::allele_socket_path()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "~/.allele/control.sock".to_string()),
@@ -1579,7 +1606,7 @@ mod tests {
         let event = serde_json::json!({
             "tool_name": "Task",
             "tool_input": {
-                "description": "no allele_* tools in this session, locus:no-allele"
+                "description": "locus:no-allele no allele_* tools in this session"
             }
         });
 
@@ -1592,9 +1619,72 @@ mod tests {
                     "the record must preserve that the machine looked fine — that \
                      disagreement is the interesting datum"
                 );
+                assert!(
+                    record.reason.contains("no allele_* tools in this session"),
+                    "the caller's stated reason is what separates a genuine escape \
+                     from one typed to get past an inconvenient denial: {}",
+                    record.reason
+                );
             }
             _ => panic!("the escape marker must release the denial"),
         }
+    }
+
+    /// Claude Code's Task tool sends `prompt` AND `description`. Reading only
+    /// the first non-empty one meant a marker in `description` was ignored
+    /// whenever a prompt existed — so a caller following the denial's own
+    /// instruction was re-denied with the identical text, forever, at exactly
+    /// the point the design promises one round trip.
+    #[test]
+    fn the_escape_is_honoured_in_description_even_when_prompt_is_present() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "go and research the thing",
+                "description": "locus:no-allele the tools are absent"
+            }
+        });
+
+        assert!(
+            matches!(route(&event, true, true), Routing::PermitDegraded { .. }),
+            "a marker in description must be seen even when prompt is populated"
+        );
+    }
+
+    #[test]
+    fn the_escape_is_honoured_in_prompt_too() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "locus:no-allele nothing reachable from here",
+                "description": "research something"
+            }
+        });
+
+        assert!(matches!(
+            route(&event, true, true),
+            Routing::PermitDegraded { .. }
+        ));
+    }
+
+    /// The marker's literal text ships in the Algorithm spec, the generated
+    /// skill and the README. A task that quotes any of them must not silently
+    /// switch the gate off.
+    #[test]
+    fn quoting_the_marker_does_not_release_the_denial() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "Implement the routing section. It says to re-issue with \
+                           `locus:no-allele` leading the description.",
+                "description": "implement routing"
+            }
+        });
+
+        assert!(
+            matches!(route(&event, true, true), Routing::Deny(_)),
+            "a quotation is not an assertion"
+        );
     }
 
     #[test]

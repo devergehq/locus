@@ -43,6 +43,11 @@
 //! reported reachable. That is correct. A full slot cap is backpressure, not
 //! absence, and it must make a caller wait rather than unlock a less observable
 //! vehicle.
+//!
+//! Dispatch slots and the socket's accept backlog are different things, and the
+//! sentence above is about the first. An app wedged badly enough to stop
+//! calling `accept(2)` will read unreachable, because at that point it is not
+//! answering — which is the honest answer, not a mis-measurement.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -60,16 +65,18 @@ pub const ALLELE_SOCKET_ENV: &str = "LOCUS_ALLELE_SOCKET";
 /// that cannot be contradicted by better evidence is a gate that can be
 /// permanently wrong. Spelled in the same shape as the Stop gate's
 /// `locus: skip`, and it lands in the transcript, so using it is a recorded
-/// act rather than a silent one.
+/// act rather than a silent one. It must be *anchored* at the start of the
+/// field — see [`asserts_escape`] for why a substring match would be wrong.
 pub const NO_VEHICLE_ESCAPE: &str = "locus:no-allele";
 
 /// Ceiling on the reachability probe.
 ///
 /// `connect(2)` to a unix socket normally settles immediately — accepted, or
-/// `ECONNREFUSED` against a stale path. The exception is a listener whose
-/// accept backlog is full, which blocks on Linux. This probe runs on every
-/// `PreToolUse`, so an unbounded call there would stall every tool call in the
-/// session behind a busy app.
+/// `ECONNREFUSED` against a stale path or an exhausted accept backlog. The two
+/// platforms differ on that last case and the difference is why this exists:
+/// darwin refuses immediately, Linux blocks. This probe runs on every
+/// `PreToolUse`, so an unbounded call on Linux would stall every tool call in
+/// the session behind one wedged listener.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// How a unit of work leaves the orchestrator session.
@@ -398,9 +405,52 @@ pub fn opencode_auth_path() -> Option<PathBuf> {
         .or_else(|| candidates.into_iter().next())
 }
 
-/// True when text carries the escape marker that releases the denial.
-pub fn carries_escape(text: &str) -> bool {
-    text.contains(NO_VEHICLE_ESCAPE)
+/// True when a field *asserts* the escape, rather than merely mentioning it.
+///
+/// The marker must be the first thing in the field. A substring match would
+/// have been wrong the moment this marker was documented: the literal now
+/// appears in `algorithm/v2.0.md`, the generated `SKILL.md`, the README and
+/// this file, so any task whose prompt quotes one of those — "implement the
+/// routing section below", a pasted hook transcript, a PR body, a fetched page
+/// — would release the gate without anyone intending it. The gate's only
+/// release condition cannot be a string that arrives routinely inside content
+/// the caller did not write.
+///
+/// Anchoring is what separates the two. A mention appears mid-text; an
+/// assertion is deliberately placed at the front of the field. Trailing text is
+/// allowed and encouraged — the caller should say *why* right after it, and
+/// that reason is what the routing log keeps.
+pub fn asserts_escape(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix(NO_VEHICLE_ESCAPE) else {
+        return false;
+    };
+    // `locus:no-allele-ish` is not the marker. The next character, if any, must
+    // be a boundary.
+    rest.chars()
+        .next()
+        .is_none_or(|c| !c.is_alphanumeric() && c != '-' && c != '_')
+}
+
+/// The caller's stated reason: whatever follows the marker.
+///
+/// Kept so the routing log can distinguish a session that genuinely has no
+/// `allele_*` tools from one that learned the marker gets it past an
+/// inconvenient denial. Both write `escaped: true`; only one of them explains
+/// itself.
+pub fn escape_reason(text: &str) -> String {
+    text.trim_start()
+        .strip_prefix(NO_VEHICLE_ESCAPE)
+        .unwrap_or("")
+        // Em- and en-dashes as well as the ASCII hyphen: the denial's own
+        // example writes "locus:no-allele — reason", and a leading dash in the
+        // recorded reason is noise in every reader of this log.
+        .trim_matches(|c: char| {
+            c.is_whitespace() || matches!(c, ':' | '-' | '.' | '\u{2014}' | '\u{2013}')
+        })
+        .chars()
+        .take(300)
+        .collect()
 }
 
 #[cfg(test)]
@@ -577,10 +627,43 @@ mod tests {
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
-    fn escape_marker_is_recognised_inside_surrounding_prose() {
-        assert!(carries_escape(
-            "no allele_* tools in this session, locus:no-allele, proceeding"
+    fn an_anchored_marker_asserts_the_escape() {
+        assert!(asserts_escape("locus:no-allele"));
+        assert!(asserts_escape(
+            "locus:no-allele the allele_* tools are absent from this session"
         ));
-        assert!(!carries_escape("a perfectly ordinary research task"));
+        assert!(asserts_escape("  locus:no-allele — no tools here"));
+    }
+
+    /// The reason anchoring exists. This marker's literal text now lives in the
+    /// Algorithm spec, the generated skill and the README, so a task that
+    /// merely quotes any of them must not release the gate.
+    #[test]
+    fn a_merely_quoted_marker_does_not_assert_the_escape() {
+        assert!(!asserts_escape(
+            "implement the routing section: re-issue with `locus:no-allele` in the prompt"
+        ));
+        assert!(!asserts_escape(
+            "summarise this transcript, which contains locus:no-allele somewhere"
+        ));
+        assert!(!asserts_escape("a perfectly ordinary research task"));
+    }
+
+    #[test]
+    fn a_marker_with_a_suffix_is_a_different_string() {
+        assert!(!asserts_escape("locus:no-allele-ish whatever"));
+        assert!(!asserts_escape("locus:no-alleles"));
+    }
+
+    /// Both branches of the log write `escaped: true`; only one of them
+    /// explains itself, and the reason is how they are told apart later.
+    #[test]
+    fn the_escape_reason_is_whatever_follows_the_marker() {
+        assert_eq!(
+            escape_reason("locus:no-allele — no allele_* tools in this session"),
+            "no allele_* tools in this session"
+        );
+        assert_eq!(escape_reason("locus:no-allele"), "");
+        assert!(escape_reason(&format!("locus:no-allele {}", "x".repeat(500))).len() <= 300);
     }
 }

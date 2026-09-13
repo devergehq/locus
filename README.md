@@ -269,8 +269,10 @@ One thing the hook cannot see: whether *your session* has the `allele_*` tools.
 It probes the machine, and a session started before the app — or one whose MCP
 registration failed — has no Allele tools while the socket is perfectly healthy.
 When you find yourself on the wrong side of that disagreement, say so and
-re-issue the call with `locus:no-allele` in the prompt. That releases the denial
-and records it, so the chain always terminates.
+re-issue the call with the description *starting with* `locus:no-allele` and your
+reason after it. It must lead the field — the marker is documented here and in the
+Algorithm spec, so a mention anywhere else is a quotation, not an assertion. That
+releases the denial and records it, so the chain always terminates.
 
 Degraded delegations append a line to `delegation-YYYY-MM.jsonl` next to the
 activation log, so "how often did this actually happen, and was Allele up at the
