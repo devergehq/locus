@@ -143,8 +143,7 @@ pub enum EffortLevel {
 }
 
 /// Skill system configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SkillConfig {
     /// Skills to always surface (by slug). These appear in the system prompt.
     #[serde(default)]

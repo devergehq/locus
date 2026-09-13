@@ -1623,11 +1623,12 @@ mod tests {
         let script_path = request.artifact_dir.join("fake-opencode.sh");
         fs::create_dir_all(&request.artifact_dir).unwrap();
         let mut script = fs::File::create(&script_path).unwrap();
-        write!(
-            script,
-            "#!/bin/sh\ncat <<'EOF'\n{{\"type\":\"error\",\"timestamp\":1,\"sessionID\":\"s\",\"error\":{{\"name\":\"X\",\"data\":{{\"message\":\"Model not found: openai/gpt-5.5.\"}}}}}}\nEOF\nexit 0\n",
-        )
-        .unwrap();
+        // The envelope is kept as a raw string and written separately: inlined
+        // into the format literal it needs `{{`/`}}` escaping on every brace,
+        // which is what `clippy --fix` produced and is unreadable for a JSON
+        // fixture. `write_literal` does not fire when the value is a binding.
+        let envelope = r#"{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"X","data":{"message":"Model not found: openai/gpt-5.5."}}}"#;
+        write!(script, "#!/bin/sh\ncat <<'EOF'\n{envelope}\nEOF\nexit 0\n").unwrap();
         drop(script);
         let _ = std::process::Command::new("chmod")
             .args(["+x", script_path.to_str().unwrap()])

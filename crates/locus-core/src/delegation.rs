@@ -65,9 +65,8 @@ pub enum DelegationMode {
 ///
 /// Orthogonal to `DelegationMode` (read-only vs write-isolated). A request
 /// can be `(Native, ReadOnly)` or in future `(Algorithmic, WriteIsolated)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum ExecutionMode {
     /// Bare session — no Algorithm, no Mode Classification, no skills load.
     #[default]
