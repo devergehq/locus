@@ -117,20 +117,58 @@ locus upgrade --check  # just report whether a newer version exists
 `locus upgrade` pulls the correct prebuilt asset for your platform from the
 GitHub Releases above and replaces the running binary.
 
-### As a Claude Code plugin (preview)
+### As a Claude Code plugin
 
-Locus also ships as a Claude Code plugin. The plugin installs, disables and
-uninstalls like any other — it never edits `~/.claude/settings.json`, and
-sharing it with someone else does not involve talking them through hand-edits
-to their own `CLAUDE.md`.
+Locus also ships as a Claude Code plugin. Two commands, no clone and no build:
+
+```sh
+claude plugin marketplace add devergehq/locus
+claude plugin install locus@locus
+```
+
+That is the whole installation. It persists across sessions, and it comes back
+out again just as cleanly:
+
+```sh
+claude plugin disable locus      # keep it installed, stop loading it
+claude plugin uninstall locus    # remove it entirely
+```
+
+The plugin installs, disables and uninstalls like any other — it never edits
+`~/.claude/settings.json`, and sharing it with someone else does not involve
+talking them through hand-edits to their own `CLAUDE.md`.
+
+The plugin carries the skills, agents and hooks. It does **not** carry the
+`locus` binary, which is per-platform and built rather than vendored — install
+that separately (see [Installation](#installation)) and the hooks will find it
+on `PATH`. Without it they stay silent about everything except the missing
+binary, which they report loudly and without ever blocking a session.
 
 The two install paths **coexist**. Nothing about the binary install changes;
 the plugin is additive, so you can load it alongside and compare.
+
+<details>
+<summary>Loading it from a working tree instead (contributors)</summary>
+
+`--plugin-dir` is a per-invocation flag for developing the plugin, not a way to
+install it:
 
 ```sh
 ./scripts/build-plugin.sh            # assemble dist/plugin/
 claude --plugin-dir dist/plugin      # load it for one session
 ```
+
+To exercise the real marketplace path against uncommitted work, point
+`marketplace add` at the repo root — `.claude-plugin/marketplace.json` sources
+the plugin from `./`, so the same manifest serves a local path and a GitHub
+clone:
+
+```sh
+claude plugin marketplace add /path/to/locus
+claude plugin install locus@locus
+```
+
+</details>
 
 What the plugin does differently:
 
