@@ -9,6 +9,37 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [0.3.1] — 2026-09-13
+
+Two skills, and the audit that found the first of them was teaching agents to
+reproduce a bug the runtime had already fixed.
+
+### Added
+
+- **The Dispatcher ships as a skill** (`91b6ee2`, DEV-627). It watches a Linear
+  workspace for label triggers and GitHub for review requests, and turns each
+  into a real worker session with its own workspace and branch. Code and config
+  are separate: the skill is identical everywhere, while each repo gets its own
+  instance directory holding config, ledger and poll state, so one machine can
+  run a dispatcher per repo. `dispatcher init` creates the label group a
+  workspace needs, because the label ids are the one config value nobody can
+  type by hand.
+- **`review-craft`** (`91b6ee2`). The review vocabulary, lenses, house style and
+  linter, extracted because three separate modes already reached for them. It
+  hands over a method and performs no review — deliberately noun-shaped so it
+  cannot be confused with a skill that acts.
+
+### Fixed
+
+- **Six skills instructed the dispatch race they caused** (`67ad5fa`, DEV-626).
+  `red-team`, `council`, `research`, `delegation` and `iterative-depth` all told
+  the orchestrator to batch session creates into one message, which is what
+  reproduced a session-id claim race. The rule now has one canonical home in the
+  Algorithm's Dispatch section and the skills defer to it rather than restating
+  it — restated rules drift, and this is what drift looks like. The same audit
+  found no skill anywhere mentioned reclaiming its sessions, and a research
+  workflow budgeting 30–60 concurrent sessions against a documented cap of 20.
+
 ## [0.3.0] — 2026-09-13
 
 Two breaking changes shipped on master under a patch version. This release is
