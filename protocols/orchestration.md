@@ -66,42 +66,28 @@ way. Convergence is evidence; it is not proof.
 independent check on its own diagnosis. Keep the judgement and the artifact in different
 sessions.
 
-## The lifecycle
+## The lifecycle, depth, and the cap
 
-```
-1. compose   locus agent compose --traits "..." --role "..." --task "..."
-2. dispatch  allele_sessions_create(project, name, prompt)   -> session_id, name
-3. address   ListAgents -> "name [ref]"        fresh, every send; refs rotate
-4. converse  SendMessage(to: "name [ref]", ...)
-5. check     allele_sessions_status(session_id) -> state == "response_ready"
-6. reclaim   allele_sessions_discard(session_id)
-```
+**Canonical text: the Dispatch section of `algorithm/v2.0.md`**, shipped as the
+`locus-algorithm` skill. The lifecycle, addressing, status semantics, the vehicle table,
+depth 3, the global cap of 20 and the reclamation obligation are all specified there, and
+are deliberately not restated here. Details of addressing, state and reporting live in
+`messaging.md`.
 
-Details of addressing, state and reporting live in `messaging.md`. The two rules worth
-repeating here because getting them wrong is silent:
+This section used to carry its own copy. That copy went stale — it still banned native
+subagents outright long after the Algorithm replaced the ban with a routing table — while
+reading as authoritative. A second copy of a rule is a second rule.
 
-- **`sessions_create` returns a `session_id`, never an address.** Re-resolve at every send.
-- **Never conclude a worker is finished from `ListAgents`.** It cannot distinguish
-  *finished* from *blocked on a permission prompt*.
+Two of the canonical rules are named here only because this document's "when to dispatch"
+advice is unusable without them:
 
-## Depth and breadth
-
-- **Depth 3.** Depth 0 is human-started. It dispatches workers at depth 1, which may
-  dispatch specialists at depth 2. Depth 3 does not dispatch. Past that the original intent
-  is too diluted through rounds of telephone to be worth the slot.
-- **Global cap 20** concurrent dispatched sessions, aggregate across all dispatchers. Per-
-  dispatcher caps do not compose: twenty dispatchers each under a limit of twenty is four
-  hundred sessions, every one individually compliant.
-- Both are derived by allele from the creating session's record. **Depth is never
-  caller-supplied** — anything a session can assert about its own depth is something it can
-  be wrong about, and the sessions asserting it are the ones running the rule that causes
-  the recursion.
-
-**Discard is part of the job, not cleanup.** `allele_sessions_discard` commits uncommitted
-work and archives the branch before removing the workspace, so reclaiming a slot never
-loses anything. A dispatched session left running holds a slot and becomes invisible work
-nobody owns. Every session you dispatch is either discarded or explicitly still working
-with a stated reason.
+- **One `allele_sessions_create` at a time**, its result read before the next is issued.
+  Never batch creates into a single assistant message. Workers run concurrently either way;
+  only the claims queue. The incident that produced this rule, and the condition under which
+  it may be retired, are recorded in the Algorithm.
+- **Every session dispatched is either discarded with `allele_sessions_discard` or recorded
+  as still working with a reason.** Discard commits uncommitted work and archives the branch
+  before removing the workspace, so reclaiming a slot never loses anything.
 
 ## When allele is not available
 
@@ -110,29 +96,17 @@ present, **allele is not running and this session is outside it** — a plain te
 `claude.ai/code`, CI, or allele simply closed. That is a normal way to run Locus, not an
 error.
 
-**Fall back to `locus delegate run`, and say which mode you are in.**
+**Route down the Algorithm's vehicle table and announce the row you landed on.** The tiers,
+what each costs, and why a native subagent is permitted as a last resort rather than
+forbidden, are canonical there. Declare the degradation in the shape
+`protocols/degradation.md` requires, rather than silently producing lesser work.
 
-```bash
-locus agent compose --traits "..." --role "..." --task "..."   # unchanged
-locus delegate run --backend opencode --task-kind general --mode native \
-  --dir . --prompt "<composed prompt>" --output json
-```
+What matters here is the judgement the table cannot make for you: decide whether the work
+warranted delegation *before* you try to dispatch it. "It did not need delegating after all",
+concluded after the vehicles failed, is marking your own homework.
 
-You lose the session — no workspace, no branch, no conversation, and it returns an envelope
-rather than replying. You keep delegation, which is the thing that matters. Say so once, in
-the shape `protocols/degradation.md` requires, rather than silently producing lesser work:
-
-```
-Dispatch normally creates real allele sessions. allele is not available here,
-so this is running through `locus delegate run` instead: read-only, no branch,
-and no way to ask the worker a follow-up question.
-```
-
-**Do not fall back to native Task/Agent subagents**, and do not abandon delegation. The
-guardrail names the mechanism; it is not a reason to do the work inline.
-
-Note `locus delegate run` is **not** a security boundary — see the warning in
-`orchestration.md`. It is the standalone path, not the safe one.
+Note `locus delegate run` is **not** a security boundary — see the warning below. It is the
+standalone path, not the safe one.
 
 ## A note on `locus delegate run`
 

@@ -26,11 +26,15 @@ Craft one focused query per methodology — each should be tuned to that methodo
 - Multi-angle query: broad enough to admit orthogonal decomposition ("how does X affect Y across technical / economic / social dimensions")
 - Investigative query: specific enough to follow leads ("who is actually using X in production and what do they report")
 
-### Step 2 — Launch three delegations in parallel via `allele_sessions_create`
+### Step 2 — Create three researchers, one at a time
 
-**The skill orchestrates; OpenCode does the research.** Dispatch three `allele_sessions_create` Bash tool calls in a single assistant message — the platform tracks them as parallel tool uses and they execute concurrently.
+**The skill orchestrates; dispatched allele sessions do the research.** Issue the three
+`allele_sessions_create` calls **one at a time**, reading each returned `session_id` before
+composing the next. The three researchers then run concurrently — only the creates queue, at
+about a second each. The rule and its reason live in the Algorithm's **Dispatch** section;
+`SKILL.md`'s "Dispatch discipline" points at it.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the raw research happens out-of-context and only the report comes back.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 For each of the three methodologies, build the prompt with `locus agent compose`, then pass it to `allele_sessions_create`. The trait bundles below match the corresponding `agents/*-researcher.md` files.
 
@@ -79,13 +83,13 @@ allele_sessions_create(
 )
 ```
 
-**Dispatch convention:** put all three Bash calls in the *same assistant message* so the platform parallelises them. Each worker replies with a report containing `summary`, `findings`, `evidence`, `risks`, `files_referenced`, and `raw_output_path`.
+**Dispatch convention:** three separate `allele_sessions_create` calls, issued one after the other, each `session_id` confirmed before the next. Each worker replies with a report containing `summary`, `findings`, `evidence`, `risks`, `files_referenced`, and `raw_output_path`. Reclaim each with `allele_sessions_discard(session_id)` once its report has been read into the synthesis.
 
 **Why `--task-kind research`:** routes to the model resolved from `delegation.defaults.opencode.research.model` in `~/.locus/locus.yaml` (currently `openai/gpt-5.5`). No need to pass `--model` unless you want to override the default for this run.
 
 **Why `--dir .`:** research is workspace-agnostic; the working directory is recorded in the artifact for citation context. Use the orchestrator's CWD by default.
 
-**Failure handling:** if 2 of 3 succeed, synthesise from the 2 and flag the missing methodology in the `Gaps` section of the output. If 0 of 3 succeed (rate limits, network outage), report the failure to the user and offer to retry sequentially (`Workflows/Quick.md` mode times three).
+**Failure handling:** if 2 of 3 succeed, synthesise from the 2 and flag the missing methodology in the `Gaps` section of the output. If 0 of 3 succeed (rate limits, network outage), report the failure to the user. `allele_sessions_discard` the failed sessions as well — a session that produced nothing still holds a slot against the global cap.
 
 ### Step 3 — Synthesise
 
@@ -97,9 +101,12 @@ Combine the three perspectives:
 
 ### Step 4 — Adversarial claim verification (mandatory)
 
-Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the synthesised findings, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the synthesised findings, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`, **one create at a time**.
 
-For Standard mode, expect 5-10 claims from the three-researcher synthesis. Dispatch all votes (15-30 delegates) in a single message for parallel execution. Wall-clock cost: ~15-30s additional.
+For Standard mode, expect 5-10 claims, so 15-30 verifier sessions. That is more than the
+global cap of twenty allows in flight at once, so run them in waves of at most 6 live
+sessions, reclaiming each wave before the next. Discard the three researcher sessions before
+verification starts. Wall-clock cost: ~60-100s additional.
 
 Claims that survive verification go into "Verified Findings." Claims that are killed go into "Refuted Claims" with the verifier's evidence. Both sections are mandatory in the output.
 
@@ -146,4 +153,5 @@ Apply `UrlVerificationProtocol.md` — verify every URL in surviving claims befo
 
 ## Speed target
 
-~30-60 seconds for delegated parallel execution (15-30s research + 15-30s verification).
+~90-160 seconds (15-30s research with the three running concurrently, +~3s of sequential
+creates, then 60-100s of wave-based verification). Verification, not research, dominates.

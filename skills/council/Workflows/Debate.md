@@ -24,7 +24,10 @@ Output the debate header per `OutputFormat.md`:
 
 ### Step 2 — Round 1: Initial Positions
 
-Dispatch N parallel `allele_sessions_create` calls (one per member) in a single assistant message. Each member's prompt follows the Round 1 template in `RoundStructure.md` and uses the canonical dispatch idiom documented there:
+Create the members here — **one `allele_sessions_create` at a time**, reading each returned
+`session_id` before composing the next. This is the only step that creates sessions; Rounds
+2 and 3 talk to these same ones. Each member's prompt follows the Round 1 template in
+`RoundStructure.md` and uses the canonical dispatch idiom documented there:
 
 **1 — compose the worker's prompt.** Run this and read its output:
 
@@ -35,7 +38,7 @@ locus agent compose \
   --task "<Round 1 task text from RoundStructure.md, with topic substituted>"
 ```
 
-**2 — dispatch it.** Pass the composed text as `prompt`:
+**2 — dispatch it.** Pass the composed text as `prompt`. One call, on its own:
 
 ```
 allele_sessions_create(
@@ -45,7 +48,7 @@ allele_sessions_create(
 )
 ```
 
-**DO NOT use the platform Task tool for this step** — see `RoundStructure.md`'s "Dispatch idiom" section for the rationale.
+Prefer `allele_sessions_create` hard over a native Task subagent — see `RoundStructure.md`'s "Dispatch idiom" section for the rationale, and the Algorithm's vehicle table for what to do when it is not reachable.
 
 Collect responses (each member's text from the report's `summary` section). Display as:
 
@@ -67,7 +70,9 @@ Collect responses (each member's text from the report's `summary` section). Disp
 
 ### Step 3 — Round 2: Responses & Challenges
 
-Dispatch N parallel `allele_sessions_create` calls, each `--task` text including the full Round 1 transcript per the Round 2 template in `RoundStructure.md`. Same dispatch idiom as Step 2 — only the `--task` text changes.
+**No new sessions.** `SendMessage` each member the full Round 1 transcript plus the Round 2
+template from `RoundStructure.md`. Re-resolve each address through `ListAgents` before every
+send, and use `allele_sessions_status` — not `ListAgents` — to tell finished from blocked.
 
 Collect and display:
 
@@ -82,7 +87,8 @@ Collect and display:
 
 ### Step 4 — Round 3: Synthesis
 
-Dispatch N parallel `allele_sessions_create` calls with the full Rounds 1+2 transcripts inlined per the Round 3 template in `RoundStructure.md`. Same dispatch idiom as Step 2.
+**Still no new sessions.** `SendMessage` each member the full Rounds 1+2 transcripts plus
+the Round 3 template from `RoundStructure.md`.
 
 Collect and display:
 
@@ -95,9 +101,11 @@ Collect and display:
 <repeat for each member>
 ```
 
-### Step 5 — Council Synthesis
+### Step 5 — Council Synthesis and reclamation
 
-The invoking agent writes the synthesis per `OutputFormat.md`:
+`allele_sessions_discard(session_id)` every member session — the debate is over and each one
+is holding a slot against the global cap of twenty. Then the invoking agent writes the
+synthesis per `OutputFormat.md`:
 
 ```markdown
 ### Council Synthesis
@@ -117,10 +125,11 @@ The invoking agent writes the synthesis per `OutputFormat.md`:
 
 ## Budget
 
-- Round 1: ~10-20s parallel
-- Round 2: ~10-20s parallel
-- Round 3: ~10-20s parallel
-- Synthesis: ~5s
+- Member creation: ~1s each, sequential — ~4s for four members, paid once
+- Round 1: ~10-20s, members deliberating concurrently
+- Round 2: ~10-20s, concurrently
+- Round 3: ~10-20s, concurrently
+- Synthesis + discard: ~5s
 
 **Total: 30-60 seconds for a four-member debate.**
 

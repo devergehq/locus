@@ -21,7 +21,15 @@ For each selected lens, apply its prompt template from `TheLenses.md`. Each lens
 
 At Standard tier: the lens prompts run as internal thought, not delegated agents (save latency, small problem).
 
-At Extended+: delegate in parallel. Each lens is a separate agent spawn with a trait-composed role matching the lens intent:
+At Extended+: delegate. Each lens becomes its own dispatched allele session with a
+trait-composed role matching the lens intent.
+
+**Create the lens sessions one `allele_sessions_create` at a time**, reading each returned
+`session_id` before composing the next; the lenses then run concurrently. Reclaim each with
+`allele_sessions_discard(session_id)` once its criteria have been read into Step 3. Eight lenses is eight sessions against
+a global cap of twenty shared with every other dispatcher on the machine, so reclaim as you
+go rather than at the end. The rule, its reason and the vehicle table for when allele is not
+reachable are in the Algorithm's **Dispatch** section — this file does not restate them.
 
 | Lens           | Trait bundle for delegated agent                                 |
 |----------------|------------------------------------------------------------------|
@@ -76,8 +84,8 @@ Each lens's output is a list of ISC candidate criteria. Consolidate across lense
 ## Budget
 
 - Standard (2 lenses, internal thought): <30s
-- Extended (4 lenses parallel): <2min
-- Advanced+ (8 lenses parallel): <5min
+- Extended (4 lenses, running concurrently): <2min, +~4s of sequential creates
+- Advanced+ (8 lenses, running concurrently): <5min, +~8s of sequential creates
 
 ## Composition with other skills
 

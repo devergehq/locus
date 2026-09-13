@@ -44,7 +44,7 @@ Depending on the caller's intent:
 
 Or run a direct analysis if the intent is bespoke.
 
-**Dispatch inheritance:** the chosen downstream workflow handles its own dispatch — Interview.md spawns 3 parallel `allele_sessions_create` researchers; ExtractAlpha and ExtractKnowledge delegate to a single OpenCode agent when the transcript exceeds ~10k words. This workflow does not dispatch directly; it routes.
+**Dispatch inheritance:** the chosen downstream workflow handles its own dispatch — Interview.md creates 3 researcher sessions one at a time; ExtractAlpha and ExtractKnowledge delegate to a single dispatched session when the transcript exceeds ~10k words. This workflow does not dispatch directly; it routes, and the dispatch discipline in `SKILL.md` applies wherever it routes to.
 
 ### Step 5 — Analyse
 

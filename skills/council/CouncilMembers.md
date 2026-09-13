@@ -56,7 +56,10 @@ A one-member "council" is not a debate — skip the skill and use First Principl
 
 ## Composing a Member Prompt
 
-Each member is spawned via `allele_sessions_create` with a prompt composed from their trait bundle:
+Each member gets one `allele_sessions_create` with a prompt composed from their trait
+bundle — issued one at a time, and reclaimed with `allele_sessions_discard` after the final
+round. The dispatch rules are canonical in the Algorithm's **Dispatch** section; see
+`SKILL.md`'s "Dispatch discipline". The composition:
 
 ```
 locus agent compose --traits "architecture,systems-thinking,skeptical" \

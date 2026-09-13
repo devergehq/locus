@@ -84,9 +84,10 @@ The highest-value alpha is usually a **reframe** — a new way of seeing an exis
 
 If the source exceeds ~10,000 words (book chapter, full transcript, multi-part essay), do not run Steps 2-5 in the orchestrator's context. The enumerate-then-rank passes will eat the budget and degrade output quality.
 
-Delegate the whole workflow to a single OpenCode agent instead:
+Delegate the whole workflow to a single dispatched allele session instead, then reclaim it
+with `allele_sessions_discard(session_id)` once the report is read.
 
-**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the long source and the ranking passes stay out of orchestrator context, and only the structured report returns.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 **1 — compose the worker's prompt.** Run this and read its output:
 

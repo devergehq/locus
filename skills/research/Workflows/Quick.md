@@ -30,9 +30,9 @@ Craft one query. Be specific. "Bash read command flags" is a weak query; "`read 
 
 ### Step 3 — Delegate via `allele_sessions_create`
 
-**The skill orchestrates; OpenCode does the research.** Compose the prompt with `locus agent compose`, then dispatch a single `allele_sessions_create` Bash call. The trait bundle below picks the chosen methodology's canonical composition (per `agents/{methodology}-researcher.md`).
+**The skill orchestrates; a dispatched allele session does the research.** Compose the prompt with `locus agent compose`, then issue a single `allele_sessions_create`. The trait bundle below picks the chosen methodology's canonical composition (per `agents/{methodology}-researcher.md`).
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the heavy work runs out-of-context and only the report comes back.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 Pick the trait bundle for the chosen methodology:
 
@@ -64,13 +64,13 @@ allele_sessions_create(
 )
 ```
 
-The report carries `summary`, `findings`, `evidence`, `files_referenced`. Use those directly.
+The report carries `summary`, `findings`, `evidence`, `files_referenced`. Use those directly, then `allele_sessions_discard(session_id)` — Quick mode has no second pass that needs the session.
 
 ### Step 4 — Adversarial claim verification
 
-Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the findings, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`. Even Quick mode produces claims worth pressure-testing — a single unchecked wrong answer is worse than a slower correct one.
+Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the findings, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`, **one create at a time**. Even Quick mode produces claims worth pressure-testing — a single unchecked wrong answer is worse than a slower correct one.
 
-For Quick mode, expect 2-4 claims. Dispatch all votes (6-12 delegates) in a single message for parallel execution. Wall-clock cost: ~15s additional.
+For Quick mode, expect 2-4 claims, so 6-12 verifier sessions. Run them in waves of at most 6 live sessions, discarding each wave before the next. Wall-clock cost: ~20-40s additional.
 
 ### Step 5 — Verify URLs
 
@@ -102,7 +102,7 @@ Per `UrlVerificationProtocol.md` — on surviving claims only. One hallucinated 
 
 ## Speed target
 
-~25-30 seconds (15s research + 15s verification).
+~35-50 seconds (15s research + 20-40s verification, including ~1s per sequential create).
 
 ## Escalation
 

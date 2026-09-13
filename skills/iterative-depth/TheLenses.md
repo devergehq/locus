@@ -127,11 +127,11 @@ Different lenses surface different requirements, failure modes, and ISC criteria
 | Extended   | 4      | Literal + Stakeholder + Failure + Experiential         | <2min  |
 | Advanced+  | 8      | All 8 lenses                                           | <5min  |
 
-At Standard tier, the two most commonly productive lenses run as brief internal thought exercises — not spawned agents.
+At Standard tier, the two most commonly productive lenses run as brief internal thought exercises — not dispatched sessions.
 
-At Extended, 4 lenses run. These can be parallelised as 2 pairs of background agents.
+At Extended, 4 lenses run. These can be dispatched as allele sessions — created one at a time, then running concurrently, and reclaimed as their criteria are collected. See `Workflows/Explore.md` Step 2, and the Algorithm's Dispatch section for the rule itself.
 
-At Advanced+, all 8 lenses run in parallel. Results synthesised at the end.
+At Advanced+, all 8 lenses run concurrently in their own sessions, created one at a time. Results synthesised at the end, sessions discarded as their criteria are read.
 
 ## Custom depth
 

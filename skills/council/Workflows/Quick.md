@@ -28,9 +28,14 @@ Use when: a sanity check is enough; you need multiple perspectives on a small qu
 
 ### Step 2 — Round 1: Initial Positions
 
-Dispatch N parallel `allele_sessions_create` calls (one per member) in a single assistant message, per the dispatch idiom in `RoundStructure.md`. Each member's prompt follows the Round 1 template there.
+Dispatch one `allele_sessions_create` per member, **one call at a time**, reading each
+returned `session_id` before composing the next — per the dispatch idiom in
+`RoundStructure.md`. The members deliberate concurrently; only the creates queue, at about a
+second each. Each member's prompt follows the Round 1 template there.
 
-**DO NOT use the platform Task tool for this step** — see `RoundStructure.md`'s "Dispatch idiom" section.
+Prefer `allele_sessions_create` hard over a native Task subagent — see `RoundStructure.md`'s
+"Dispatch idiom" section, and the Algorithm's vehicle table for what to do when allele is
+not reachable.
 
 Collect responses (each member's text from the report's `summary` section). Display as:
 
@@ -50,7 +55,12 @@ Collect responses (each member's text from the report's `summary` section). Disp
 <response>
 ```
 
-### Step 3 — Light Synthesis
+### Step 3 — Reclaim, then synthesise
+
+`allele_sessions_discard(session_id)` each member as its response is collected. A Quick check
+is one round — there is no later round that needs the session.
+
+### Step 3b — Light Synthesis
 
 The invoking agent writes a compact synthesis:
 
@@ -66,7 +76,7 @@ The invoking agent writes a compact synthesis:
 
 ## Budget
 
-~10-20 seconds total.
+~10-20 seconds of deliberation, plus about a second per member of sequential creates.
 
 ## Escalation
 

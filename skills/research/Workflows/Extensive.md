@@ -1,6 +1,6 @@
 # Extensive Research Workflow
 
-**4 methodology types × 3 parallel queries each = 12 researchers. Thorough multi-angle investigation.**
+**4 methodology types × 3 sub-queries each = 12 researchers, run in waves. Thorough multi-angle investigation.**
 
 ## When to use
 
@@ -33,11 +33,21 @@ For each sub-query, launch 4 researchers in parallel:
 
 Total: 3 sub-queries × 4 methodologies = **12 parallel delegations**.
 
-### Step 3 — Parallel execution via `allele_sessions_create`
+### Step 3 — Execution: waves of researchers, one create at a time
 
-**The skill orchestrates; OpenCode does the research.** Dispatch all 12 `allele_sessions_create` Bash calls in a *single assistant message* — the platform tracks them as parallel tool uses and they execute concurrently.
+**The skill orchestrates; dispatched allele sessions do the research.** Issue each
+`allele_sessions_create` **on its own**, reading the returned `session_id` before composing
+the next. The researchers run concurrently once created; only the creates queue, at about a
+second each.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the 12 heavy researches run out-of-context and only compact reports return.
+**Twelve researchers is not one batch.** The global cap is 20 concurrent dispatched sessions
+*aggregate across every dispatcher on the machine* — so twelve live researchers is most of
+the machine's capacity, and the verification fan-out in Step 6 still has to fit. Run one
+wave per sub-query: dispatch that sub-query's 4 researchers one create at a time, collect
+their reports, `allele_sessions_discard` all four, then start the next sub-query. Three waves
+of four, never twelve at once.
+
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 For each (sub-query × methodology) pair, build the prompt with `locus agent compose` and dispatch:
 
@@ -50,7 +60,7 @@ locus agent compose \
   --task "<sub-query N's text, framed for this methodology>"
 ```
 
-**2 — dispatch it.** Pass the composed text as `prompt`:
+**2 — dispatch it.** Pass the composed text as `prompt`. One call, on its own; read the returned `session_id` before composing the next researcher:
 
 ```
 allele_sessions_create(
@@ -74,7 +84,7 @@ Each researcher reports back with:
 - `evidence`, `risks`, `files_referenced`
 - Methodology-specific perspective baked in via the trait composition
 
-**Failure handling:** if M of 12 succeed (M ≥ 6), synthesise from the M and list the failed (sub-query × methodology) pairs in the output's Gaps section. If fewer than 6 succeed, retry the failures sequentially before degrading the workflow.
+**Failure handling:** if M of 12 succeed (M ≥ 6), synthesise from the M and list the failed (sub-query × methodology) pairs in the output's Gaps section. If fewer than 6 succeed, retry the failures before degrading the workflow. `allele_sessions_discard` failed sessions too — a session that produced nothing still holds a slot.
 
 ### Step 4 — Cross-methodology synthesis per sub-query
 
@@ -91,7 +101,10 @@ Now across all 3 sub-queries — does the full picture produce a coherent answer
 
 Per `AdversarialVerificationProtocol.md` — extract falsifiable claims from the cross-sub-query synthesis, then dispatch 3 adversarial verifiers per claim via `allele_sessions_create`.
 
-For Extensive mode, expect 10-20 claims across the three sub-queries. Dispatch all votes (30-60 delegates) in batches if needed to stay within platform concurrency limits. Wall-clock cost: ~15-30s additional per batch.
+For Extensive mode, expect 10-20 claims across the three sub-queries — 30-60 verifier
+sessions, which is one to three times the entire global cap. Run them in waves of at most 6
+live sessions, reclaiming each wave before dispatching the next, with all twelve researcher
+sessions already discarded. Wall-clock cost: ~100-200s additional.
 
 Claims that survive verification go into "Verified Findings" under each sub-query. Claims killed go into "Refuted Claims" with the verifier's evidence.
 
@@ -140,8 +153,13 @@ All surviving claims' URLs must pass `UrlVerificationProtocol.md`. Drop any that
 
 ## Speed target
 
-~90-120 seconds total (60-90s research + 15-30s verification, bound by the slowest).
+~4-6 minutes total: three research waves at ~60-90s each (bound by the slowest researcher
+in the wave, plus ~4s of sequential creates), then ~100-200s of wave-based verification.
 
 ## Fallback
 
-If `allele_sessions_create` is rate-limited or the platform can't dispatch 12 concurrent Bash calls, run in waves of 4 (one wave per sub-query). Verification runs as a separate wave after all research completes. ~3-4 minutes total in fallback.
+Waves of four are the normal path, not a fallback — see Step 3. If allele is rate-limited on
+top of that, narrow the wave further rather than reaching for a less observable vehicle:
+slot pressure is backpressure, and the Algorithm's vehicle table is explicit that it never
+unlocks tier 3. If allele is unreachable entirely, route down that table and say which row
+you landed on.
