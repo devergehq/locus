@@ -144,6 +144,7 @@ pub enum EffortLevel {
 
 /// Skill system configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SkillConfig {
     /// Skills to always surface (by slug). These appear in the system prompt.
     #[serde(default)]
@@ -154,14 +155,6 @@ pub struct SkillConfig {
     pub disabled: Vec<String>,
 }
 
-impl Default for SkillConfig {
-    fn default() -> Self {
-        Self {
-            pinned: Vec::new(),
-            disabled: Vec::new(),
-        }
-    }
-}
 
 /// Notification settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]

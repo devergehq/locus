@@ -139,7 +139,7 @@ fn install_update(version: &str) -> Result<(), LocusError> {
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .bin_name(BIN_NAME)
-        .target(&target)
+        .target(target)
         .current_version(env!("CARGO_PKG_VERSION"))
         .build()
         .map_err(|e| LocusError::Upgrade {
@@ -151,11 +151,9 @@ fn install_update(version: &str) -> Result<(), LocusError> {
         let err_str = e.to_string();
         if err_str.contains("Permission denied") || err_str.contains("permission") {
             LocusError::Upgrade {
-                message: format!(
-                    "Permission denied while updating binary.\n\
+                message: "Permission denied while updating binary.\n\
                      The binary might be installed in a system directory.\n\
-                     Try running with sudo: sudo locus upgrade"
-                ),
+                     Try running with sudo: sudo locus upgrade".to_string(),
             }
         } else if err_str.contains("404") || err_str.contains("Not Found") {
             LocusError::Upgrade {

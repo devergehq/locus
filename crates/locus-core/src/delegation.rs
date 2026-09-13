@@ -67,18 +67,15 @@ pub enum DelegationMode {
 /// can be `(Native, ReadOnly)` or in future `(Algorithmic, WriteIsolated)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExecutionMode {
     /// Bare session — no Algorithm, no Mode Classification, no skills load.
+    #[default]
     Native,
     /// Full Locus orchestration loaded into the session.
     Algorithmic,
 }
 
-impl Default for ExecutionMode {
-    fn default() -> Self {
-        Self::Native
-    }
-}
 
 impl ExecutionMode {
     /// Stable string used in CLI parsing and prompts.

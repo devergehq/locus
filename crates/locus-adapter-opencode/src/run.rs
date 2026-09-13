@@ -1625,8 +1625,7 @@ mod tests {
         let mut script = fs::File::create(&script_path).unwrap();
         write!(
             script,
-            "#!/bin/sh\ncat <<'EOF'\n{}\nEOF\nexit 0\n",
-            r#"{"type":"error","timestamp":1,"sessionID":"s","error":{"name":"X","data":{"message":"Model not found: openai/gpt-5.5."}}}"#,
+            "#!/bin/sh\ncat <<'EOF'\n{{\"type\":\"error\",\"timestamp\":1,\"sessionID\":\"s\",\"error\":{{\"name\":\"X\",\"data\":{{\"message\":\"Model not found: openai/gpt-5.5.\"}}}}}}\nEOF\nexit 0\n",
         )
         .unwrap();
         drop(script);

@@ -151,7 +151,7 @@ pub fn prune_superseded_algorithm_versions(home: &Path) -> Result<(), LocusError
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.extension().is_some_and(|x| x == "md") {
+        if path.extension().is_none_or(|x| x != "md") {
             continue;
         }
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -255,14 +255,10 @@ pub fn check_platform_configs(home: &Path) -> Vec<String> {
             Platform::OpenCode => {
                 let config_dir = user_home.join(".config").join("opencode");
                 if !config_dir.join("AGENTS.md").exists() {
-                    warnings.push(format!(
-                        "OpenCode AGENTS.md missing. Run `locus platform add opencode`."
-                    ));
+                    warnings.push("OpenCode AGENTS.md missing. Run `locus platform add opencode`.".to_string());
                 }
                 if !config_dir.join("opencode.json").exists() {
-                    warnings.push(format!(
-                        "OpenCode opencode.json missing. Run `locus platform add opencode`."
-                    ));
+                    warnings.push("OpenCode opencode.json missing. Run `locus platform add opencode`.".to_string());
                 }
             }
             Platform::ClaudeCode => {
