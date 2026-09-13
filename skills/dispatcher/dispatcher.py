@@ -53,6 +53,26 @@ DISPATCHER_HOME = Path(os.environ.get("DISPATCHER_HOME", "~/.locus/data/dispatch
 _instance: Path | None = None
 
 
+SLUG = re.compile(r"[A-Za-z0-9._-]+")
+
+ME = Path(__file__).resolve()
+
+
+def instance_path(value: str) -> Path:
+    """A slug under DISPATCHER_HOME, or a path used as given.
+
+    Accepting a path is what lets `brief` hand a worker something that resolves without
+    inheriting this process's environment: a bare slug only means anything relative to a
+    DISPATCHER_HOME the worker cannot see.
+    """
+    if os.sep in value or value.startswith("~"):
+        return Path(value).expanduser().resolve()
+    if not SLUG.fullmatch(value) or value in (".", ".."):
+        raise SystemExit(f"bad instance slug {value!r}: letters, digits, dot, dash, underscore, "
+                         f"or an explicit path")
+    return DISPATCHER_HOME / value
+
+
 def resolve_instance(slug: str | None) -> Path:
     """Find the instance directory, or explain how to make one.
 
@@ -62,11 +82,11 @@ def resolve_instance(slug: str | None) -> Path:
     """
     slug = slug or os.environ.get("DISPATCHER_INSTANCE")
     if slug:
-        path = DISPATCHER_HOME / slug
+        path = instance_path(slug)
         if not (path / "config.json").is_file():
             raise SystemExit(
                 f"no config.json in {path}\n"
-                f"create it with:  python3 {Path(__file__).name} init --instance {slug} --team-key KEY"
+                f"create it with:  python3 {ME} init --instance {slug} --team-key KEY"
             )
         return path
     found = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
@@ -75,7 +95,7 @@ def resolve_instance(slug: str | None) -> Path:
     if not found:
         raise SystemExit(
             f"no dispatcher instance under {DISPATCHER_HOME}\n"
-            f"create one with:  python3 {Path(__file__).name} init --instance <slug> --team-key KEY"
+            f"create one with:  python3 {ME} init --instance <slug> --team-key KEY"
         )
     names = ", ".join(p.name for p in found)
     raise SystemExit(f"several instances ({names}); pass --instance <slug> or set DISPATCHER_INSTANCE")
@@ -332,7 +352,10 @@ class Poller:
         labels = cfg["linear"]["labels"]
         modes = cfg["linear"]["modes"]
         by_trigger = {labels[m["trigger"]]["id"]: name for name, m in modes.items()}
-        query, variables = triggers_query(cfg["linear"].get("team_key"))
+        # "" is not null: an empty team_key would silently widen the scope to the whole
+        # workspace while reading, in the file, as though a team had been chosen.
+        team_key = (cfg["linear"].get("team_key") or "").strip() or None
+        query, variables = triggers_query(team_key)
         data = linear(cfg, query, {"labels": list(by_trigger), **variables})
         every = cfg["limits"]["reemit_after_secs"]
         seen = set()
@@ -617,17 +640,29 @@ def cmd_label(args) -> None:
     group = cfg["linear"]["label_group_id"]
     target = labels[args.label]["id"] if args.label != "none" else None
     current = [l for l in issue["labels"]["nodes"] if (l.get("parent") or {}).get("id") == group]
-    parts = [f'r{i}: issueRemoveLabel(id: "{issue["id"]}", labelId: "{l["id"]}") {{ success }}'
-             for i, l in enumerate(current) if l["id"] != target]
+    # Every id travels as a variable. This is the only mutation in the file assembled by hand,
+    # and its label ids come straight out of config.json — a file this program's own `init`
+    # closes by telling the user to go and edit. Interpolating them produced valid injected
+    # GraphQL when tested with a hostile id; parameterising costs nothing and ends it.
+    variables: dict[str, str] = {"issueId": issue["id"]}
+    parts = []
+    for i, label in enumerate(current):
+        if label["id"] == target:
+            continue
+        variables[f"r{i}"] = label["id"]
+        parts.append(f"r{i}: issueRemoveLabel(id: $issueId, labelId: $r{i}) {{ success }}")
     if target and target not in [l["id"] for l in current]:
-        parts.append(f'add: issueAddLabel(id: "{issue["id"]}", labelId: "{target}") {{ success }}')
+        variables["add"] = target
+        parts.append("add: issueAddLabel(id: $issueId, labelId: $add) { success }")
     if args.state:
         state = next((s for s in issue["team"]["states"]["nodes"] if s["name"].lower() == args.state.lower()), None)
         if not state:
             raise SystemExit(f"no workflow state '{args.state}' on this team")
-        parts.append(f'st: issueUpdate(id: "{issue["id"]}", input: {{ stateId: "{state["id"]}" }}) {{ success }}')
+        variables["stateId"] = state["id"]
+        parts.append("st: issueUpdate(id: $issueId, input: { stateId: $stateId }) { success }")
     if parts:
-        linear(cfg, "mutation {\n" + "\n".join(parts) + "\n}")
+        declarations = ", ".join(f"${name}: String!" for name in variables)
+        linear(cfg, f"mutation({declarations}) {{\n" + "\n".join(parts) + "\n}", variables)
     before = ", ".join(l["name"] for l in current) or "none"
     after = labels[args.label]["name"] if target else "none"
     if ledger_get(issue["identifier"]):
@@ -675,7 +710,10 @@ def cmd_brief(args) -> None:
     # the instance directory is the silent failure in this file: every worker would start by
     # failing to read a brief that was never installed there.
     workers = CODE_DIR / "workers"
-    tool = f"python3 {CODE_DIR / 'dispatcher.py'} --instance {instance().name}"
+    # The absolute instance path, not the slug. A worker is a fresh session that inherits none
+    # of this process's environment, so a bare slug resolves against the DEFAULT home — which
+    # is the wrong directory, or none, whenever DISPATCHER_HOME is set here.
+    tool = f"python3 {CODE_DIR / 'dispatcher.py'} --instance {instance()}"
     extra = []
     production_mcp = (cfg.get("tools") or {}).get("production_mcp")
     if production_mcp:
@@ -832,11 +870,20 @@ def cmd_init(args) -> None:
     minted by the workspace, and without them nothing in this program can claim a ticket.
     That is the whole reason this subcommand exists.
 
-    Safe to re-run, including after a partial failure. Labels are matched by name against the
-    workspace rather than against config.json, so a run that created the group and four children
-    before dying leaves those four discoverable: the next run reuses them and creates the rest.
-    Linear is the source of truth for ids here, which is what makes the interrupted case benign
-    — config.json is only ever written once every id is in hand.
+    Safe to re-run **against the same team**, including after a partial failure. Labels are
+    matched by name against the workspace rather than against config.json, so a run that created
+    the group and four children before dying leaves those four discoverable: the next run reuses
+    them and creates the rest. Linear is the source of truth for ids, which is what makes the
+    interrupted case benign — config.json is only written once every id is in hand.
+
+    The promise stops at the team boundary, because the team filter that makes group lookup
+    unambiguous also means a different --team-key finds nothing to reuse. That case is refused
+    rather than trusted to the reader.
+
+    Two re-runs this cannot make safe, both of which create workspace state while reporting it:
+    renaming a label in config.json (the new name is created; the old one stays on live tickets),
+    and an `Agent` group made by hand as a workspace-level label rather than a team one (its team
+    is null, the filter rejects it, and a duplicate is created alongside it).
     """
     dest = DISPATCHER_HOME / args.instance
     config_path = dest / "config.json"
@@ -852,6 +899,17 @@ def cmd_init(args) -> None:
         cfg["linear"]["api_key_env"] = args.api_key_env
     if args.workspace:
         cfg["linear"]["mcp_workspace"] = args.workspace
+    if args.team_key and args.team_key != (existing or {}).get("linear", {}).get("team_key") \
+            and (existing or {}).get("linear", {}).get("label_group_id") and not args.force:
+        raise SystemExit(
+            f"{config_path} is already bound to team "
+            f"{existing['linear'].get('team_key')!r} with nine label ids from it.\n"
+            f"Re-running with --team-key {args.team_key!r} would create a second label group and "
+            f"overwrite every id in place. Tickets already carrying the old team's Agent labels "
+            f"would drop out of the trigger query, and this tool could no longer see or clear "
+            f"those labels.\n"
+            f"Use a separate --instance for a second team, or --force if that really is what you want."
+        )
     if args.team_key:
         cfg["linear"]["team_key"] = args.team_key
     if args.github_login:
@@ -859,7 +917,8 @@ def cmd_init(args) -> None:
     if args.project:
         cfg["allele"]["default_project"] = args.project
 
-    team_key = cfg["linear"].get("team_key")
+    team_key = (cfg["linear"].get("team_key") or "").strip() or None
+    cfg["linear"]["team_key"] = team_key
     if not team_key:
         raise SystemExit("--team-key is required: a workspace can hold several label groups "
                          "named the same thing on different teams, so the name alone is ambiguous")
@@ -933,8 +992,14 @@ def cmd_init(args) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--instance", help="instance slug under ~/.locus/data/dispatcher "
-                                           "(default: $DISPATCHER_INSTANCE, or the only one installed)")
+    # Declared on the root AND on every subcommand: `--instance X poll` and `poll --instance X`
+    # both being natural, one of them silently failing is a trap rather than a convention.
+    instance_help = ("instance slug under ~/.locus/data/dispatcher, or an explicit path "
+                     "(default: $DISPATCHER_INSTANCE, or the only one installed)")
+    parser.add_argument("--instance", dest="root_instance", help=instance_help)
+    sub = argparse.ArgumentParser(add_help=False)
+    sub.add_argument("--instance", help=instance_help)
+    common = sub
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("init", help="create the Agent label group and write config.json")
@@ -946,19 +1011,20 @@ def main() -> None:
     p.add_argument("--github-login", dest="github_login", help="your GitHub login, for review requests")
     p.add_argument("--project", help="default allele project for dispatched workers")
     p.add_argument("--dry-run", dest="dry_run", action="store_true", help="print what would be created; write nothing")
+    p.add_argument("--force", action="store_true", help="allow a re-run that rebinds an existing config to another team")
     p.set_defaults(fn=cmd_init)
 
-    p = sub.add_parser("poll")
+    p = sub.add_parser("poll", parents=[common])
     p.add_argument("--once", action="store_true")
     p.set_defaults(fn=cmd_poll)
 
-    p = sub.add_parser("watch")
+    p = sub.add_parser("watch", parents=[common])
     p.add_argument("key")
     p.add_argument("--pr", help="OWNER/REPO#N — otherwise discovered from the ticket's attachments")
     p.add_argument("--once", action="store_true")
     p.set_defaults(fn=cmd_watch)
 
-    p = sub.add_parser("ledger")
+    p = sub.add_parser("ledger", parents=[common])
     p.add_argument("action", choices=["list", "get", "put"])
     p.add_argument("key", nargs="?")
     p.add_argument("fields", nargs="*", help="k=v (v parsed as JSON when it can be)")
@@ -967,36 +1033,46 @@ def main() -> None:
     p.add_argument("--by")
     p.set_defaults(fn=cmd_ledger)
 
-    p = sub.add_parser("label")
+    p = sub.add_parser("label", parents=[common])
     p.add_argument("issue")
     p.add_argument("label")
     p.add_argument("--state", help="also move the ticket to this workflow state")
     p.add_argument("--by")
     p.set_defaults(fn=cmd_label)
 
-    p = sub.add_parser("comment")
+    p = sub.add_parser("comment", parents=[common])
     p.add_argument("issue")
     p.add_argument("--key")
     p.add_argument("--mode")
     p.add_argument("--reply-to", dest="reply_to")
     p.set_defaults(fn=cmd_comment)
 
-    p = sub.add_parser("brief")
+    p = sub.add_parser("brief", parents=[common])
     p.add_argument("key")
     p.set_defaults(fn=cmd_brief)
 
-    p = sub.add_parser("status")
+    p = sub.add_parser("status", parents=[common])
     p.add_argument("--all", action="store_true")
     p.set_defaults(fn=cmd_status)
 
-    sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
+    sub.add_parser("doctor", parents=[common]).set_defaults(fn=cmd_doctor)
 
     args = parser.parse_args()
     if args.cmd == "ledger" and args.action in ("get", "put") and not args.key:
         parser.error("ledger get/put need a KEY")
-    if args.cmd != "init":
+    # `doctor` resolves lazily: it is the command you run to find out why an instance will not
+    # resolve, so exiting here would make it useless in exactly that case.
+    if args.cmd not in ("init", "doctor"):
         global _instance
-        _instance = resolve_instance(getattr(args, "instance", None))
+        _instance = resolve_instance(getattr(args, "instance", None) or args.root_instance)
+    elif args.cmd == "doctor":
+        try:
+            globals()["_instance"] = resolve_instance(getattr(args, "instance", None) or args.root_instance)
+        except SystemExit as exc:
+            print(f"✗ instance: {exc}")
+            print(f"✓ code root: {CODE_DIR}")
+            print(f"  worker briefs: {len(list((CODE_DIR / 'workers').glob('*.md')))} in {CODE_DIR / 'workers'}")
+            raise SystemExit(1) from None
     args.fn(args)
 
 
