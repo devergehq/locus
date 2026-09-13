@@ -36,9 +36,15 @@ For each weak spot, decide the type of enhancement:
 
 ### Step 3 — Research the enhancements
 
-**The skill orchestrates; OpenCode does the research.** For each weak spot, dispatch one `allele_sessions_create` Bash call with the methodology that fits the enhancement type. If the weak-spot count is ≤ 12, dispatch all calls in a *single assistant message* so the platform parallelises them. If > 12, run in waves of 12.
+**The skill orchestrates; dispatched allele sessions do the research.** For each weak spot,
+dispatch one `allele_sessions_create` with the methodology that fits the enhancement type —
+**one create at a time**, each `session_id` read before the next is composed. The researchers
+run concurrently once created. Keep at most 6-8 live at once and reclaim them with
+`allele_sessions_discard` as their reports arrive: the global cap of twenty is shared with
+every other dispatcher on the machine, so a long weak-spot list runs in waves rather than
+all at once.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the heavy research runs out-of-context and only compact reports return.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 Map the weak-spot type from Step 2 to a methodology + trait bundle:
 

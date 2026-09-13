@@ -27,6 +27,13 @@ On [platform], falling back to [alternative approach].
 This may be [slower/less thorough/sequential instead of parallel].
 ```
 
+Note that "sequential instead of parallel" describes *work*, not dispatch. Issuing
+`allele_sessions_create` calls one at a time is the normal path at every tier, not a
+degradation — see the Algorithm's Dispatch section.
+
+```
+```
+
 ### Tool-Level Degradation
 
 When a platform lacks a specific tool that agents expect (e.g., `web_search`), the agent must adapt its methodology rather than fail silently:
@@ -39,9 +46,9 @@ When a platform lacks a specific tool that agents expect (e.g., `web_search`), t
 
 | Skill | Full Mode | Degraded Mode |
 |-------|-----------|---------------|
-| Council | 4 parallel debate agents | Unavailable (requires delegation) |
-| Red Team | 8+ parallel attack agents | Unavailable (requires delegation) |
-| Research (Extensive) | 4-8 parallel research agents | Sequential research from multiple angles |
+| Council | 4 members in their own sessions | Route down the Algorithm's vehicle table; unavailable only when every row is exhausted |
+| Red Team | 8+ attackers in their own sessions | Route down the vehicle table; unavailable only when every row is exhausted |
+| Research (Extensive) | 12 researchers in waves | Fewer researchers, then in-context research from multiple angles |
 | Research (Quick) | Single-agent research | No change (doesn't need delegation) |
 | Research (Discovery) | `web_search` for open-ended discovery | `web_fetch` against known URLs + `bash` with `curl`/`gh` |
 | Research (Verification) | `web_fetch` to verify citations | No change (both platforms support fetch) |

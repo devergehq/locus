@@ -89,9 +89,10 @@ Extracts can be persisted to `{data}/memory/research/knowledge/{YYYY-MM}/{source
 
 If the source exceeds ~10,000 words (long paper, book chapter, full transcript), do not extract in the orchestrator's context. The schema-fill pass over a long source eats budget the orchestrator needs for synthesis afterwards.
 
-Delegate the extraction to a single OpenCode agent instead:
+Delegate the extraction to a single dispatched allele session instead, then reclaim it with
+`allele_sessions_discard(session_id)` once the report is read.
 
-**DO NOT use the platform-native Task tool.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the long source and the per-entry schema fills stay out of orchestrator context.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
 **1 — compose the worker's prompt.** Run this and read its output:
 

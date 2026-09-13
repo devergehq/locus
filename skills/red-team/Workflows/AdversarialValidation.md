@@ -20,7 +20,10 @@ Example: "Produce a design spec for the billing subsystem. Must support: monthly
 
 ### Step 2 — Generate candidates via `allele_sessions_create`
 
-Dispatch 3-5 parallel `allele_sessions_create` calls in a single assistant message, each with a trait bundle chosen for **diversity across design philosophy**, not just role. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section.
+Dispatch 3-5 candidates via `allele_sessions_create`, **one call at a time**, reading each
+returned `session_id` before composing the next. Each gets a trait bundle chosen for
+**diversity across design philosophy**, not just role. The candidates then run concurrently.
+See `SKILL.md`'s "Dispatch discipline" section for the rule and its reason.
 
 | Candidate | Trait bundle                                              | Design philosophy              |
 |-----------|-----------------------------------------------------------|--------------------------------|
@@ -60,7 +63,15 @@ The orchestrator collects N candidate designs from the `summary` section of each
 
 ### Step 3 — Adversarial cross-attack via `allele_sessions_create`
 
-For each (attacker, target) pair where attacker ≠ target, dispatch one `allele_sessions_create`. With 5 candidates that's 20 attacks; with 3 candidates it's 6. Dispatch all in a single assistant message (or in waves of N if rate-limited).
+For each (attacker, target) pair where attacker ≠ target, dispatch one
+`allele_sessions_create`. With 5 candidates that's 20 attacks; with 3 candidates it's 6.
+
+**Dispatch one create at a time, and mind the cap.** Twenty concurrent attacks *is* the
+global cap of twenty, aggregate across every dispatcher on the machine — so a 5-candidate
+cross-attack cannot be in flight all at once without starving everything else. Run it in
+waves of at most 6-8 live sessions: dispatch a wave one create at a time, collect its
+reports, `allele_sessions_discard` each one, then dispatch the next wave. The candidate
+sessions from Step 2 should already have been reclaimed before Step 3 begins.
 
 Per attack:
 
@@ -123,7 +134,8 @@ Produce a **synthesised design** that takes the best candidate as a spine and in
 
 ## Budget
 
-Candidate generation: ~60s parallel. Cross-attack: ~60-90s (more combinations). Synthesis: ~60s. **Total: 3-5 minutes.**
+Candidate generation: ~60s, bound by the slowest candidate (+3-5s of sequential creates).
+Cross-attack: ~60-90s per wave (+~1s per create). Synthesis: ~60s. **Total: 3-5 minutes.**
 
 ## When this beats single-author design
 

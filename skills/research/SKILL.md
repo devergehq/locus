@@ -32,9 +32,25 @@ Multi-depth research framework that scales from quick single-pass lookups to ext
 - `UrlVerificationProtocol.md` — every URL returned must be verified. Research agents hallucinate URLs, and a single broken link is a catastrophic failure.
 - `AdversarialVerificationProtocol.md` — every falsifiable claim is pressure-tested by 3 adversarial verifiers before inclusion. Methodology diversity ensures coverage; adversarial verification ensures validity. Both are required across all modes.
 
+## Dispatch discipline
+
+This skill does not restate the dispatch rules — restated rules drift. The canonical text is
+the **Dispatch** section of `algorithm/v2.0.md`, shipped as the `locus-algorithm` skill.
+Three of its rules bind every dispatch in this skill and its workflows:
+
+- **One `allele_sessions_create` at a time**, with its result read before the next is
+  issued. Never batch creates into a single assistant message. Researchers run concurrently
+  once created; only the creates queue, at about a second each.
+- **Global cap of twenty** concurrent dispatched sessions, aggregate across every dispatcher
+  on the machine — not per-run. Extensive mode's 12 researchers and the verification fan-out
+  both have to fit inside it, which is why both run in waves.
+- **Every researcher and every verifier is reclaimed** with `allele_sessions_discard` once
+  its report is read, or recorded as still working with a reason.
+
 ## Execution model
 
-**The research skill is the orchestrator. The research work runs in OpenCode via `allele_sessions_create`.**
+**The research skill is the orchestrator. The research work runs in dispatched allele
+sessions — each with its own context and its own workspace.**
 
 The orchestrator (this Claude session) is responsible for:
 - Choosing methodology mix (academic / investigative / contrarian / multi-angle / deep-investigation)
@@ -44,11 +60,11 @@ The orchestrator (this Claude session) is responsible for:
 - Extracting falsifiable claims and dispatching adversarial verification (3 votes per claim)
 - Verifying every URL before returning results
 
-The work itself — running searches, reading sources, drafting findings, citing — runs in a dispatched allele session created via `allele_sessions_create`. The orchestrator never does the raw research itself; it dispatches and synthesises.
+The work itself — running searches, reading sources, drafting findings, citing — runs in a dispatched allele session created via `allele_sessions_create`. The orchestrator never does the raw research itself; it dispatches, synthesises, and reclaims.
 
 **Why:** raw research output (search results, page reads, scratch reasoning) is voluminous and would burn the orchestrator's context. The dispatched session replies with a report in the standard shape (`summary`, `findings`, `evidence`, `risks`, `files_referenced`) — only the synthesis enters this context.
 
-**DO NOT use the platform-native Task tool for research dispatch.** Task-tool subagents are other Claudes burning the same context budget. Research dispatch goes through `allele_sessions_create`, which runs an entirely different model (typically `openai/gpt-5.5`) under a different provider.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing, which costs methodology diversity — the thing the archetypes exist to produce. The preference is not a prohibition: when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation rather than stalling.
 
 ## Researcher archetypes (methodology, not per-API theatre)
 
@@ -94,11 +110,20 @@ Iterative deep-investigation researcher, persistent vault across sessions, per-e
 
 ## Degradation
 
-- **With `allele_sessions_create` available**: parallel multi-researcher execution across Standard/Extensive/Deep — three or more `allele_sessions_create` Bash calls dispatched in a single assistant message.
-- **`allele_sessions_create` available but rate-limited / failing**: degrade to *sequential* `allele_sessions_create` calls (one researcher at a time). Slower, but the work still happens out-of-context and the report contract is unchanged.
-- **`allele_sessions_create` not on PATH** (development environment, foreign machine): fall back to in-context execution via `web_search` + `web_fetch`. The orchestrator's context absorbs the raw research — accept the cost and keep the methodology rotation. Note this in the response so the user knows context was burned.
-- **Partial failure across N parallel delegations**: if M of N succeed (M ≥ 1), synthesise from the M results and list the failed researcher(s) under the `Gaps` section of the output. Do not retry blindly — flag and move on.
-- **Without web access at all** (the worker has no web access): the worker should report empty `findings` and say so under `risks`. Surface the gap; don't fabricate.
+Route down the Algorithm's **Which vehicle** table and stop at the first available row; the
+rows below say only what research specifically loses at each one.
+
+- **Allele reachable** (tier 1): full multi-researcher execution across Standard / Extensive / Deep. Creates are issued one at a time; the researchers then run concurrently.
+- **Allele reachable but every slot taken**: busy is not absent. Wait, or reclaim a slot with `allele_sessions_discard`. Slot pressure never unlocks a less observable vehicle.
+- **`locus delegate run --backend opencode`** (tier 2): the research still runs out-of-context with its trait composition intact, but it returns an envelope rather than replying — no follow-up question, no clarification. Say so.
+- **Native `Task` subagents** (tier 3, last resort): the raw research burns this session's context and the researchers share its framing, so convergence between archetypes stops being evidence of anything. State that above the findings.
+- **Nothing reachable**: in-context execution via `web_search` + `web_fetch`, methodology rotation kept, and say plainly that the orchestrator's context absorbed the raw research.
+- **Partial failure across N delegations**: if M of N succeed (M ≥ 1), synthesise from the M and list the failed researcher(s) under `Gaps`. Do not retry blindly — flag and move on. Discard the failed sessions too; a failed session still holds a slot.
+- **Without web access at all**: the worker reports empty `findings` and says so under `risks`. Surface the gap; don't fabricate.
+
+The `allele_*` tools are MCP tools, not a binary — their absence means allele is not running
+and this session is outside it, which is a normal way to run Locus rather than a broken
+install.
 
 ## Output discipline
 

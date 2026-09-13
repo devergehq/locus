@@ -44,7 +44,9 @@ The orchestrator (not a delegate) extracts falsifiable claims from the synthesis
 
 ## Step 2 — Adversarial verification dispatch
 
-For each extracted claim, dispatch **3 adversarial verifiers** via `allele_sessions_create`. Use the `adversarial-verifier` agent definition (traits: `research,skeptical,adversarial,empirical`).
+For each extracted claim, dispatch **3 adversarial verifiers** via `allele_sessions_create`,
+**one create at a time**. Use the `adversarial-verifier` agent definition (traits:
+`research,skeptical,adversarial,empirical`).
 
 ```bash
 VERIFY_PROMPT=$(locus agent compose \
@@ -77,8 +79,17 @@ allele_sessions_create(
 ```
 
 **Dispatch rules:**
-- All 3 votes for a single claim go in the **same assistant message** for parallelism.
-- Multiple claims can be verified in the same batch — dispatch all votes for all claims together if the platform allows it.
+- **One `allele_sessions_create` at a time**, its result read before the next is issued.
+  Never batch creates into a single assistant message. The verifiers then run concurrently —
+  only the creates queue, at about a second each. The rule, its reason and its retirement
+  condition are in the Algorithm's **Dispatch** section; this file does not restate them.
+- **Verification runs in waves bounded by the global cap.** The cap is 20 concurrent
+  dispatched sessions *aggregate across every dispatcher on the machine*, not per run — so
+  a wave of at most 6 live verifiers (2 claims × 3 votes) leaves room for everything else,
+  including the researcher sessions this run may still be holding. Reclaim a wave with
+  `allele_sessions_discard` before dispatching the next. Ten claims is five waves, not one
+  batch of thirty.
+- Discard every verifier session, including failed ones, as soon as its verdict is read.
 - Each verifier is independent — they do not see each other's verdicts.
 
 ## Step 3 — Voting
@@ -124,16 +135,24 @@ Research output must include:
 
 ## Cost profile
 
-Per claim: 3 delegate calls × ~10-15s each (parallel) ≈ 15s wall-clock per batch.
+Per wave: up to 6 verifiers (2 claims × 3 votes) running concurrently, ~10-15s wall-clock,
+plus ~6s of sequential creates.
 
-| Mode | Typical claims | Verification delegates | Added latency |
-|---|---|---|---|
-| Quick | 2-4 | 6-12 | ~15s |
-| Standard | 5-10 | 15-30 | ~15-30s |
-| Extensive | 10-20 | 30-60 | ~15-30s |
-| Deep | per-entity | 3-15 per entity | ~15s per entity pass |
+| Mode | Typical claims | Verifier sessions | Waves (6 live) | Added latency |
+|---|---|---|---|---|
+| Quick | 2-4 | 6-12 | 1-2 | ~20-40s |
+| Standard | 5-10 | 15-30 | 3-5 | ~60-100s |
+| Extensive | 10-20 | 30-60 | 5-10 | ~100-200s |
+| Deep | per-entity | 3-15 per entity | 1-3 per entity | ~20-60s per entity pass |
 
-All claims within a batch verify in parallel, so wall-clock cost scales with batch count (typically 1-2 batches), not claim count.
+Verifiers within a wave run concurrently, so wall-clock scales with wave count, not verifier
+count. The wave size is set by the global cap of twenty concurrent sessions across all
+dispatchers, not by how many creates a single message could hold.
+
+**If verification cost dominates, cut claims, not votes.** The protocol's Anti-patterns
+section is explicit that dropping to one vote per claim has a 30-40% false-negative rate.
+Verifying central and supporting claims only, and logging tangential ones as unverified, is
+the sanctioned way to spend less.
 
 ## Relationship to URL verification
 

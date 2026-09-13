@@ -20,7 +20,7 @@ Identify the subject and the interview frame:
 - **Prior interviews** — what have they already been asked? (So you can avoid those.)
 - **Format** — podcast / written / short call — affects question shape.
 
-### Step 2 — Researcher assignment (parallel delegation)
+### Step 2 — Researcher assignment (three sessions, created one at a time)
 
 Three methodology-diverse researchers, each tuned to a different facet of the subject:
 
@@ -28,11 +28,14 @@ Three methodology-diverse researchers, each tuned to a different facet of the su
 2. **Investigative researcher** — subject's recent work, projects, public statements, controversies or reversals of position.
 3. **Contrarian researcher** — positions where the subject's view diverges from consensus or from their own past views.
 
-**The skill orchestrates; OpenCode does the research.** Dispatch all three `allele_sessions_create` Bash tool calls in a single assistant message — the platform tracks them as parallel tool uses and they execute concurrently.
+**The skill orchestrates; dispatched allele sessions do the research.** Issue the three
+`allele_sessions_create` calls **one at a time**, reading each returned `session_id` before
+composing the next. The three researchers then run concurrently — only the creates queue.
+Reclaim each with `allele_sessions_discard(session_id)` once its report has been read.
 
-**DO NOT use the platform-native Task tool for this step.** Task subagents are other Claudes burning the same context budget. Use `allele_sessions_create` so the raw research happens out-of-context and only the report comes back.
+**Prefer `allele_sessions_create` hard over a native Task subagent.** A Task subagent is another Claude burning this session's context budget and inheriting its framing. The preference is not a prohibition — when no sanctioned vehicle is reachable, route down the Algorithm's vehicle table and announce the degradation.
 
-Substitute `<subject>` in each prompt with the subject's full name plus a one-line role descriptor (e.g., `"Jane Doe, computational biologist at MIT"`). Build each prompt with `locus agent compose` and dispatch all three blocks in a single assistant message:
+Substitute `<subject>` in each prompt with the subject's full name plus a one-line role descriptor (e.g., `"Jane Doe, computational biologist at MIT"`). Build each prompt with `locus agent compose` and dispatch the three blocks one create at a time:
 
 ```bash
 ACADEMIC_PROMPT=$(locus agent compose \
@@ -144,4 +147,4 @@ Sequence questions for a conversational arc:
 
 ## Speed target
 
-~60-90 seconds for the three parallel researchers; 2-3 minutes total including question generation.
+~60-90 seconds for the three researchers running concurrently (+~3s of sequential creates); 2-3 minutes total including question generation.

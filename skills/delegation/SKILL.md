@@ -51,23 +51,30 @@ parallelism, specialisation, isolation, or an independent perspective.
 - The work depends on context already loaded here that would be expensive to transfer.
 - You are at depth 3.
 
-## Execution rule
+## The rules are not here
 
-All agent-style delegation MUST use the **allele MCP**. Do not use platform-native Task,
-Agent, or Team tools — they burn this session's context, inherit its framing, and are
-invisible to the human. If the allele MCP is unavailable, fall back to
-`locus delegate run` (see below); never to native subagents.
+The dispatch rules — the lifecycle, addressing, status semantics, the vehicle table, depth,
+the global cap, reclamation — live in one place: the **Dispatch** section of
+`algorithm/v2.0.md`, shipped as the `locus-algorithm` skill. Read them there.
 
-## The lifecycle
+This file used to restate them. That is how it came to carry a flat ban on native subagents
+months after the Algorithm replaced that ban with a routing table, and a "parallel fan-out"
+pattern that told orchestrators to do the exact thing the canonical rule forbids. Restated
+rules drift; a pointer cannot.
 
-```
-1. compose   locus agent compose --traits "..." --role "..." --task "..."
-2. dispatch  allele_sessions_create(project, name, prompt)   -> session_id, name
-3. address   ListAgents -> "name [ref]"        fresh, every send; refs rotate
-4. converse  SendMessage(to: "name [ref]", ...)
-5. check     allele_sessions_status(session_id) -> state == "response_ready"
-6. reclaim   allele_sessions_discard(session_id)
-```
+Four of the canonical rules are worth naming here because every pattern below depends on
+them, but the canonical text is still the Algorithm's:
+
+- **One `allele_sessions_create` at a time**, its result read before the next is issued.
+  Never batch creates into a single assistant message. Workers run concurrently either way.
+- **Route down the vehicle table** when allele is not reachable, and announce the row you
+  landed on. A native subagent is permitted as a last resort — it is not forbidden, it is
+  expensive, and taking it silently is the actual failure.
+- **`allele_sessions_status`, never `ListAgents`**, to decide whether a worker has finished.
+- **Every dispatched session is reclaimed** with `allele_sessions_discard`, or recorded as
+  still working with a reason.
+
+## What this skill adds
 
 **Compose then dispatch.** Run `locus agent compose` in Bash, read its output, and pass that
 text as the `prompt` argument to `allele_sessions_create`. Trait composition is what makes
@@ -84,18 +91,10 @@ locus agent compose \
 atomic paste with nothing to interleave, and a truncated brief produces a session that
 starts confidently on half a specification.
 
-**`session_id` is the only durable identity.** Names are stable in practice; refs are not
-stable at all and rotate wholesale. Never cache an address. A rejected send means
-"re-resolve and retry", not failure.
-
-**Never conclude a worker is finished from `ListAgents`.** It collapses six states into
-idle/busy. `response_ready` means finished; `awaiting_input` means blocked on a permission
-prompt with nobody coming unless a human acts. `state_age_secs` tells you *blocked for
-forty minutes*, which is actionable, rather than *blocked*, which is not.
-
-**Discard when done.** `allele_sessions_discard` commits uncommitted work and archives the
-branch before removing the workspace, so reclaiming a slot never loses anything. A session
-left running holds a slot and becomes invisible work nobody owns.
+**`state_age_secs` is the field worth knowing about.** The Algorithm tells you to use
+`allele_sessions_status` rather than `ListAgents`; the reason to actually read its output is
+that it tells you *blocked for forty minutes*, which is actionable, rather than *blocked*,
+which is not.
 
 ## The report contract
 
@@ -122,24 +121,30 @@ reporting the command it ran and the output it saw can. Ask for the method, not 
 
 ## Limits
 
-- **Depth 3.** Depth 0 is a human-started session; it dispatches workers at depth 1; those
-  may dispatch specialists at depth 2; depth 3 is the floor and does not dispatch. Beyond
-  that the original intent is too diluted through rounds of telephone to be worth having.
-- **Global cap 20** concurrent dispatched sessions, aggregate across every dispatcher. Per-
-  dispatcher caps do not compose — twenty dispatchers each under a limit of twenty is four
-  hundred sessions, every one individually compliant.
-- Both are enforced by allele and derived from the creating session's own record. Depth is
-  never caller-supplied.
+Depth 3 and a global cap of 20 concurrent sessions, both enforced by allele and both
+specified in the Algorithm's Dispatch section. The consequence worth planning around: the
+cap is *aggregate across every dispatcher on the machine*, so a twelve-worker fan-out is
+most of the machine's capacity and not merely most of yours.
 
 ## Patterns
 
-### 1. Parallel fan-out
+### 1. Fan-out
 
-N independent workers dispatched in one message, each with its own trait composition.
-Use for uniform work across separate subsystems, or for perspective diversity.
+N independent workers, each with its own trait composition. Use for uniform work across
+separate subsystems, or for perspective diversity.
 
-Dispatch all of them, then converse with each as results arrive — do not serialise on the
-slowest.
+**Create them one at a time** — one `allele_sessions_create`, read the `session_id`, then
+the next. Then converse with each as results arrive; do not serialise on the slowest. The
+workers overlap; only the creates queue, at about a second each.
+
+The two are easy to confuse, and the confusion is what this skill previously shipped. "Fan
+out N workers" is a statement about how the *work* runs. "N creates in one message" is a
+statement about how the *claims* are issued, and it is the one that broke — see the
+Algorithm's Dispatch section for the incident and for why the rule has no exception clause.
+
+**Size the fan-out against the cap, not against the task.** Eight live workers is a
+comfortable ceiling for one dispatcher; beyond that, run waves and reclaim each wave with
+`allele_sessions_discard` before starting the next.
 
 ### 2. Conversational delegation
 
@@ -163,8 +168,9 @@ Pick 2-4 traits across axes — one expertise, one stance, one approach is the s
 
 ### 5. Agent batches
 
-For Extended+ tasks, dispatch several workers as a batch. The orchestrator owns
-coordination, synthesis, criteria tracking, and follow-up edits.
+For Extended+ tasks, dispatch several workers as a batch — created one at a time, running
+concurrently. The orchestrator owns coordination, synthesis, criteria tracking, follow-up
+edits, and reclaiming every session in the batch when it is done.
 
 Workers in a batch do not coordinate with each other by default. They can — every session
 can reach every other by name — but unstructured cross-talk drifts and launders
@@ -179,29 +185,21 @@ present, **allele is not running and this session is outside it** — a plain te
 `claude.ai/code`, CI, or allele simply closed. That is a normal way to run Locus, not an
 error.
 
-**Fall back to `locus delegate run`, and say which mode you are in.**
+**Route down the Algorithm's vehicle table and announce the row you landed on.** The table,
+its tiers and the argument for each are canonical there and deliberately not copied here.
+Two points specific to composing workers:
 
-```bash
-locus agent compose --traits "..." --role "..." --task "..."   # unchanged
-locus delegate run --backend opencode --task-kind general --mode native \
-  --dir . --prompt "<composed prompt>" --output json
-```
+- `locus agent compose` is unchanged at every tier. Trait composition is the lever that
+  survives degradation; it is worth keeping even when the session does not.
+- Tier 2 (`locus delegate run --backend opencode`) returns an envelope rather than replying,
+  so the report contract below becomes a request you cannot follow up on. Ask for the shape
+  anyway, and say in the output that you could not question the answer.
 
-You lose the session — no workspace, no branch, no conversation, and it returns an envelope
-rather than replying. You keep delegation, which is the thing that matters. Say so once, in
-the shape `protocols/degradation.md` requires, rather than silently producing lesser work:
-
-```
-Dispatch normally creates real allele sessions. allele is not available here,
-so this is running through `locus delegate run` instead: read-only, no branch,
-and no way to ask the worker a follow-up question.
-```
-
-**Do not fall back to native Task/Agent subagents**, and do not abandon delegation. The
-guardrail names the mechanism; it is not a reason to do the work inline.
+Declare the degradation in the shape `protocols/degradation.md` requires, rather than
+silently producing lesser work.
 
 Note `locus delegate run` is **not** a security boundary — see the warning in
-`orchestration.md`. It is the standalone path, not the safe one.
+`protocols/orchestration.md`. It is the standalone path, not the safe one.
 
 ## What this is not
 

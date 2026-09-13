@@ -16,9 +16,13 @@ Break the proposal into its atomic claims. Not the proposal's sentences — its 
 
 Output: a numbered list of atomic claims.
 
-### Phase 2 — Parallel analysis via `allele_sessions_create`
+### Phase 2 — Concurrent attackers, dispatched one create at a time
 
-Dispatch 8-16 parallel attackers (per the roster in `Philosophy.md`) via `allele_sessions_create`, all in a single assistant message. **DO NOT use the platform-native Task tool** — see SKILL.md's "Execution model" section for the rationale.
+Dispatch 8-16 attackers (per the roster in `Philosophy.md`) via `allele_sessions_create`,
+**one call at a time**, reading each returned `session_id` before composing the next. The
+attackers run concurrently once created — only the creates queue, which costs roughly a
+second each. See `SKILL.md`'s "Dispatch discipline" section, and the canonical rule it
+points at, for why this is not negotiable.
 
 For each attacker:
 
@@ -48,6 +52,12 @@ allele_sessions_create(
 ```
 
 Each attacker replies with a report; read the `summary` section's STEELMAN / TOP_FLAW / EVIDENCE / SECONDARY sections. Attackers that fail to return a parseable response count as failed delegations and don't contribute to the synthesis convergence count.
+
+**Reclaim as you go.** Once an attacker's report has been read into the synthesis, call
+`allele_sessions_discard(session_id)`. Sixteen attackers is most of the global cap of
+twenty; reclaiming as reports arrive is what keeps a 16-attacker run from starving every
+other dispatcher on the machine. At the end of Phase 2, every attacker session is either
+discarded or named in the output as still working, with a reason.
 
 ### Phase 3 — Synthesis
 
@@ -107,4 +117,9 @@ Length: 6-10 points, each one sentence.
 
 ## Budget
 
-Decomposition: ~30s. Parallel analysis: ~30-60s. Synthesis: ~30s. Steelman + counter: ~30s. **Total: 2-3 minutes** for 8 attackers, 4-5 minutes for 16.
+Decomposition: ~30s. Dispatch: ~1s per attacker, sequential (8s for 8, 16s for 16). Attack
+phase: ~30-60s, bound by the slowest attacker, not by their count. Synthesis: ~30s.
+Steelman + counter: ~30s. **Total: 2-3 minutes** for 8 attackers, 4-5 minutes for 16.
+
+The sequential creates are the ~8-16s line above. They are not the reason a 16-attacker run
+takes longer than an 8-attacker one — the attackers themselves are.

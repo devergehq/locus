@@ -12,9 +12,18 @@ Two rounds are insufficient: members state positions and rebut once, with no cha
 
 ## Dispatch idiom
 
-Each round dispatches one `allele_sessions_create` per member, all in a single assistant message so the platform parallelises them. Each member's prompt is composed via `locus agent compose` from that member's trait bundle. **DO NOT use the platform-native Task tool** — Task subagents burn the orchestrator's context budget; dispatch runs the member in its own session, which reports back.
+**Create each member once, one `allele_sessions_create` at a time**, reading the returned
+`session_id` before composing the next member. Rounds 2 and 3 then reach those same sessions
+with `SendMessage` — they do not create new ones. The members deliberate concurrently; only
+the creates queue, at about a second each. The rule and its reason are in the Algorithm's
+**Dispatch** section; `SKILL.md`'s "Dispatch discipline" points at it.
 
-The shape of each per-member dispatch is:
+Prefer `allele_sessions_create` hard over a native Task subagent — Task subagents burn the
+orchestrator's context budget and inherit its framing, which makes member agreement
+worthless as evidence. When no sanctioned vehicle is reachable, route down the Algorithm's
+vehicle table and announce the degradation.
+
+The shape of each member's opening dispatch is:
 
 **1 — compose the worker's prompt.** Run this and read its output:
 
@@ -25,7 +34,8 @@ locus agent compose \
   --task "<round-specific task; see per-round prompts below>"
 ```
 
-**2 — dispatch it.** Pass the composed text as `prompt`:
+**2 — dispatch it.** Pass the composed text as `prompt`. One call, on its own; read the
+returned `session_id` before composing the next member:
 
 ```
 allele_sessions_create(
@@ -37,9 +47,14 @@ allele_sessions_create(
 
 The report's `summary` is the member's response; the orchestrator collects the N reports and assembles the transcript before the next round.
 
+**3 — reclaim.** After Round 3 is collected, `allele_sessions_discard(session_id)` every
+member. A four-member debate that leaves four sessions running has taken a fifth of the
+global cap and given it to nobody.
+
 ## Round 1 — Initial Positions
 
-**Parallel execution.** Dispatch one `allele_sessions_create` per member in a single assistant message.
+**Create the members here, one at a time.** One `allele_sessions_create` per member,
+each result read before the next is issued. This is the only round that creates sessions.
 
 **Each member's `--task` text:**
 
@@ -60,7 +75,11 @@ Give your initial position on this topic from your composed stance.
 
 ## Round 2 — Responses & Challenges
 
-**Parallel execution.** Dispatch per-member `allele_sessions_create` calls again, with the full Round 1 transcript inlined into each `--task` text.
+**Talk to the members you already created.** `SendMessage` each member the full Round 1
+transcript plus the task text below — no new `allele_sessions_create` calls. Resolve the
+address through `ListAgents` at every send; refs rotate. Use `allele_sessions_status` to
+tell a member that has finished (`response_ready`) from one blocked on a permission prompt
+(`awaiting_input`) — `ListAgents` cannot distinguish them.
 
 **Each member's `--task` text:**
 
@@ -87,7 +106,9 @@ The value is in genuine intellectual friction — engage with their actual argum
 
 ## Round 3 — Synthesis
 
-**Parallel execution.** Dispatch per-member `allele_sessions_create` calls with the full Rounds 1 + 2 transcripts in each `--task` text.
+**Same sessions again.** `SendMessage` each member the full Rounds 1 + 2 transcripts plus
+the task text below. Still no new creates. Discard every member session once the round is
+collected.
 
 **Each member's `--task` text:**
 
@@ -137,6 +158,9 @@ The synthesis is **not** the mode of the responses. It weighs arguments for evid
 
 ## Timing
 
-Each parallel round is as fast as the slowest member (~10-20 seconds per round). Three rounds + synthesis ≈ 30-60 seconds for a four-member debate.
+Members deliberate concurrently, so each round is as fast as the slowest member (~10-20
+seconds per round). Three rounds + synthesis ≈ 30-60 seconds for a four-member debate, plus
+about four seconds of sequential creates in Round 1 — paid once, not per round, because
+Rounds 2 and 3 reuse the sessions.
 
 This is the budget for the **Debate** workflow. The **Quick** workflow is Round 1 only — ~10-20 seconds total.
