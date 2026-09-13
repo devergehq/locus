@@ -11,22 +11,29 @@ child done, and the parent verified against its own acceptance criteria"*, and `
 so a parent closed on all-children-done is one claim of evidence stretched over two. It also
 closed only on all-`done`, which deadlocked forever on a single discarded child.
 
-The obvious move was to delete the file and let git history be the archive. That is wrong, and
-the reason is a fact about the installer rather than a matter of taste:
+**The reason to keep the file is a redirect, and it needs no more than that.** Thirty lines
+saying "moved, read `stack.v2.md`" cost nothing and catch anything that goes looking for the
+filename the old instructions named — a worker running from a cached copy of an older brief, a
+bookmark, a half-remembered path. Deleting it makes those land on nothing; keeping it makes
+them land here.
 
-> `crates/locus-cli/src/commands/update_content.rs:127` — *"Content sync writes files and
-> never removes them"*, and the one prune it has is `algorithm/*.md` only, *"[n]ot a general
-> sweep of the Locus home"*.
+There is a second, narrower reason, and it is stated carefully because an earlier version of
+this file overstated it badly enough that it had to be corrected after review:
 
-So deleting it from the repo would have removed it from nowhere. Every machine that has ever
-run `locus init` would keep a full copy of the superseded protocol at
-`~/.locus/skills/dispatcher/workers/stack.md` — unreferenced, invisible to `git grep`, and
-sitting in the directory a coordinator reads. It is exactly the stale file that prune
-docstring was written about, in the one managed directory that has no prune.
+> `update_content.rs:127` — *"Content sync writes files and never removes them"* — and its one
+> prune covers `algorithm/*.md` only, *"[n]ot a general sweep of the Locus home"*. The
+> dispatcher **is** carried by that path: a sync into a fresh `LOCUS_HOME` produces
+> `skills/dispatcher/workers/stack.md`. So once a machine has synced with this file bundled,
+> deleting it from the repo would not remove it from that machine — a full copy of the
+> superseded protocol would sit in the directory a coordinator reads, invisible to `git grep`.
 
-A signpost is overwritten by the same content sync. Deleting could only ever have added a
-second source of truth; this removes one.
+That is a **latent** hazard, not a historical one, and the difference is the part the earlier
+version got wrong. It claimed the stranding already existed "on every machine that has ever run
+`locus init`". It did not: the dispatcher first shipped in v0.3.1, and no `LOCUS_HOME` had been
+synced since. The mechanism was real and verified; whether it had yet applied to *these* files
+was never checked, and the true fact underneath made the false inference on top read as
+established. A signpost is right either way, so nothing about the decision moved — only the
+reasoning recorded for it.
 
-*(The plugin install path, `~/.claude/plugins/cache/locus/locus/<version>/`, is
-version-scoped and would have pruned it by construction. Both paths ship, so the weaker one
-governs.)*
+*(The plugin path, `~/.claude/plugins/cache/locus/locus/<version>/`, is version-scoped and
+replaced wholesale, so it strands nothing. Both paths ship, and the weaker one governs.)*

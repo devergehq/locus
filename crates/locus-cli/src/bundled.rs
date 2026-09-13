@@ -829,12 +829,21 @@ mod drift_tests {
     /// caught it: both files parse, both are bundled, and the wrong protocol is
     /// still a valid document. A grep is the only detector this failure has.
     ///
-    /// The `stack.md` half is about the installer rather than about tidiness.
-    /// `update_content.rs` never removes files from `~/.locus/`, so deleting the
-    /// superseded protocol here would have removed it from no machine that had
-    /// already installed one — leaving a full copy in the directory a coordinator
-    /// reads, invisible to `git grep`. It is kept as a signpost precisely so that
-    /// content sync overwrites it.
+    /// The `stack.md` half pins a redirect. Keeping a short signpost costs
+    /// nothing and catches anything still looking for the filename the old
+    /// instructions named — a worker running from a cached copy of an older
+    /// brief, most often.
+    ///
+    /// A second reason is real but narrower than an earlier version of this
+    /// comment claimed, and the overstatement is worth recording because it
+    /// read as verified: `update_content.rs:127` never removes files from
+    /// `~/.locus/`, and the dispatcher IS carried by that path (a sync into a
+    /// fresh LOCUS_HOME produces `skills/dispatcher/workers/stack.md`). So a
+    /// machine that has synced with this file bundled would keep the superseded
+    /// protocol forever after a deletion. That is LATENT: v0.3.1 shipped the
+    /// dispatcher, and no LOCUS_HOME had been synced since, so the stranding did
+    /// not yet exist anywhere. The mechanism was checked; whether it applied to
+    /// these files was not.
     #[test]
     fn coordinator_routing_names_the_live_protocol() {
         let root = repo_root().join("skills/dispatcher");

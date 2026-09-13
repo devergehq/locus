@@ -1526,11 +1526,12 @@ is now a **signpost** pointing at this one. It carried the finish line this docu
 replace — *"every child done, and the parent verified against its own acceptance criteria"* —
 which is exactly the claim section 10 stops you making.
 
-It was nearly deleted instead, and the reason it was not is worth a line, because deletion is
-the obvious move: `update_content.rs` never removes files from `~/.locus/`, so deleting it here
-would have removed it from no machine that had already installed it — leaving a full copy of the
-superseded protocol in the directory you are reading, invisible to `git grep`. A signpost gets
-overwritten by the same sync that would have left a deletion unapplied. `stack.md` says the rest.
+It was nearly deleted instead. The reason to keep it is simply that a redirect costs nothing and
+catches anything still looking for the old filename — a worker running from a cached copy of an
+older brief, most likely. There is a narrower second reason about content sync never removing
+files, which `stack.md` states along with the correction it needed: an earlier version of this
+paragraph claimed the deletion would have stranded a copy on every existing install, and that
+was an overstatement of a true mechanism. Read `stack.md` for the accurate version.
 
 Five things had to exist before any of this was executable, and all five ship with it:
 
