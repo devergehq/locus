@@ -106,3 +106,71 @@ never stopped growing.
 
 Reopen sooner if the tripwire in condition 2 fires, to make the accumulate-or-prune call
 deliberately.
+
+---
+
+## DEV-627 — The Dispatcher ships as Python, and that makes Python a second implementation language
+
+**Date:** 2026-09-13
+**Status:** Open — recorded so the choice is made deliberately rather than by default
+
+### The question
+
+`skills/dispatcher/dispatcher.py` is ~800 lines of Python: a poller, a watcher, a ledger, a
+Linear GraphQL client, a label mutator, a brief generator and an installer. Locus is otherwise a
+Rust workspace — `crates/`, eleven subcommands, a bundled-content pipeline and a CI matrix that
+runs `fmt`, `clippy` and `test` and knows nothing about Python.
+
+Shipping it as it stands means Locus has two implementation languages for one product.
+
+**This decision record does not settle that.** It exists so that the answer is chosen later, on
+purpose, rather than inherited — which is what happens when nobody writes the question down.
+
+### What was done now, and why
+
+**Ship the Python.** Unchanged except for splitting config from code and adding `init`.
+
+The alternative — port to Rust before landing anything — was rejected on sequencing, not on
+merit. The Python is *working software with a live deployment*: a poller has been running it on
+a 300-second loop, and its behaviour is the specification. A port written before that
+specification is extracted is a rewrite of something nobody has finished reading. Landing the
+working version first makes the port a refactor with a reference implementation and a diff,
+instead of a reconstruction from memory.
+
+It also keeps the two questions apart. "Should this be in the plugin" and "what language should
+it be in" have different answers, different evidence and different urgency, and bundling them
+means the harder one silently decides the easier one.
+
+### Why this is cheap to undo now and expensive later
+
+Nothing in the Rust tree depends on the Python today. `bundled.rs` treats it as opaque bytes —
+the same treatment `scripts/statusline.sh` already gets — so removing it is deleting entries from
+a list.
+
+That stops being true the moment anything in `crates/` reads the dispatcher's config schema,
+shells out to it, or shares a type with it. **`init` was deliberately kept in Python for exactly
+this reason.** A `locus dispatcher init` subcommand would have been the natural place for it, and
+would have put the config schema, the Linear client and the label vocabulary into the Rust tree —
+settling this question in the most expensive direction before it had been asked.
+
+### What would decide it
+
+Reopen when one of these is true:
+
+1. **A second consumer.** If anything in `crates/` needs the ledger or the config, the duplication
+   is real and the port pays for itself.
+2. **The CI gap bites.** There is no `ruff`, no `mypy`, no Python test job. A defect that Rust's
+   toolchain would have caught and Python's absent one did not is the empirical argument.
+3. **Install friction.** The skill assumes `python3` on PATH. Rust would make it one binary.
+4. **It stops changing.** A port is safest against a stable target. The dispatcher is still
+   learning — nine commits in its first week — and porting a moving specification is the worst
+   time to do it.
+
+### The honest case against porting at all
+
+Three of the four candidate reasons above are conditional, and the fourth may never fire. The
+Python is ~800 lines of standard library with no dependencies, it is read and edited mostly by
+agents rather than humans, and "one language per repo" is an aesthetic preference until it costs
+something measurable. **"Never port it" is a legitimate outcome of this record**, and it should
+not be treated as the failure case. What would be a failure is drifting into a half-port, where
+some of the dispatcher is Rust and some is Python and the boundary is wherever somebody stopped.

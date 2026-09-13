@@ -491,10 +491,12 @@ After `locus init`:
 ├── skills/             # Skill definitions (SKILL.md per skill)
 │   ├── council/
 │   ├── creative/
+│   ├── dispatcher/     # + dispatcher.py, config.example.json, workers/
 │   ├── first-principles/
 │   ├── iterative-depth/
 │   ├── red-team/
 │   ├── research/
+│   ├── review-craft/   # + review_lint.py, lenses, house style, example
 │   ├── science/
 │   └── ...
 ├── agents/             # Agent traits and archetypes
@@ -519,6 +521,33 @@ After `locus platform add opencode`:
 - `~/.config/opencode/opencode.json` — merged instructions
 
 **Nothing is written to platform subdirectories like `~/.claude/skills/` or `.opencode/`.** All Locus content stays in `~/.locus/`.
+
+### The Dispatcher
+
+`skills/dispatcher/` is a long-running session that watches Linear labels and GitHub review
+requests and turns each into a real worker session. It is the one skill with per-user state, and
+that state is deliberately kept out of the installed skill:
+
+```
+~/.locus/data/dispatcher/<slug>/
+├── config.json         # Linear workspace + label ids, GitHub query, projects, limits
+└── runtime/            # ledger, watch state, poll state, heartbeat
+```
+
+One instance per repo; several instances share one copy of the code. Create one with:
+
+```bash
+python3 ~/.locus/skills/dispatcher/dispatcher.py init --instance <slug> --team-key KEY
+```
+
+`init` is the only step that cannot be done by typing a config file out by hand: it creates the
+`Agent` label group and its nine labels in the workspace you name and writes the ids it gets
+back. It matches labels by name, so re-running it against a workspace that already has them
+creates nothing. `--dry-run` prints what it would do and writes nothing.
+
+Its review material lives in `skills/review-craft/`, which is a skill in its own right: five
+callers inside the dispatcher already shared it, and it is useful on its own to anyone reviewing
+a PR by hand.
 
 ---
 
