@@ -155,6 +155,21 @@ pub fn run() -> Result<DoctorOutcome, LocusError> {
     check_binary("git", "Git (required for sync)", &mut issues);
     check_plugin_binary_reachable(&mut issues);
 
+    // 6b. Delegation vehicles — informational, always.
+    //
+    // Neither of these can fail a check, and that is deliberate rather than an
+    // oversight. Allele is a separate product with its own install; a machine
+    // without it is a supported configuration, not a defect, and reporting it
+    // as a warning would be a warning nobody can act on, on a machine where
+    // nothing is wrong. Reported at all because the routing depends on it:
+    // which vehicle delegation reaches for is not obvious from the outside,
+    // and when native subagents are permitted the user should be able to find
+    // out why without reading the hook.
+    output::section("Delegation Vehicles");
+    for line in locus_core::vehicles::VehicleAvailability::probe().doctor_lines() {
+        output::info(&line);
+    }
+
     // 7. State checks — the ones that can report a problem with something that
     // exists, rather than only with something that is missing.
     output::section("Health");
