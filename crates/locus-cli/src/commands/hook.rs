@@ -110,17 +110,131 @@ fn dispatcher_context(event_name: &str) -> serde_json::Value {
     })
 }
 
-fn handle_session_start(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    // Only re-enter on compaction. On startup, resume and clear the next
-    // UserPromptSubmit carries the dispatcher anyway, so injecting here as well
-    // would pay for the same context twice.
+fn handle_session_start(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
+    let mut context = String::new();
+    let mut system_message: Option<String> = None;
+
+    // Which delegation vehicles this machine can reach is the same category of
+    // fact as a missing binary: a precondition the model will otherwise
+    // discover by failing at it. DEV-610 already built the way to say such a
+    // thing — additionalContext plus a systemMessage, once per session, never
+    // exit 2 — so this reuses that path rather than inventing a second one.
+    //
+    // Announcement is deliberately independent of enforcement. The notice fires
+    // whether or not `delegation.enabled` has armed the PreToolUse denial,
+    // because "you cannot delegate" is worth knowing even where nothing is
+    // stopping you.
+    if claim_session_notice(data_dir, event) {
+        let availability = locus_core::vehicles::VehicleAvailability::probe();
+        context.push_str(&availability.session_notice());
+        if !availability.has_sanctioned_vehicle() {
+            system_message = Some(
+                "Locus: no delegation vehicle is reachable — native subagents are \
+                 permitted as the last resort."
+                    .to_string(),
+            );
+        }
+    }
+
+    // The dispatcher is only re-injected on compaction. On startup, resume and
+    // clear the next UserPromptSubmit carries it anyway, so injecting here as
+    // well would pay for the same context twice.
     //
     // The field is `source`, not `session_start_reason` — verified against
     // claude 2.1.263 and 2.1.270, neither of which contains that string.
-    if event.get("source").and_then(|v| v.as_str()) != Some("compact") {
+    if event.get("source").and_then(|v| v.as_str()) == Some("compact") {
+        if !context.is_empty() {
+            context.push_str("\n\n");
+        }
+        context.push_str(DISPATCHER);
+    }
+
+    if context.is_empty() {
         return Ok(());
     }
-    write_stdout_json(&dispatcher_context("SessionStart"))
+
+    let mut out = serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": context
+        }
+    });
+    if let Some(message) = system_message {
+        out["systemMessage"] = serde_json::Value::String(message);
+    }
+    write_stdout_json(&out)
+}
+
+/// True the first time this session asks for the availability notice.
+///
+/// SessionStart fires again on compaction, and vehicle availability is a
+/// once-per-session fact rather than a once-per-event one. The marker is the
+/// same shape the wrapper script uses for its own degraded notice.
+///
+/// Every failure here returns `true`. A notice said twice is a smaller failure
+/// than a notice never said, and this whole path exists because silence is the
+/// expensive outcome.
+fn claim_session_notice(data_dir: &Path, event: &serde_json::Value) -> bool {
+    // Compaction is the one event that must always re-say it. Compaction is
+    // precisely what discards the earlier notice from context — it is why the
+    // dispatcher is re-injected a few lines below — so suppressing the notice
+    // here would leave a long session with no record that delegation is
+    // degraded, on the very event that erased the record.
+    if event.get("source").and_then(|v| v.as_str()) == Some("compact") {
+        return true;
+    }
+
+    let Some(session_id) = event.get("session_id").and_then(|v| v.as_str()) else {
+        return true;
+    };
+    let safe: String = session_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if safe.is_empty() {
+        return true;
+    }
+
+    let dir = data_dir.join("memory").join("state").join("pending");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return true;
+    }
+    let marker = dir.join(format!("vehicles-{}.marker", safe));
+    if marker.exists() {
+        return false;
+    }
+    prune_session_markers(&dir);
+    let _ = std::fs::write(&marker, b"");
+    true
+}
+
+/// Sessions end without telling anyone, so their markers would accumulate
+/// forever. A day is far longer than any session and far shorter than that.
+fn prune_session_markers(dir: &Path) {
+    const MARKER_TTL_SECONDS: u64 = 24 * 60 * 60;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("vehicles-"))
+        {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age.as_secs() > MARKER_TTL_SECONDS);
+        if stale {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn handle_session_end(_event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
@@ -148,14 +262,275 @@ fn handle_user_prompt_submit(
     write_stdout_json(&dispatcher_context("UserPromptSubmit"))
 }
 
-fn handle_pre_tool_use(event: &serde_json::Value, _data_dir: &Path) -> Result<(), LocusError> {
-    if is_delegation_enabled() {
-        if let Some(decision) = native_delegation_denial(event) {
-            return write_stdout_json(&decision);
-        }
+fn handle_pre_tool_use(event: &serde_json::Value, data_dir: &Path) -> Result<(), LocusError> {
+    if !is_delegation_enabled() {
+        return Ok(());
     }
 
-    Ok(())
+    match route_delegation(event, &locus_core::vehicles::VehicleAvailability::probe) {
+        Routing::Deny(decision) => write_stdout_json(&decision),
+        Routing::PermitDegraded { message, record } => {
+            append_routing_record(&record, data_dir);
+            // Deliberately not an `allow` decision. Emitting one would
+            // auto-approve the call and override whatever the user's own
+            // permission rules say about subagents. The hook's job here is to
+            // stop denying and to state the degradation in its own voice;
+            // whether the call is then approved remains the user's.
+            write_stdout_json(&serde_json::json!({ "systemMessage": message }))
+        }
+        Routing::Ignore => Ok(()),
+    }
+}
+
+/// What the PreToolUse hook decided about a delegation-shaped tool call.
+enum Routing {
+    /// A better vehicle is reachable; send the caller there.
+    Deny(serde_json::Value),
+    /// Nothing better is reachable. Stop denying, and say so out loud.
+    PermitDegraded {
+        message: String,
+        record: RoutingRecord,
+    },
+    /// Not a call this hook has an opinion about.
+    Ignore,
+}
+
+/// One line of the delegation routing log.
+///
+/// Its own struct and its own file rather than a variant of the activation
+/// log's `ActivationRecord`: two record shapes interleaved in one JSONL would
+/// break every reader that assumes the activation schema. A
+/// `#[derive(Serialize)]` struct rather than a `serde_json::json!` map for the
+/// reason the activation log gives — `serde_json::Map` is a `BTreeMap` and
+/// would emit these keys alphabetically.
+///
+/// Field order here *is* the on-disk format. Do not reorder.
+///
+/// This exists because the relaxation it records is otherwise unmeasurable.
+/// "How often did delegation actually degrade to a subagent, and was the dead
+/// end real?" is the question that decides whether tier 3 was worth adding, and
+/// without a line per occurrence the answer six months from now is one
+/// anecdote. Only the degraded path is logged: denials are the steady state and
+/// counting them would bury the signal.
+#[derive(serde::Serialize)]
+pub struct RoutingRecord {
+    ts: String,
+    session_id: String,
+    tool_name: String,
+    vehicle: String,
+    allele_reachable: bool,
+    opencode_available: bool,
+    escaped: bool,
+    reason: String,
+}
+
+/// The first `tool_input` string field that *asserts* the escape, if any.
+///
+/// Scans every top-level string value rather than a fixed pair of field names,
+/// so a delegation tool whose payload is shaped differently — `TeamCreate`
+/// carries neither `prompt` nor `description` — still has a way out. Safe only
+/// because the marker is anchored: a field must lead with it.
+fn escape_assertion(tool_input: Option<&serde_json::Value>) -> Option<String> {
+    tool_input?
+        .as_object()?
+        .values()
+        .filter_map(|v| v.as_str())
+        .find(|v| locus_core::vehicles::asserts_escape(v))
+        .map(|v| v.to_string())
+}
+
+/// `probe` is injected rather than called directly so the routing decision is a
+/// pure function of (event, availability) and can be tested without a live
+/// socket. It is a closure rather than a value because the escape marker must
+/// short-circuit ahead of it — see below.
+fn route_delegation(
+    event: &serde_json::Value,
+    probe: &dyn Fn() -> locus_core::vehicles::VehicleAvailability,
+) -> Routing {
+    let tool_name = event
+        .get("tool_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // The Workflow denial is untouched by vehicle availability. Its alternative
+    // is the Algorithm's own phased execution, which is available on any
+    // machine, so unlike the subagent denial it cannot dead-end.
+    if matches!(tool_name, "Workflow" | "workflow") {
+        return Routing::Deny(workflow_denial(event));
+    }
+
+    if !matches!(
+        tool_name,
+        "Task" | "Agent" | "TeamCreate" | "task" | "agent"
+    ) {
+        return Routing::Ignore;
+    }
+
+    let tool_input = event.get("tool_input");
+    let field = |name: &str| -> &str {
+        tool_input
+            .and_then(|v| v.get(name))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    };
+    let prompt = field("prompt");
+    let description = field("description");
+    let prompt_hint = if prompt.is_empty() {
+        if description.is_empty() {
+            "<bounded task>"
+        } else {
+            description
+        }
+    } else {
+        prompt
+    };
+
+    // The escape is checked before the probe, and that ordering is the point.
+    //
+    // This hook observes the filesystem; the caller observes its own toolset.
+    // They disagree routinely — a session started before the Allele app, or one
+    // whose MCP registration failed, sees no `allele_*` tools while the socket
+    // is perfectly healthy. When they disagree the caller holds the better
+    // evidence, so the gate must accept being contradicted or it can be
+    // permanently, unfalsifiably wrong. Running this first also means the
+    // release survives a probe that is broken rather than merely mistaken.
+    //
+    // Both fields are checked independently, and that is not defensive
+    // padding. Claude Code's Task tool sends `prompt` *and* `description`, so
+    // reading only the first non-empty one would silently ignore a marker
+    // placed in the other — and the denial text tells the caller either will
+    // do. A caller following the instruction literally would be re-denied with
+    // the identical message, forever, at precisely the point the design
+    // promises one round trip.
+    //
+    // Every string field is scanned, not just those two. `TeamCreate` is in the
+    // denied set and carries neither `prompt` nor `description`, so checking
+    // only those would deny it while telling it to use a field it does not
+    // have — the dead end this PR removes, surviving in one branch of the tool
+    // list. Anchoring is what makes the wider scan safe: a field has to *lead*
+    // with the marker, so scanning more fields costs no false releases.
+    if let Some(asserted) = escape_assertion(tool_input) {
+        let stated = locus_core::vehicles::escape_reason(&asserted);
+        let reason = if stated.is_empty() {
+            "caller asserted no sanctioned vehicle is usable, giving no reason".to_string()
+        } else {
+            format!("caller asserted no sanctioned vehicle is usable: {}", stated)
+        };
+        return Routing::PermitDegraded {
+            message: escape_acknowledgement(),
+            record: routing_record(event, tool_name, probe(), true, &reason),
+        };
+    }
+
+    let availability = probe();
+
+    if !availability.has_sanctioned_vehicle() {
+        return Routing::PermitDegraded {
+            message: degraded_permit_message(),
+            record: routing_record(
+                event,
+                tool_name,
+                availability,
+                false,
+                "no sanctioned vehicle reachable on this machine",
+            ),
+        };
+    }
+
+    Routing::Deny(native_delegation_denial(event, availability, prompt_hint))
+}
+
+fn routing_record(
+    event: &serde_json::Value,
+    tool_name: &str,
+    availability: locus_core::vehicles::VehicleAvailability,
+    escaped: bool,
+    reason: &str,
+) -> RoutingRecord {
+    RoutingRecord {
+        ts: chrono::Utc::now().to_rfc3339(),
+        session_id: event
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        tool_name: tool_name.to_string(),
+        vehicle: locus_core::vehicles::Vehicle::NativeSubagent
+            .as_str()
+            .to_string(),
+        allele_reachable: availability.allele,
+        opencode_available: availability.opencode,
+        escaped,
+        reason: reason.to_string(),
+    }
+}
+
+fn append_routing_record(record: &RoutingRecord, data_dir: &Path) {
+    // `log_dir()` resolves from the plugin's environment and returns `None`
+    // without it. The binary install path — hooks wired from `settings.json`,
+    // which the project keeps for the statusline and the ~/.locus allow-rules —
+    // sets none of those variables, so relying on it alone would write nothing
+    // on exactly those machines and say nothing about it. The record's whole
+    // justification is answering "how often did delegation actually degrade",
+    // and an answer that is silently absent for a whole install path is not one.
+    let dir = crate::commands::stop_verifier::log_dir()
+        .unwrap_or_else(|| data_dir.join("activation"));
+    // Losing a log line must never cost the user their tool call.
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let month = chrono::Utc::now().format("%Y-%m").to_string();
+    let path = dir.join(format!("delegation-{}.jsonl", month));
+    let Ok(mut line) = serde_json::to_string(record) else {
+        return;
+    };
+    line.push('\n');
+    use std::io::Write as _;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// Both permit-path messages are statements of fact addressed to the **user**,
+/// not instructions addressed to the model, and the difference is not stylistic.
+///
+/// On `PreToolUse` the only channel back to the model is
+/// `permissionDecisionReason` on a *deny*; `systemMessage` surfaces in the human
+/// transcript. The wrapper script says as much in so many words — "SessionStart
+/// is the one event that can tell the model itself … everything else gets
+/// systemMessage". So text here that reads "tell the user what degraded" is an
+/// instruction nobody receives, and asserting on it in a test would be this
+/// project's own anti-pattern: a check that passes while the behaviour it stands
+/// for cannot happen.
+///
+/// Writing the announcement in the hook's own voice also makes it
+/// uncounterfeitable. The degradation is stated because the hook states it, not
+/// because the model was asked to and might.
+fn escape_acknowledgement() -> String {
+    "Locus: delegation degraded to a native subagent. The caller asserted that no \
+     sanctioned vehicle is usable from this session, so the denial was released — \
+     this work runs in a hidden subagent with no workspace, no branch and no \
+     conversation, and it can be neither interrupted nor addressed. The assertion \
+     and its stated reason have been recorded."
+        .to_string()
+}
+
+fn degraded_permit_message() -> String {
+    format!(
+        "Locus: delegation degraded to a native subagent. No sanctioned vehicle is \
+         reachable — the Allele app is not accepting connections on {} and OpenCode \
+         is not usable (binary or credential missing) — so the denial did not fire. \
+         This work runs in a hidden subagent: no workspace, no branch, no \
+         conversation, and it can be neither interrupted nor addressed. Recorded in \
+         the delegation routing log.",
+        locus_core::vehicles::allele_socket_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "~/.allele/control.sock".to_string())
+    )
 }
 
 fn is_delegation_enabled() -> bool {
@@ -173,26 +548,22 @@ fn is_delegation_enabled() -> bool {
         .unwrap_or(false)
 }
 
-fn native_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Value> {
-    let tool_name = event
-        .get("tool_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if matches!(tool_name, "Workflow" | "workflow") {
-        return Some(workflow_denial(event));
-    }
-
-    if !matches!(tool_name, "Task" | "Agent" | "TeamCreate" | "task" | "agent") {
-        return None;
-    }
-
+/// Send a delegation-shaped call to the vehicle that is actually reachable.
+///
+/// Only ever called with `availability.has_sanctioned_vehicle()` true — the
+/// caller checks that first, because denying with nothing to route to is the
+/// dead end this whole path exists to remove.
+///
+/// The message names one specific vehicle rather than describing a routing
+/// policy. A model reading "prefer sanctioned delegation vehicles" has to guess
+/// which one is up; a model reading "the Allele app is reachable at
+/// /Users/x/.allele/control.sock" does not.
+fn native_delegation_denial(
+    event: &serde_json::Value,
+    availability: locus_core::vehicles::VehicleAvailability,
+    prompt_hint: &str,
+) -> serde_json::Value {
     let tool_input = event.get("tool_input");
-
-    let prompt_hint = tool_input
-        .and_then(|v| v.get("prompt").or_else(|| v.get("description")))
-        .and_then(|v| v.as_str())
-        .unwrap_or("<bounded task>");
 
     let subagent_type = tool_input
         .and_then(|v| v.get("subagent_type"))
@@ -207,44 +578,67 @@ fn native_delegation_denial(event: &serde_json::Value) -> Option<serde_json::Val
         _ => "general",
     };
 
-    let reason = format!(
-        "BLOCKED: Native agent delegation is not allowed — Locus delegation is enabled. \
-         You decided this work should be delegated — that decision was correct. \
-         You MUST delegate it through Locus instead by running the command below. \
-         \n\n\
-         CRITICAL: Do NOT fall back to doing this work yourself. Do NOT say \
-         \"I'll just read the files directly\" or \"Let me do this in the current session.\" \
-         That defeats the purpose of delegation (keeping the orchestrator context clean) \
-         and wastes a frontier model on work you already judged as delegatable. \
-         \n\n\
-         IMPORTANT — compose-then-dispatch workflow:\n\
-         Compose a trait-based prompt with `locus agent compose`, then dispatch it as a \
-         real allele session. Agent definitions ship with Locus — read the relevant one \
-         from the plugin\'s agents/ directory for the canonical trait bundle.\n\n\
-         PROMPT=$(locus agent compose \\\n  \
-         --traits \"research,systematic,empirical\" \\\n  \
-         --role \"Research analyst\" \\\n  \
-         --task \"<your task description>\" \\\n  \
-         --output prompt)\n\n\
-         Then call the allele MCP with that text:\n\n\
-         allele_sessions_create(project: \"<project>\", name: \"<specific name>\", \
-         prompt: \"$PROMPT\")\n\n\
-         If the allele_* tools are not present, allele is not running and this session is \
-         outside it. Only then fall back to the standalone path, which gives you no \
-         workspace, no branch and no conversation:\n\n\
-         locus delegate run --backend opencode --task-kind {} --mode native \
-         --dir . --prompt \"{}\" --output json",
-        task_kind,
-        prompt_hint.replace('"', "\\\"")
-    );
+    let escape = locus_core::vehicles::NO_VEHICLE_ESCAPE;
 
-    Some(serde_json::json!({
+    let reason = if availability.allele {
+        format!(
+            "BLOCKED — route this through Allele, not a native subagent.\n\n\
+             You judged that this work should be delegated, and that judgement was \
+             right. Only the vehicle is wrong. The Allele app is reachable on this \
+             machine ({socket}), so a real session is available: visible in the \
+             sidebar, addressable and interruptible, which a subagent is none of.\n\n\
+             Compose, then dispatch:\n\n\
+             PROMPT=$(locus agent compose \\\n  \
+             --traits \"research,systematic,empirical\" \\\n  \
+             --role \"<role>\" \\\n  \
+             --task \"<your task description>\" \\\n  \
+             --output prompt)\n\n\
+             allele_sessions_create(project: \"<project>\", name: \"<specific name>\", \
+             prompt: \"$PROMPT\")\n\n\
+             Do NOT do the work inline instead — you already judged it delegatable, \
+             and doing it here wastes the judgement.\n\n\
+             If the `allele_*` tools are not in your toolset, this session is not \
+             connected to the running app. That is a real condition and it is not \
+             something you can fix from here: say so, then re-issue this exact call \
+             with the description STARTING with `{escape}` followed by your reason. \
+             It must be the first thing in the field — a mention anywhere else is \
+             read as a quotation, not an assertion. That permits the call and \
+             records both the assertion and your reason.",
+            socket = locus_core::vehicles::allele_socket_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.allele/control.sock".to_string()),
+            escape = escape,
+        )
+    } else {
+        format!(
+            "BLOCKED — route this through OpenCode, not a native subagent.\n\n\
+             You judged that this work should be delegated, and that judgement was \
+             right. The Allele app is not reachable on this machine ({socket} is not \
+             accepting connections), so delegation falls to the standalone path. It is \
+             read-only and gives you no workspace, no branch and no conversation — say \
+             so in your reply rather than presenting it as a full session.\n\n\
+             locus delegate run --backend opencode --task-kind {task_kind} \
+             --mode native --dir . --prompt \"{prompt}\" --output json\n\n\
+             If that command cannot authenticate or the backend is unavailable, \
+             re-issue this call with the description STARTING with `{escape}` \
+             followed by your reason — it must be the first thing in the field. \
+             That permits the call and records both the assertion and your reason.",
+            socket = locus_core::vehicles::allele_socket_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.allele/control.sock".to_string()),
+            task_kind = task_kind,
+            prompt = prompt_hint.replace('"', "\\\""),
+            escape = escape,
+        )
+    };
+
+    serde_json::json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": reason
         }
-    }))
+    })
 }
 
 fn workflow_denial(event: &serde_json::Value) -> serde_json::Value {
@@ -1146,31 +1540,65 @@ mod tests {
         assert!(name.to_string_lossy().starts_with("checkpoint-pre-compact-"));
     }
 
+    // ---------------------------------------------- delegation routing --
+    //
+    // `route_delegation` takes its probe as a closure precisely so these can
+    // state a world and assert what the hook does in it, with no live socket
+    // and no environment mutation.
+
+    fn availability(allele: bool, opencode: bool) -> locus_core::vehicles::VehicleAvailability {
+        locus_core::vehicles::VehicleAvailability { allele, opencode }
+    }
+
+    fn route(event: &serde_json::Value, allele: bool, opencode: bool) -> Routing {
+        route_delegation(event, &move || availability(allele, opencode))
+    }
+
+    fn denial_reason(routing: &Routing) -> &str {
+        match routing {
+            Routing::Deny(decision) => decision["hookSpecificOutput"]["permissionDecisionReason"]
+                .as_str()
+                .expect("a denial must carry a reason"),
+            _ => panic!("expected a denial"),
+        }
+    }
+
+    /// The happy path is denied *to* something, and the something is named.
+    /// "Prefer a sanctioned vehicle" would leave the model guessing which one
+    /// is actually up; the socket path does not.
     #[test]
-    fn pre_tool_use_denies_native_agent_delegation() {
+    fn a_task_call_is_denied_to_allele_when_allele_is_reachable() {
         let event = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Task",
             "tool_input": {"description": "research something"}
         });
 
-        let decision = native_delegation_denial(&event).expect("Task must be denied");
-        assert_eq!(
-            decision["hookSpecificOutput"]["permissionDecision"].as_str(),
-            Some("deny")
+        let routing = route(&event, true, true);
+        match &routing {
+            Routing::Deny(decision) => assert_eq!(
+                decision["hookSpecificOutput"]["permissionDecision"].as_str(),
+                Some("deny")
+            ),
+            _ => panic!("expected a denial"),
+        }
+
+        let reason = denial_reason(&routing);
+        assert!(reason.contains("allele_sessions_create"));
+        assert!(reason.contains("locus agent compose"));
+        assert!(reason.contains("control.sock"));
+        assert!(reason.contains("Do NOT do the work inline"));
+        assert!(
+            reason.contains(locus_core::vehicles::NO_VEHICLE_ESCAPE),
+            "every denial must carry its own release condition"
         );
-        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .unwrap();
-        assert!(reason.contains("locus delegate run"));
-        assert!(reason.contains("MUST delegate"));
-        assert!(reason.contains("Do NOT fall back"));
-        assert!(reason.contains("research something"));
-        assert!(reason.contains("--task-kind research"));
     }
 
+    /// Allele down, OpenCode up: the denial routes to tier 2 and to nothing
+    /// else. Naming Allele here would send the caller at a socket that is not
+    /// answering.
     #[test]
-    fn pre_tool_use_maps_explore_agent_to_code_exploration() {
+    fn a_task_call_is_denied_to_opencode_when_only_opencode_is_available() {
         let event = serde_json::json!({
             "tool_name": "Agent",
             "tool_input": {
@@ -1180,26 +1608,181 @@ mod tests {
             }
         });
 
-        let decision = native_delegation_denial(&event).unwrap();
-        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .unwrap();
+        let routing = route(&event, false, true);
+        let reason = denial_reason(&routing);
+        assert!(reason.contains("locus delegate run"));
         assert!(reason.contains("--task-kind code-exploration"));
+        assert!(
+            !reason.contains("allele_sessions_create"),
+            "must not route to a vehicle that is not answering"
+        );
+        assert!(reason.contains(locus_core::vehicles::NO_VEHICLE_ESCAPE));
+    }
+
+    /// The acceptance criterion this pair of tickets exists for. With both
+    /// sanctioned vehicles gone the denial must not fire, because there is
+    /// nowhere left to send the caller — that is denying into a dead end.
+    #[test]
+    fn a_task_call_is_permitted_when_no_sanctioned_vehicle_is_reachable() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {"description": "research something"}
+        });
+
+        match route(&event, false, false) {
+            Routing::PermitDegraded { message, record } => {
+                assert!(message.contains("delegation degraded to a native subagent"));
+                assert!(message.contains("no workspace, no branch, no conversation"));
+                // The permit path's only channel is `systemMessage`, which
+                // reaches the user and not the model — so the text must be a
+                // statement of fact, never an instruction. Asserting on
+                // "tell the user…" would be a check that passes while the
+                // behaviour it stands for cannot happen.
+                assert!(
+                    !message.contains("Tell the user"),
+                    "systemMessage does not reach the model; an instruction here \
+                     is one nobody receives: {message}"
+                );
+                assert_eq!(record.vehicle, "native_subagent");
+                assert!(!record.escaped);
+                assert!(!record.allele_reachable);
+                assert!(!record.opencode_available);
+            }
+            _ => panic!("a Task call must be permitted when nothing better is reachable"),
+        }
+    }
+
+    /// The release condition. The hook sees a healthy socket; the caller sees
+    /// no `allele_*` tools. The caller holds the better evidence about its own
+    /// toolset, so its assertion wins — otherwise the gate is unfalsifiable and
+    /// can be permanently wrong.
+    #[test]
+    fn the_escape_marker_releases_the_denial_even_while_allele_looks_reachable() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "description": "locus:no-allele no allele_* tools in this session"
+            }
+        });
+
+        match route(&event, true, true) {
+            Routing::PermitDegraded { message, record } => {
+                assert!(message.contains("The caller asserted"));
+                assert!(!message.contains("Tell the user"));
+                assert!(record.escaped);
+                assert!(
+                    record.allele_reachable,
+                    "the record must preserve that the machine looked fine — that \
+                     disagreement is the interesting datum"
+                );
+                assert!(
+                    record.reason.contains("no allele_* tools in this session"),
+                    "the caller's stated reason is what separates a genuine escape \
+                     from one typed to get past an inconvenient denial: {}",
+                    record.reason
+                );
+            }
+            _ => panic!("the escape marker must release the denial"),
+        }
+    }
+
+    /// Claude Code's Task tool sends `prompt` AND `description`. Reading only
+    /// the first non-empty one meant a marker in `description` was ignored
+    /// whenever a prompt existed — so a caller following the denial's own
+    /// instruction was re-denied with the identical text, forever, at exactly
+    /// the point the design promises one round trip.
+    #[test]
+    fn the_escape_is_honoured_in_description_even_when_prompt_is_present() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "go and research the thing",
+                "description": "locus:no-allele the tools are absent"
+            }
+        });
+
+        assert!(
+            matches!(route(&event, true, true), Routing::PermitDegraded { .. }),
+            "a marker in description must be seen even when prompt is populated"
+        );
     }
 
     #[test]
-    fn pre_tool_use_allows_non_agent_tools() {
+    fn the_escape_is_honoured_in_prompt_too() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "locus:no-allele nothing reachable from here",
+                "description": "research something"
+            }
+        });
+
+        assert!(matches!(
+            route(&event, true, true),
+            Routing::PermitDegraded { .. }
+        ));
+    }
+
+    /// The marker's literal text ships in the Algorithm spec, the generated
+    /// skill and the README. A task that quotes any of them must not silently
+    /// switch the gate off.
+    #[test]
+    fn quoting_the_marker_does_not_release_the_denial() {
+        let event = serde_json::json!({
+            "tool_name": "Task",
+            "tool_input": {
+                "prompt": "Implement the routing section. It says to re-issue with \
+                           `locus:no-allele` leading the description.",
+                "description": "implement routing"
+            }
+        });
+
+        assert!(
+            matches!(route(&event, true, true), Routing::Deny(_)),
+            "a quotation is not an assertion"
+        );
+    }
+
+    /// `TeamCreate` carries neither `prompt` nor `description`, so an escape
+    /// checked against only those two field names could never fire for it: the
+    /// call would be denied with instructions naming a field it does not have.
+    /// That is this PR's own dead end, surviving in one branch of the tool list.
+    #[test]
+    fn the_escape_works_for_a_tool_with_neither_prompt_nor_description() {
+        let event = serde_json::json!({
+            "tool_name": "TeamCreate",
+            "tool_input": {
+                "team": "researchers",
+                "charter": "locus:no-allele this session has no allele_* tools"
+            }
+        });
+
+        match route(&event, true, true) {
+            Routing::PermitDegraded { record, .. } => {
+                assert!(record.escaped);
+                assert!(record.reason.contains("no allele_* tools"));
+            }
+            _ => panic!("every denied tool needs a reachable release"),
+        }
+    }
+
+    #[test]
+    fn non_delegation_tools_are_ignored_whatever_is_reachable() {
         let event = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
             "tool_input": {"command": "locus delegate run --backend opencode"}
         });
 
-        assert!(native_delegation_denial(&event).is_none());
+        assert!(matches!(route(&event, true, true), Routing::Ignore));
+        assert!(matches!(route(&event, false, false), Routing::Ignore));
     }
 
+    /// Workflow is deliberately not gated on vehicle availability. Its stated
+    /// alternative is the Algorithm's own phased execution, which needs no
+    /// external vehicle, so unlike the subagent denial it cannot dead-end.
     #[test]
-    fn pre_tool_use_denies_workflow_tool() {
+    fn the_workflow_denial_is_unconditional() {
         let event = serde_json::json!({
             "tool_name": "Workflow",
             "tool_input": {
@@ -1208,19 +1791,14 @@ mod tests {
             }
         });
 
-        let decision = native_delegation_denial(&event).expect("Workflow must be denied");
-        assert_eq!(
-            decision["hookSpecificOutput"]["permissionDecision"].as_str(),
-            Some("deny")
-        );
-        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .unwrap();
-        assert!(reason.contains("BLOCKED"));
-        assert!(reason.contains("Dynamic workflow orchestration"));
-        assert!(reason.contains("Algorithm"));
-        assert!(reason.contains("locus delegate run"));
-        assert!(reason.contains("Compare frameworks"));
+        for (allele, opencode) in [(true, true), (false, false)] {
+            let routing = route(&event, allele, opencode);
+            let reason = denial_reason(&routing);
+            assert!(reason.contains("BLOCKED"));
+            assert!(reason.contains("Dynamic workflow orchestration"));
+            assert!(reason.contains("Algorithm"));
+            assert!(reason.contains("Compare frameworks"));
+        }
     }
 
     #[test]
@@ -1232,12 +1810,88 @@ mod tests {
             }
         });
 
-        let decision = native_delegation_denial(&event).expect("Workflow must be denied");
-        let reason = decision["hookSpecificOutput"]["permissionDecisionReason"]
-            .as_str()
-            .unwrap();
-        assert!(reason.contains("BLOCKED"));
-        assert!(reason.contains("spawns dozens of native subagents"));
+        let reason_owned = denial_reason(&route(&event, true, true)).to_string();
+        assert!(reason_owned.contains("BLOCKED"));
+        assert!(reason_owned.contains("spawns dozens of native subagents"));
+    }
+
+    /// Field order in the routing log is its on-disk format, exactly as it is
+    /// for the activation log next to it. A `serde_json::Map` would emit these
+    /// alphabetically and silently break anything counting them.
+    #[test]
+    fn the_routing_record_serialises_in_declared_order() {
+        let event = serde_json::json!({
+            "session_id": "abc-123",
+            "tool_name": "Task",
+            "tool_input": {"description": "x"}
+        });
+        let record = routing_record(&event, "Task", availability(false, false), false, "why");
+        let line = serde_json::to_string(&record).unwrap();
+
+        let keys: Vec<&str> = line
+            .split(',')
+            .filter_map(|chunk| chunk.split(':').next())
+            .map(|k| k.trim_matches(|c| c == '{' || c == '"'))
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "ts",
+                "session_id",
+                "tool_name",
+                "vehicle",
+                "allele_reachable",
+                "opencode_available",
+                "escaped",
+                "reason"
+            ]
+        );
+        assert!(line.contains("\"session_id\":\"abc-123\""));
+    }
+
+    // -------------------------------------------- session-start notice --
+
+    /// Once per session, not once per event: SessionStart fires again on
+    /// compaction and availability is a session-level fact.
+    #[test]
+    fn the_availability_notice_is_claimed_once_per_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let event = serde_json::json!({"session_id": "session-abc"});
+
+        assert!(claim_session_notice(tmp.path(), &event));
+        assert!(!claim_session_notice(tmp.path(), &event));
+
+        let other = serde_json::json!({"session_id": "session-def"});
+        assert!(claim_session_notice(tmp.path(), &other));
+    }
+
+    /// Compaction discards the earlier notice from context — it is why the
+    /// dispatcher is re-injected on that event. Suppressing the availability
+    /// notice there would leave a long session with no record that delegation
+    /// is degraded, on the very event that erased the record.
+    #[test]
+    fn compaction_re_claims_the_notice_even_after_it_was_said() {
+        let tmp = tempfile::tempdir().unwrap();
+        let startup = serde_json::json!({"session_id": "s1", "source": "startup"});
+        let compact = serde_json::json!({"session_id": "s1", "source": "compact"});
+
+        assert!(claim_session_notice(tmp.path(), &startup));
+        assert!(!claim_session_notice(tmp.path(), &startup));
+        assert!(
+            claim_session_notice(tmp.path(), &compact),
+            "compaction must re-say it"
+        );
+    }
+
+    /// No session id means no marker to key off. Saying it twice is a smaller
+    /// failure than never saying it, and silence is the failure this path
+    /// exists to remove.
+    #[test]
+    fn a_missing_session_id_still_gets_the_notice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let event = serde_json::json!({});
+        assert!(claim_session_notice(tmp.path(), &event));
+        assert!(claim_session_notice(tmp.path(), &event));
     }
 
     #[test]

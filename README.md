@@ -198,8 +198,9 @@ All six are implemented in the `locus` binary and run through one wrapper. The
 wrapper exists for exactly one reason the binary cannot serve: noticing that the
 binary is missing.
 
-- **`PreToolUse`** denies native agent delegation, so the guardrail is enforced
-  rather than requested.
+- **`PreToolUse`** routes native agent delegation to the vehicle that is actually
+  reachable — see [Delegation vehicles](#delegation-vehicles) below.
+  It only denies while there is somewhere better to send you.
 - **`PostToolUse`** repairs PRD frontmatter after `sed`/`perl -i` edits.
 - **`PreCompact`** writes an emergency checkpoint so compaction cannot lose state.
 
@@ -238,6 +239,63 @@ whether the Algorithm helps; it can tell you whether the Algorithm **runs when
 it should**, which previously could not be measured at all. It lands in your
 configured data directory, or the plugin's own data directory if you have not
 set one; `LOCUS_ACTIVATION_LOG_DIR` overrides both.
+
+### Delegation vehicles
+
+Work leaves an orchestrator session through a **vehicle**, and there are four in
+preference order. The preference is about observability: a real Allele session is
+visible in the sidebar, addressable and interruptible, and a subagent is none of
+those things.
+
+| Tier | Vehicle | When |
+|---|---|---|
+| 1 | `allele_sessions_create` | The Allele app is reachable. The happy path. |
+| 2 | `locus delegate run --backend opencode` | Allele unavailable. Read-only, no workspace, no branch. |
+| 3 | native `Task` / `Agent` | Both above unavailable. Permitted, with the degradation stated. |
+| 4 | inline | The work never warranted delegation in the first place. |
+
+`SessionStart` states which of these are available, once per session.
+`PreToolUse` denies a native subagent **only while a higher-priority vehicle is
+actually reachable**, and names the one it is routing you to. When neither is
+reachable it does not deny — denying with nowhere to send you is a dead end, and
+that dead end is the reason this is a table rather than a prohibition.
+
+Reachability is a `connect(2)` on `~/.allele/control.sock`, not a check that the
+file is there. A socket file outlives the process that created it, so a crashed
+app would otherwise read as healthy right up until the first call failed.
+`LOCUS_ALLELE_SOCKET` overrides the path.
+
+One thing the hook cannot see: whether *your session* has the `allele_*` tools.
+It probes the machine, and a session started before the app — or one whose MCP
+registration failed — has no Allele tools while the socket is perfectly healthy.
+When you find yourself on the wrong side of that disagreement, say so and
+re-issue the call with the description *starting with* `locus:no-allele` and your
+reason after it. It must lead the field — the marker is documented here and in the
+Algorithm spec, so a mention anywhere else is a quotation, not an assertion. That
+releases the denial and records it, so the chain always terminates.
+
+Degraded delegations append a line to `delegation-YYYY-MM.jsonl` next to the
+activation log, so "how often did this actually happen, and was Allele up at the
+time?" has an answer rather than an anecdote.
+
+### Allele is not bundled — register it yourself
+
+Locus **detects** Allele; it does not own it. Allele is a separate product with
+its own install and its own release cycle, and every Allele user already has a
+registration of their own — a second one shipped by this plugin would collide
+with it on every session. So the plugin declares no MCP server at all.
+
+If you use Allele, register it once, at user scope:
+
+```sh
+claude mcp add allele --scope user -- /Applications/Allele.app/Contents/MacOS/Allele --mcp-serve
+```
+
+Point it at a **stable** path. A registration into `target/release/` works right
+up until the next `cargo clean`, at which point delegation dies silently.
+
+Locus runs perfectly well with no Allele at all — it falls back to OpenCode, and
+`locus doctor` reports Allele as an optional integration rather than a problem.
 
 ---
 

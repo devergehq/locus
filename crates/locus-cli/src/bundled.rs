@@ -332,7 +332,6 @@ mod drift_tests {
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
-
     fn repo_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -377,7 +376,8 @@ mod drift_tests {
         .expect("Algorithm file missing at the path ALGORITHM_FILE names");
 
         assert_eq!(
-            bundled_content, on_disk,
+            bundled_content,
+            on_disk,
             "bundled Algorithm content differs from algorithm/{} — the \
              include_str! literal points at a different file",
             locus_core::ALGORITHM_FILE
@@ -506,8 +506,9 @@ mod drift_tests {
     /// design set; without a test, prose grows and nobody notices the bill.
     #[test]
     fn dispatcher_payload_stays_under_one_kilobyte() {
-        let payload = std::fs::read(repo_root().join("crates/locus-cli/src/commands/dispatcher.txt"))
-            .expect("dispatcher.txt missing");
+        let payload =
+            std::fs::read(repo_root().join("crates/locus-cli/src/commands/dispatcher.txt"))
+                .expect("dispatcher.txt missing");
 
         assert!(
             payload.len() < 1024,
@@ -610,6 +611,47 @@ mod drift_tests {
             !repo_root().join("bin").exists(),
             "a top-level bin/ has appeared; plugins carrying one are rejected \
              during claude.ai organization-settings sync"
+        );
+    }
+
+    /// Locus does not own Allele's MCP server, and declaring it collides with
+    /// the registration every Allele user already has.
+    ///
+    /// The manifest carried an `mcpServers.allele` block for exactly one commit
+    /// (`5b45c02`, DEV-579). It never worked: its command was
+    /// `${user_config.alleleBinary}`, `pluginConfigs` is `{}` so that resolved
+    /// to nothing, and the fallback was bare `allele` — which is on nobody's
+    /// PATH, because the product ships as `Allele.app`, not a CLI. Every
+    /// session showed `plugin:locus:allele ✘ ENOENT` next to the user's own
+    /// working entry.
+    ///
+    /// Nothing was lost by removing it: no Rust in this repo has ever read
+    /// `mcpServers`, and `~/.claude.json` has always been the canonical
+    /// registration. Locus detects Allele — see `locus_core::vehicles` — and
+    /// the README documents the one-line `claude mcp add` a user runs
+    /// themselves. Re-adding the block would restore the collision.
+    #[test]
+    fn plugin_manifest_declares_no_mcp_servers() {
+        let manifest = std::fs::read_to_string(repo_root().join(".claude-plugin/plugin.json"))
+            .expect("plugin manifest missing");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&manifest).expect("plugin.json is not valid JSON");
+
+        assert!(
+            parsed.get("mcpServers").is_none(),
+            "plugin.json declares `mcpServers`; Allele owns its own MCP server and \
+             the user's ~/.claude.json entry is canonical. Declaring it here shows up \
+             as a second, broken `plugin:locus:allele` server on every session."
+        );
+
+        // The only reason `alleleBinary` existed was to fill in that command.
+        // Leaving it behind would be a config knob that configures nothing —
+        // and would still appear in the plugin's settings UI.
+        let allele_binary = parsed.get("userConfig").and_then(|c| c.get("alleleBinary"));
+        assert!(
+            allele_binary.is_none(),
+            "plugin.json still declares `userConfig.alleleBinary`; nothing reads it \
+             now that `mcpServers` is gone"
         );
     }
 }
