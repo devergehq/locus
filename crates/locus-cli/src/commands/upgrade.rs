@@ -184,3 +184,37 @@ fn install_update(version: &str) -> Result<(), LocusError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// `Cargo.toml` is the source of truth for the version, but
+    /// `.claude-plugin/plugin.json` carries its own copy that Claude Code reads
+    /// and `claude plugin list` displays. They drifted once already: two
+    /// `!`-marked commits landed, plugin.json moved to 0.3.0 and the crate
+    /// stayed at 0.2.1, so `locus --version` reported the same string for the
+    /// August build and for master.
+    ///
+    /// That is not cosmetic. `upgrade` above compares `CARGO_PKG_VERSION`
+    /// against the newest GitHub Release to decide whether to replace the
+    /// binary, and `doctor`'s version-drift check reads the same constant. While
+    /// the number is a lie, both are comparing against a lie.
+    #[test]
+    fn plugin_manifest_version_matches_the_crate_version() {
+        let manifest = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(".claude-plugin/plugin.json"),
+        )
+        .expect("plugin manifest missing");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&manifest).expect("plugin.json is not valid JSON");
+
+        assert_eq!(
+            parsed["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "plugin.json version and the workspace version disagree. \
+             scripts/release.sh bumps Cargo.toml only — plugin.json is hand-\
+             maintained, so a release has to move both."
+        );
+    }
+}
