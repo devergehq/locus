@@ -1,5 +1,5 @@
 <!-- Worked example. The codebase is invented; every language behaviour it turns on is real and
-     checkable in a Node REPL with no access to that codebase. Visible body 127 words — counted
+     checkable in a Node REPL with no access to that codebase. Visible body 123 words — counted
      outside <details>, excluding table rows and this comment (target 150, ceiling 400). Count it
      yourself: the method is stated so the number is falsifiable.
      Note on shape: this demonstrates finding craft. The index shape the linter enforces is the
@@ -20,22 +20,27 @@ upstream provider and user ids from the app — correctly deferred, not fixed he
 ### Findings
 | | Location | Finding |
 |---|---|---|
-| 🟠 Should | [`test/factories/creditNote.ts:20`](#) | `parseInt(token(), 10)` collides 1 in 49 — worse than the bug being fixed, and dismissed as unrelated |
+| 🟠 Should | [`test/factories/creditNote.ts:20`](#) | `parseInt(token(), 10)` lands on a seeded plan id 1 draw in 5 — worse than the bug being fixed, and dismissed as unrelated |
 | 🟠 Should | PR description → Security impact | The deferred `parseInt` vs `Number` issue has no ticket; EX-303 closes on merge and it goes with it |
 
 > [!WARNING]
 > File the `parseInt`/`Number` ticket before merging. EX-303 closes when this merges.
 
-<details><summary>🟠 Should — <code>parseInt(token(), 10)</code> collides 1 in 49, and the dismissal is backwards</summary>
+<details><summary>🟠 Should — <code>parseInt(token(), 10)</code> lands on a seeded id 1 draw in 5, and the dismissal is backwards</summary>
 
-`planId: parseInt(token(), 10)` collides with a low autoincrement plan id about **1 in 49** draws,
-against **never** for the `1000 + random*9000` form this PR removes — 500,000 draws each. `token()`
-is `Math.random().toString(36).slice(2, 8)`, and **`parseInt` stops at the first non-digit**, so a
-token beginning `7f…` parses to `7`. Analytically (1/36)(26/36) ≈ 1 in 50, which the measurement
-matches. The dismissal assumed base 36 means "wider id space", which is the opposite of what
+Two different numbers, and the difference is the finding. `planId: parseInt(token(), 10)` lands
+somewhere in `1..9` — the range every seeded plan id occupies — **1 draw in 5.4**, and on the one
+plan a given test asserts against **1 in 48.5**. Against `Math.floor(Math.random() * 1e6) + 1`,
+the form this PR removes: **1 in 111,111**. 2,000,000 draws each.
+
+`token()` is `Math.random().toString(36).slice(2, 8)`, and **`parseInt` stops at the first
+non-digit**, so a token beginning `7f…` parses to `7`. Leading zeros widen that: `007f9a` also
+parses to `7`, so the series is (1/36)(26/36)·36/35 = **1 in 48.5**, not the 1 in 49.8 you get by
+forgetting them — measured 1 in 48.5 over 2,000,000 draws, consistent with the corrected figure
+and 5.6 sigma from the naive one. The dismissal assumed base 36 means "wider id space", which is the opposite of what
 parsing it back in base 10 does.
 
-Worse in passing: **72.2% of draws are `NaN`**, and `NaN === NaN` is `false`, so most runs pass the
+Worse in passing: **26/36 = 72.2% of draws are `NaN`**, and `NaN === NaN` is `false`, so most runs pass the
 denial assertion because the id never equals *anything* — including the one the test intends.
 
 `planId` is trusted alone by three customer-facing financial queries —
@@ -77,7 +82,9 @@ squash-merges with the PR body as the commit message, making this permanent.
 <details><summary>Evidence — commands and output</summary>
 
 ```
-node -e '...500k draws...'  → parseInt(token(),10) 1 in 49 · 1000+random*9000 never · NaN 72.2%
+node -e '...2M draws...' → parseInt(token(),10): in 1..9 1 in 5.4 · ===7 1 in 48.5 · NaN 72.2%
+                          Math.floor(random*1e6)+1: in 1..9 1 in 111,111  (analytic 1 in 111,111)
+node -e 'parseInt("07f9a1",10); parseInt("007f9a",10)' → 7 7   (leading zeros, the 36/35 term)
 node -e 'console.log(parseInt("7 Eleven Staff",10), Number("7 Eleven Staff"))' → 7 NaN
 grep -rnE "(Id|By)'?: parseInt\(token\(\)" test/factories/ src/
   → 11 hits the PR does not mention
@@ -105,8 +112,10 @@ tests the implementation rather than the invariant, but it holds.
 
 <details><summary>Risks and not verified</summary>
 
-- The 1-in-49 figure is empirical over 500,000 draws. `Math.random()`'s distribution is not
-  specified by the language, so the analytic 1 in 50 is the claim I would defend, not the measurement.
+- I first derived this as (1/36)(26/36) = 1 in 49.8 and had the measurement "matching" it. It does
+  not: 1 in 48.5 over 2,000,000 draws is 5.6 sigma away. Leading zeros were the missing term. The
+  corrected 1 in 48.5 is what I would defend; the figure I nearly shipped was wrong in the
+  direction that made the bug look rarer.
 - Postgres vs the in-memory test driver: the `parseInt` comparison was reasoned about, not exercised
   against the real driver under CI.
 - I did not check whether any UI renders `raisedBy` as a name rather than an id.
