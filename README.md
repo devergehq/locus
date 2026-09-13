@@ -570,7 +570,13 @@ version tag (`v*`) is pushed. Each tag produces a GitHub Release with a
 triple so that `locus upgrade` can find the right one.
 
 - Targets: macOS (Apple Silicon + Intel), Linux (x86_64 + ARM64), Windows (x86_64)
-- Built natively on each platform's own runner — no cross-compilation
+- Built on each platform's own runner, except `x86_64-apple-darwin`, which is
+  cross-compiled from the Apple Silicon runner to avoid the scarce macos-13
+  Intel pool. Release builds resolve the toolchain from `rust-toolchain.toml`
+  (`rustup show`), then `rustup target add` attaches the target to *that*
+  toolchain — targets are installed per toolchain, so adding it to a separately
+  installed `stable` would leave the pinned one with no std for the one target
+  that is genuinely cross-compiled
 - Archive format is `.tar.gz` on every platform for compatibility with `locus upgrade`
 
 ### Cutting a release
@@ -578,17 +584,35 @@ triple so that `locus upgrade` can find the right one.
 The version in `Cargo.toml` is the source of truth; the git tag must match it.
 The helper script keeps them in sync in one step:
 
-```sh
-scripts/release.sh 0.2.0          # bump Cargo.toml, refresh Cargo.lock, commit, tag v0.2.0
-# then push to trigger the build:
-git push origin main && git push origin v0.2.0
+The helper script runs in **two phases**, because `master` is protected and a
+squash merge rewrites the commit — a tag cut before the merge would point at a
+commit that never reaches `master`, and the published binaries would be built
+from something that is not the release.
 
-# or do it all at once:
-scripts/release.sh 0.2.0 --push
+```sh
+# Phase 1 — prepare the bump on a branch, open a PR, merge it.
+scripts/release.sh 0.3.0 --push
+
+# Phase 2 — tag the commit that actually landed, which triggers the build.
+scripts/release.sh --tag 0.3.0 --push
 ```
 
-The workflow's `verify` job hard-fails if the pushed tag does not match the
-`Cargo.toml` version, so a mismatched release can never ship.
+Phase 2 re-reads `Cargo.toml` from `origin/master` and refuses to tag unless it
+already carries the version being tagged, so the tag and the version it claims
+cannot drift apart. The workflow's `verify` job checks the same thing again from
+the other side, and hard-fails if the pushed tag does not match.
+
+Every target builds with `--locked`, so the bump commit must carry a refreshed
+`Cargo.lock`. Phase 1 does that for you; a stale lockfile fails all five builds,
+not just one.
+
+Update `CHANGELOG.md` in the same PR as the bump — its dated `[x.y.z]` heading
+is what the release notes are written from.
+
+The release assets are also what make the **plugin** functional: the plugin
+carries skills, agents and hooks but never the per-platform `locus` binary, so
+until a release exists carrying it, an installed plugin can only report that the
+binary is missing.
 
 ---
 
