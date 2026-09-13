@@ -66,7 +66,14 @@ def instance_path(value: str) -> Path:
     DISPATCHER_HOME the worker cannot see.
     """
     if os.sep in value or value.startswith("~"):
-        return Path(value).expanduser().resolve()
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            # A poller is started by a supervisor whose working directory is not the operator's,
+            # so a relative path in a launchd plist or systemd unit resolves somewhere else
+            # entirely — and silently, since it would simply fail to find a config.json.
+            raise SystemExit(f"instance path {value!r} must be absolute, or a bare slug under "
+                             f"{DISPATCHER_HOME}")
+        return path.resolve()
     if not SLUG.fullmatch(value) or value in (".", ".."):
         raise SystemExit(f"bad instance slug {value!r}: letters, digits, dot, dash, underscore, "
                          f"or an explicit path")

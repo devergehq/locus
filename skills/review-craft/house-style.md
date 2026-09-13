@@ -331,6 +331,34 @@ every push. No benchmark measures this, because precision and recall are single-
 - **One comment per round**, after the push settles — not one per finding as you notice them.
 - A re-review says what changed: what's fixed, what's still open, what's new. Nothing else is re-posted.
 
+## "Not verified" is the only section with no adversary
+
+Every other part of a review is checked by someone: findings by the author, severities by the
+reader, arithmetic by the linter. The provenance block is checked by nobody, which makes it the
+one place where costume survives indefinitely — caveats that sound rigorous and cost nothing.
+
+**The test: a "not verified" item must name something that, if you checked it and it came out
+badly, would change a finding's severity or remove a finding entirely.** If nothing it could
+reveal would change the review, it is not a caveat; it is a hedge, and it is taking up the space
+where a real one should be.
+
+Two ways it goes wrong, both observed in a real review:
+
+- **The caveat about untouched territory.** "The comparison was reasoned about, not exercised
+  against the database driver" — where the operation in question never reaches a driver. It
+  reads as honest and forecloses nothing. Often it has been carried over from an earlier review
+  where it *was* load-bearing, which is why it survives a reread: it was true somewhere else.
+- **The caveat that raises confidence instead of lowering it.** "The figure is empirical, so the
+  analytic value is the one I would defend." That does not admit a weakness; it promotes a number
+  the review never checked, in the section whose job is to admit weaknesses. If a derivation and
+  a measurement disagree, the disagreement is the finding — compute it rather than choosing a
+  side, because two numbers that agree to one significant figure is exactly where a real error
+  hides.
+
+**Where you got something wrong and fixed it before posting, say which way it was wrong.** "The
+figure I first derived made the bug look rarer than it is" tells a reader how to weight the rest
+of your numbers. "Corrected an error" tells them nothing.
+
 ## Volume
 
 No format survives 24 findings on a cursor change. Before a finding goes anywhere, ask the question

@@ -1,7 +1,12 @@
 <!-- Worked example. The codebase is invented; every language behaviour it turns on is real and
-     checkable in a Node REPL with no access to that codebase. Visible body 123 words — counted
+     checkable in a Node REPL with no access to that codebase. Visible body 131 words — counted
      outside <details>, excluding table rows and this comment (target 150, ceiling 400). Count it
      yourself: the method is stated so the number is falsifiable.
+     The method, exactly, so the number is reproducible rather than merely stated:
+       strip this comment and every <details> block, drop lines that are table rows, strip HTML
+       tags and the characters *`_#>| , then count whitespace-separated tokens containing at
+       least one alphanumeric. The interpunct, the severity glyphs and bare punctuation do not
+       count; `InvoicePolicy` and `1` do.
      Note on shape: this demonstrates finding craft. The index shape the linter enforces is the
      template in house-style.md — two tables, a Method line — which this example predates. -->
 
@@ -9,7 +14,8 @@
 Reviewer: testing, adversarial, thorough · independent PR reviewer · reviewed `1834c8f`
 
 **0 Blockers · 2 Should.** The fix is right and survived a hard attempt to break it — but the
-neighbour this PR dismisses as unrelated is a worse instance of the same bug.
+neighbour this PR dismisses as unrelated is a worse instance of the same bug, and fails silently
+where this one failed loudly.
 
 ### Problem fit
 `InvoicePolicy` compares `raisedBy` to a user id and the factory handed out a random one, so
@@ -20,18 +26,24 @@ upstream provider and user ids from the app — correctly deferred, not fixed he
 ### Findings
 | | Location | Finding |
 |---|---|---|
-| 🟠 Should | [`test/factories/creditNote.ts:20`](#) | `parseInt(token(), 10)` lands on a seeded plan id 1 draw in 5 — worse than the bug being fixed, and dismissed as unrelated |
+| 🟠 Should | [`test/factories/creditNote.ts:20`](#) | `parseInt(token(), 10)` yields `NaN` 72% of the time, so those denial tests assert nothing — dismissed as unrelated |
 | 🟠 Should | PR description → Security impact | The deferred `parseInt` vs `Number` issue has no ticket; EX-303 closes on merge and it goes with it |
 
 > [!WARNING]
 > File the `parseInt`/`Number` ticket before merging. EX-303 closes when this merges.
 
-<details><summary>🟠 Should — <code>parseInt(token(), 10)</code> lands on a seeded id 1 draw in 5, and the dismissal is backwards</summary>
+<details><summary>🟠 Should — <code>parseInt(token(), 10)</code> is <code>NaN</code> 72% of the time, and the dismissal is backwards</summary>
 
-Two different numbers, and the difference is the finding. `planId: parseInt(token(), 10)` lands
-somewhere in `1..9` — the range every seeded plan id occupies — **1 draw in 5.4**, and on the one
-plan a given test asserts against **1 in 48.5**. Against `Math.floor(Math.random() * 1e6) + 1`,
-the form this PR removes: **1 in 111,111**. 2,000,000 draws each.
+**The bigger half first: 26/36 = 72.2% of these ids are `NaN`.** `NaN === NaN` is `false`, so
+for roughly seven runs in ten the seeded `planId` equals nothing at all — including the plan the
+denial test names. Those runs pass while asserting nothing. That is worse than the flake this PR
+fixes, which at least failed loudly: a test that is vacuous 72% of the time looks green and
+protects nothing.
+
+The collisions are the smaller, louder half. `planId: parseInt(token(), 10)` lands somewhere in
+`1..9` — the range every seeded plan id occupies — **1 draw in 5.4**, and on the one plan a given
+test asserts against **1 in 48.5**. Against `Math.floor(Math.random() * 1e6) + 1`, the form this
+PR removes: **1 in 111,111**. 2,000,000 draws each.
 
 `token()` is `Math.random().toString(36).slice(2, 8)`, and **`parseInt` stops at the first
 non-digit**, so a token beginning `7f…` parses to `7`. Leading zeros widen that: `007f9a` also
@@ -39,9 +51,6 @@ parses to `7`, so the series is (1/36)(26/36)·36/35 = **1 in 48.5**, not the 1 
 forgetting them — measured 1 in 48.5 over 2,000,000 draws, consistent with the corrected figure
 and 5.6 sigma from the naive one. The dismissal assumed base 36 means "wider id space", which is the opposite of what
 parsing it back in base 10 does.
-
-Worse in passing: **26/36 = 72.2% of draws are `NaN`**, and `NaN === NaN` is `false`, so most runs pass the
-denial assertion because the id never equals *anything* — including the one the test intends.
 
 `planId` is trusted alone by three customer-facing financial queries —
 `src/billing/queries/invoicedTotalForPlan.ts:40`, `src/billing/queries/customerSpendSummary.ts:109`,
@@ -86,8 +95,8 @@ node -e '...2M draws...' → parseInt(token(),10): in 1..9 1 in 5.4 · ===7 1 in
                           Math.floor(random*1e6)+1: in 1..9 1 in 111,111  (analytic 1 in 111,111)
 node -e 'parseInt("07f9a1",10); parseInt("007f9a",10)' → 7 7   (leading zeros, the 36/35 term)
 node -e 'console.log(parseInt("7 Eleven Staff",10), Number("7 Eleven Staff"))' → 7 NaN
-grep -rnE "(Id|By)'?: parseInt\(token\(\)" test/factories/ src/
-  → 11 hits the PR does not mention
+grep -rnE "(Id|By)\s*:\s*(parseInt\(token\(\)|Math\.floor\(Math\.random|faker\.number\.int|randomId\()" \
+     test/factories/ src/   → 11 hits the PR does not mention
 for f in test/billing/invoice/*.test.ts; do ... done → 7 files
 npx vitest run test/billing/invoice --repeat=50 → 50/50 pass on the branch
 ```
@@ -116,7 +125,8 @@ tests the implementation rather than the invariant, but it holds.
   not: 1 in 48.5 over 2,000,000 draws is 5.6 sigma away. Leading zeros were the missing term. The
   corrected 1 in 48.5 is what I would defend; the figure I nearly shipped was wrong in the
   direction that made the bug look rarer.
-- Postgres vs the in-memory test driver: the `parseInt` comparison was reasoned about, not exercised
-  against the real driver under CI.
+- I have not read the seed script, so "every seeded plan id is in `1..9`" is from the factories and
+  the migrations, not from an observed database. If seeding starts the sequence higher, the 1-in-5.4
+  figure drops and the first Nit's severity drops with it.
 - I did not check whether any UI renders `raisedBy` as a name rather than an id.
 </details>
