@@ -9,6 +9,52 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [0.3.2] — 2026-09-14
+
+The coordinator protocol goes into service, and the three things it depended on
+get built. Also four defects in the live dispatcher that the work surfaced.
+
+### Added
+
+- **`D ledger children <KEY>`** (`21def50`, DEV-628). The coordinator writes
+  `parent=<KEY>` on every child it dispatches and, until now, nothing read it —
+  so a replacement coordinator could not find the children still running and
+  would dispatch a second session onto each one's live branch. This is the
+  command that closes that.
+- **A `decide` mode** for children that record answers rather than produce a PR.
+  It shipped in 0.3.1 wired to nothing, so such a child fell through to
+  `investigate`, whose finish line is a findings comment.
+- **`blocked`**, distinct from `needs-input`. `needs-input` means a question was
+  asked and a thread is open; `blocked` means the work was analysed and is not in
+  a fit state to begin. It sits in `WORKING` so the poller will not re-trigger a
+  parent that has been claimed and held.
+- **`init` teaches an existing config a vocabulary it has not heard of**, and
+  creates only the labels a workspace lacks, so an install from an earlier
+  version picks up new modes without losing its ids.
+
+### Changed
+
+- **Coordinators now run `stack.v2.md`.** `implement.md` and `SKILL.md` both
+  routed to the superseded protocol. The old file stays as a 32-line signpost:
+  bundled content syncs into `~/.locus` and is never removed there, so deleting
+  it would leave the old protocol on disk under the name the previous
+  instructions named, where a redirect costs nothing.
+
+### Fixed
+
+- **`ledger_put` had no lock.** It is a read-modify-write, and two sessions
+  legitimately write one child key — a coordinator setting `parent=` and the
+  Dispatcher writing `status=lost`. Under interleaving an entire writer's update
+  was lost, including the `parent` field the recovery path depends on. Now holds
+  `flock` across the read and the write.
+- **One unparseable ledger file stopped everything.** `ledger_all` raised outside
+  the poller's per-section guard, so a single truncated entry killed the poll loop
+  and every command at once. Now skipped with a warning.
+- **A label with a null id silently disabled every Linear trigger** while the
+  Dispatcher reported healthy. Now loud in `poll`, `label` and `doctor`.
+- **`SKILL.md` named a poller path that has never existed**, and omitted
+  `--instance`, which fails outright once a machine has more than one.
+
 ## [0.3.1] — 2026-09-13
 
 Two skills, and the audit that found the first of them was teaching agents to
