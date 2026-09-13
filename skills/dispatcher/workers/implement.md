@@ -7,8 +7,8 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
 
 0. **Does this ticket have sub-issues?** Check before anything else (`linear_get_issue` on your
    key, in the workspace named in your dispatch block). If it has children, you are not
-   implementing this ticket — the work is in the children. **Read `stack.md`, beside this file,
-   and follow it instead of the steps below**, which describe a single-ticket pass. A parent implemented as one branch
+   implementing this ticket — the work is in the children. **Read `stack.v2.md`, beside this
+   file, and follow it instead of the steps below**, which describe a single-ticket pass. A parent implemented as one branch
    collapses the decomposition it was given and buries the risky change inside a large diff.
    If it has no children, carry on from step 1.
 

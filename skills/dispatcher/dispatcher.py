@@ -31,6 +31,7 @@ Nothing here posts to GitHub. Linear writes happen only through `label` and `com
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -136,9 +137,32 @@ def heartbeat() -> Path:
     return runtime() / "poller-heartbeat"
 
 # Ledger statuses. WORKING counts against max_workers; ALIVE means a session should exist.
-WORKING = {"claimed", "active", "needs-input"}
+#
+# `blocked` is a working status deliberately, but NOT for the two reasons first written down
+# here, both of which are false and were caught by a red team before they could mislead anyone:
+#
+#   * It is not what stops the poller re-triggering. `linear_triggers` gates on the *label*
+#     (`if not mode: continue`) before it reads a status at all. `Agent - Blocked` does that.
+#   * It is not what keeps it on `D status`. That filter is `ALIVE | {"queued"}`, and `queued`
+#     is already visible while sitting outside WORKING.
+#
+# The real reason is the one set it must stay OUT of: REDISPATCHABLE. `SKILL.md` tells the
+# Dispatcher to drain `queued` entries whenever a slot frees, so a held parent filed as
+# redispatchable would be dispatched again by the queue-drain — which is precisely what
+# `stack.v2.md` §3d-ii forbids ("One resolver per hold"). WORKING is the set that is visible,
+# not redispatchable, and already sibling to `needs-input`, which `blocked` is the other half
+# of: `needs-input` is somebody owing an answer, `blocked` is the work not being ready.
+#
+# Its one cost is that WORKING ⊂ ALIVE, and ALIVE means "a session should exist" — which a
+# handed-back parent's does not. `liveness()` opts it back out; see the guard there.
+WORKING = {"claimed", "active", "needs-input", "blocked"}
 ALIVE = WORKING | {"done", "stopped"}
 REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
+# Statuses deliberately in NO set above, and the absence is the behaviour rather than an
+# oversight: `merged` and `deferred` mean no session should exist (so not ALIVE) and the item
+# must never be dispatched again (so not REDISPATCHABLE). They therefore stop appearing as live
+# work with no call-site change. A named TERMINAL set was proposed and declined — nothing would
+# read it, and a constant nothing reads is a second place for this decision to drift.
 
 LINEAR_KEY = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 PR_URL = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
@@ -245,27 +269,73 @@ def ledger_get(key: str) -> dict | None:
 
 
 def ledger_all() -> dict[str, dict]:
+    """Every ledger entry, skipping any file that will not parse.
+
+    `read_json` catches `FileNotFoundError` and nothing else, so one truncated or hand-edited
+    entry raised `JSONDecodeError` out of here — and `tick()` calls this OUTSIDE the per-section
+    try whose whole purpose is that "one failing source must never kill the poller". A single
+    bad file therefore took down `children`, `list`, `status` and the poller together.
+
+    Skipped rather than raised: the other entries are still true, and a recovery is the worst
+    moment to have every command refuse. The entry is named on stderr so it is not silent.
+    """
     if not ledger_dir().exists():
         return {}
-    return {p.stem: read_json(p, {}) for p in sorted(ledger_dir().glob("*.json"))}
+    entries = {}
+    for path in sorted(ledger_dir().glob("*.json")):
+        try:
+            entries[path.stem] = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"warning: skipping unreadable ledger entry {path.name}: {exc}", file=sys.stderr)
+    return entries
 
 
 def ledger_put(key: str, fields: dict, note: str | None = None, by: str | None = None) -> dict:
-    entry = ledger_get(key) or {"key": key, "created_at": now_iso(), "history": []}
-    changed = {k: v for k, v in fields.items() if entry.get(k) != v}
-    entry.update(fields)
-    entry["updated_at"] = now_iso()
-    if changed or note:
-        record = {"at": entry["updated_at"]}
-        if by:
-            record["by"] = by
-        if changed:
-            record["set"] = changed
-        if note:
-            record["note"] = note
-        entry["history"].append(record)
-    write_json(ledger_path(key), entry)
-    return entry
+    """Merge fields into one ledger entry, under a lock.
+
+    The lock is not belt and braces. This is a read-modify-write over a whole JSON document,
+    and two sessions legitimately write one key: a coordinator setting `parent=` on a child at
+    claim time, and the Dispatcher writing `status=lost` at the same child from its own handler.
+    Unlocked, and with no entry on disk yet, both start from a fresh dict and the loser's fields
+    do not merge — they are **gone**. Demonstrated with a deterministic interleaving: the
+    coordinator's `mode` and `parent` both vanished, leaving `status=lost`, which is
+    REDISPATCHABLE. That child is then invisible to `ledger children`, invisible to `SKILL.md`'s
+    presence-of-`parent` guard, and passes `stack.v2.md` §6's lock — so it gets a second session
+    on its own live branch, which is the exact failure the `parent` field exists to prevent.
+
+    `flock` on a sidecar, held across the read and the write, because the write itself is an
+    `os.replace` of a different inode and cannot be locked usefully. Advisory and POSIX-only,
+    which is the platform this ships on; a lock that cannot be taken is not worth failing a
+    ledger write over, so an OSError falls through to the old unlocked behaviour.
+    """
+    path = ledger_path(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_name(f".{path.name}.lock")
+    try:
+        handle = open(lock, "w")
+    except OSError:
+        handle = None
+    try:
+        if handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        entry = ledger_get(key) or {"key": key, "created_at": now_iso(), "history": []}
+        changed = {k: v for k, v in fields.items() if entry.get(k) != v}
+        entry.update(fields)
+        entry["updated_at"] = now_iso()
+        if changed or note:
+            record = {"at": entry["updated_at"]}
+            if by:
+                record["by"] = by
+            if changed:
+                record["set"] = changed
+            if note:
+                record["note"] = note
+            entry["history"].append(record)
+        write_json(path, entry)
+        return entry
+    finally:
+        if handle:
+            handle.close()
 
 
 def working_count() -> int:
@@ -358,7 +428,19 @@ class Poller:
     def linear_triggers(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         labels = cfg["linear"]["labels"]
         modes = cfg["linear"]["modes"]
-        by_trigger = {labels[m["trigger"]]["id"]: name for name, m in modes.items()}
+        # A label the config names but has no id for — a config reconciled by hand, or one
+        # whose `init` never ran — must not reach the query. `$labels: [ID!]` rejects a null,
+        # `linear()` raises, `tick()` catches it per section, and the result is that EVERY
+        # Linear trigger stops being emitted workspace-wide while the Dispatcher looks healthy.
+        # One unusable mode is worth losing; all of them is not.
+        unminted = sorted(m["trigger"] for m in modes.values() if not labels.get(m["trigger"], {}).get("id"))
+        if unminted and self.once(f"unminted|{','.join(unminted)}"):
+            emit("error", section="linear_triggers",
+                 message=f"no label id in config.json for {', '.join(unminted)} — those modes "
+                         f"cannot be triggered. Re-run `dispatcher.py init --instance <slug> "
+                         f"--team-key KEY` to mint them.")
+        by_trigger = {labels[m["trigger"]]["id"]: name for name, m in modes.items()
+                      if labels.get(m["trigger"], {}).get("id")}
         # "" is not null: an empty team_key would silently widen the scope to the whole
         # workspace while reading, in the file, as though a team had been chosen.
         team_key = (cfg["linear"].get("team_key") or "").strip() or None
@@ -458,6 +540,15 @@ class Poller:
             sid = entry.get("session_id")
             if not sid or entry.get("status") not in ALIVE:
                 continue
+            # A `blocked` entry is in ALIVE so it stays visible on `D status`, but its
+            # coordinator has handed the parent back and its pass is over — no session need
+            # exist. Policing one produces a false `session_blocked` page after 120s, a
+            # `session_suspended` as soon as the session is parked (which is the common
+            # resting state), and finally a `session_lost` whose SKILL.md handler would put
+            # the trigger label back on a parent somebody deliberately declared unfit to
+            # start. That re-arms the retry loop `stack.v2.md` §3d-ii forbids by name.
+            if entry.get("status") == "blocked":
+                continue
             tracked.add(sid)
             common = dict(key=key, mode=entry.get("mode"), session_id=sid,
                           session_name=entry.get("session_name"), ledger_status=entry.get("status"))
@@ -509,9 +600,13 @@ query($id: String!, $since: DateTimeOrDuration!) {
 
 
 class Watcher:
-    def __init__(self, key: str, pr: str | None) -> None:
+    def __init__(self, key: str, pr: str | None, as_: str | None = None) -> None:
         self.key = key
-        self.path = watch_dir() / f"{key}.json"
+        # Two sessions legitimately watch one ticket — a coordinator and the child it gated.
+        # One state file between them means a restart resumes from the other's cursor and
+        # silently skips whatever arrived in between, which on a gated ticket is the answer
+        # the whole stack is held behind. `--as` gives each reader its own cursor.
+        self.path = watch_dir() / (f"{key}.{as_}.json" if as_ else f"{key}.json")
         self.state = read_json(self.path, {})
         self.fresh = not self.state
         entry = ledger_get(key) or {}
@@ -561,7 +656,18 @@ class Watcher:
                 else:
                     emit("label_changed", key=self.key, previous=self.state.get("label"), current=label)
             if state != self.state.get("state"):
-                if issue["state"]["type"] in ("completed", "canceled"):
+                kind = issue["state"]["type"]
+                # A ticket reaching a *completed* state is the end of the work, not an
+                # instruction to abandon it. `_common.md` tells a worker receiving `stop` to
+                # write `status=stopped`, so firing one at a worker that has already reported
+                # `done` makes it overwrite its own terminal status — which reads as "still
+                # waiting" to a coordinator trying to close the parent.
+                #
+                # `canceled` is deliberately NOT covered. Cancelling a ticket is an abandon
+                # instruction whatever the ledger says, and `state_changed` has no handler in
+                # `_common.md`, so widening this to both types would drop that signal entirely.
+                done_already = (ledger_get(self.key) or {}).get("status") in ("done", "merged")
+                if kind == "canceled" or (kind == "completed" and not done_already):
                     emit("stop", key=self.key, reason=f"ticket moved to {state}")
                 else:
                     emit("state_changed", key=self.key, previous=self.state.get("state"), current=state)
@@ -621,7 +727,7 @@ class Watcher:
 
 
 def cmd_watch(args) -> None:
-    watcher = Watcher(args.key, args.pr)
+    watcher = Watcher(args.key, args.pr, args.as_)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         watcher.tick()
@@ -643,6 +749,12 @@ def cmd_label(args) -> None:
     labels = cfg["linear"]["labels"]
     if args.label != "none" and args.label not in labels:
         raise SystemExit(f"unknown label state '{args.label}'; one of: none, {', '.join(labels)}")
+    if args.label != "none" and not labels[args.label].get("id"):
+        # Without this the id travels as a null against `$add: String!` and Linear answers with
+        # a variable-type error, which reads as a bug in this program rather than as a config
+        # that was never reconciled against the workspace.
+        raise SystemExit(f"'{args.label}' has no label id in config.json. Re-run "
+                         f"`dispatcher.py init --instance <slug> --team-key KEY` to mint it.")
     issue = linear(cfg, LABEL_Q, {"id": args.issue})["issue"]
     group = cfg["linear"]["label_group_id"]
     target = labels[args.label]["id"] if args.label != "none" else None
@@ -749,6 +861,19 @@ def cmd_ledger(args) -> None:
         for key, entry in ledger_all().items():
             if args.all or entry.get("status") in ALIVE | {"queued"}:
                 print(f"{key:<22} {entry.get('mode', ''):<12} {entry.get('status', ''):<12} {entry.get('session_name') or '-'}")
+    elif args.action == "children":
+        # Parent fan-out recovery. A coordinator that died leaves live children, and this is
+        # the only way to find them: `parent` is written on every child and, until this
+        # existed, read by nothing — so a replacement coordinator re-dispatched live children
+        # onto live branches.
+        #
+        # Prints every status on purpose, not just ALIVE. A replacement that cannot see the
+        # discarded and failed children will dispatch them again, which is the same defect
+        # wearing a different hat.
+        for key, entry in sorted(ledger_all().items()):
+            if entry.get("parent") == args.key:
+                print(f"{key:<22} {entry.get('mode', ''):<12} {entry.get('status', ''):<12} "
+                      f"{entry.get('session_id') or '-':<38} {entry.get('session_name') or '-'}")
     elif args.action == "get":
         print(json.dumps(ledger_get(args.key), indent=2, ensure_ascii=False))
     else:
@@ -763,6 +888,34 @@ def cmd_ledger(args) -> None:
         print(f"{args.key}: {entry.get('status')}")
 
 
+def allele_dispatched(live: dict) -> int:
+    """Sessions allele counts against its own cap.
+
+    The discriminator is `origin.kind == "dispatched"`, verified against a live
+    ~/.allele/state.json — an earlier proposal for this line read a boolean `origin.dispatched`
+    that does not exist, and would have printed 0 forever.
+
+    No state filter, deliberately: allele's `live_dispatched_count` filters on
+    `origin.is_dispatched()` alone, and its own comment says "'Exist' is literal: a suspended
+    or finished worker holds its slot until it is discarded."
+    """
+    return sum(1 for s in live.values() if (s.get("origin") or {}).get("kind") == "dispatched")
+
+
+def allele_dispatch_limit(cfg: dict) -> str:
+    """`dispatch.max_sessions` from allele's settings, or '?' if it cannot be read.
+
+    Unreadable is not zero and must never print as a number: a cap of 0 would read as "you
+    are already over" and a cap of 35 read from nowhere would read as headroom that may not
+    exist. `D status` is a diagnostic, so it says it does not know.
+    """
+    path = (cfg.get("allele") or {}).get("settings_file") or "~/.config/allele/settings.json"
+    try:
+        return str(json.loads(Path(path).expanduser().read_text())["dispatch"]["max_sessions"])
+    except Exception:
+        return "?"
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     try:
@@ -773,7 +926,14 @@ def cmd_status(args) -> None:
     hb = heartbeat()
     beat = hb.read_text().strip() if hb.exists() else None
     age = f"{int(time.time() - parse_iso(beat))}s ago" if beat else "never"
-    print(f"poller heartbeat: {age} · working {working_count()}/{cfg['limits']['max_workers']}")
+    # Two counts, deliberately side by side, because they measure different things and only
+    # one of them bites. `max_workers` refuses nothing anywhere in this file — it is a number
+    # the Dispatcher is asked to respect — and it counts *ledger entries*, while allele counts
+    # *sessions*. They diverge by exactly the reviewers each worker dispatches, which never
+    # reach the ledger: `D status` has read `working 0/15` while allele held fifteen.
+    print(f"poller heartbeat: {age} · ledger working {working_count()}/{cfg['limits']['max_workers']}"
+          f" (advisory) · allele dispatched {allele_dispatched(live)}/{allele_dispatch_limit(cfg)}"
+          f" (enforced)")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
@@ -796,6 +956,9 @@ def cmd_doctor(args) -> None:
     check("linear auth", lambda: linear(cfg, "{ viewer { name email } }")["viewer"]["email"])
 
     def labels():
+        unminted = sorted(k for k, v in cfg["linear"]["labels"].items() if not v.get("id"))
+        if unminted:
+            raise RuntimeError(f"no id in config.json for: {', '.join(unminted)} — re-run `init`")
         wanted = {v["id"] for v in cfg["linear"]["labels"].values()}
         group = cfg["linear"]["label_group_id"]
         got = linear(cfg, 'query($id: String!) { issueLabel(id: $id) { children { nodes { id } } } }', {"id": group})
@@ -817,6 +980,18 @@ def cmd_doctor(args) -> None:
         probe.unlink()
         return str(r)
 
+    def production_mcp():
+        name = (cfg.get("tools") or {}).get("production_mcp")
+        if not name:
+            # Not an error — plenty of instances have no production reader. It is reported
+            # because `stack.v2.md` §3a-ii prices "data" gates at seconds *on the assumption
+            # that a decide child has one*, and `cmd_brief` only names it when it is set. A
+            # coordinator budgeting against a reader its resolver was never given is how a
+            # cheap gate becomes an unbounded one.
+            return "none set — `decide` children get no production reader, and data gates are not cheap"
+        return name
+
+    check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))
     check("instance root", lambda: str(instance()))
@@ -845,9 +1020,9 @@ query($name: String!) {
 }"""
 
 LABEL_COLOURS = {
-    "todo": "#5e6ad2", "investigate": "#5e6ad2", "decompose": "#5e6ad2",
+    "todo": "#5e6ad2", "investigate": "#5e6ad2", "decompose": "#5e6ad2", "decide": "#5e6ad2",
     "implementing": "#f2c94c", "investigating": "#f2c94c", "decomposing": "#f2c94c",
-    "needs-input": "#f2994a", "done": "#4cb782", "failed": "#eb5757",
+    "needs-input": "#f2994a", "blocked": "#bb87fc", "done": "#4cb782", "failed": "#eb5757",
 }
 
 
@@ -868,6 +1043,28 @@ def create_label(cfg: dict, fields: dict) -> dict:
                          f"nothing further was written. Re-run once the cause is fixed — "
                          f"labels are matched by name, so anything already created is reused.")
     return label
+
+
+def fill_absent(where: str, existing: dict, template: dict) -> list[str]:
+    """Add template keys the config has never heard of. Never touch one it already has.
+
+    `init` rebuilds its config from the *existing* file on a re-run, which is what keeps label
+    ids stable — and it meant a config written before a mode existed could never learn about
+    it. A workspace would stay on nine labels forever while the template shipped eleven, and
+    the failure surfaced as `unknown label state 'blocked'` a long way from here.
+
+    Deliberately shallow, and deliberately only over the three maps `dispatcher.py` reads by
+    key. A recursive merge across the whole config would fill `allele.repo_project_map` with
+    the template's `"OWNER/REPO": "your-project"` placeholder — adding junk to a live config in
+    the name of reconciling it. "Fill absent keys" is only safe where every key is vocabulary.
+    """
+    added = [k for k in template if k not in existing]
+    for k in added:
+        existing[k] = template[k]
+    # Qualified, because one mode lands in four maps under the same name: an unqualified
+    # summary reads "decide, blocked, decide, decide, decide" and tells the operator nothing
+    # about which of the four sites was short.
+    return [f"{where}.{k}" for k in added]
 
 
 def cmd_init(args) -> None:
@@ -895,12 +1092,13 @@ def cmd_init(args) -> None:
     dest = DISPATCHER_HOME / args.instance
     config_path = dest / "config.json"
     existing = read_json(config_path, None)
+    template = json.loads((CODE_DIR / "config.example.json").read_text())
+    template.pop("_comment", None)
     if existing:
         cfg = existing
         print(f"reconciling the config already at {config_path}")
     else:
-        cfg = json.loads((CODE_DIR / "config.example.json").read_text())
-        cfg.pop("_comment", None)
+        cfg = template
 
     if args.api_key_env:
         cfg["linear"]["api_key_env"] = args.api_key_env
@@ -910,7 +1108,8 @@ def cmd_init(args) -> None:
             and (existing or {}).get("linear", {}).get("label_group_id") and not args.force:
         raise SystemExit(
             f"{config_path} is already bound to team "
-            f"{existing['linear'].get('team_key')!r} with nine label ids from it.\n"
+            f"{existing['linear'].get('team_key')!r} with "
+            f"{len(existing['linear'].get('labels') or {})} label ids from it.\n"
             f"Re-running with --team-key {args.team_key!r} would create a second label group and "
             f"overwrite every id in place. Tickets already carrying the old team's Agent labels "
             f"would drop out of the trigger query, and this tool could no longer see or clear "
@@ -961,6 +1160,21 @@ def cmd_init(args) -> None:
                          f"re-create labels it simply could not see. Paginate before re-running.")
     by_name = {c["name"]: c["id"] for c in children.get("nodes", [])}
 
+    # Teach an older config the vocabulary this version ships, after every refusal above has
+    # had its chance — a run that is about to be rejected should not announce what it would
+    # have learned. Ids stay null here; the loop below either finds the label in the workspace
+    # or creates it, exactly as on a fresh install.
+    # Four sites, not three. `SKILL.md` dispatches with `orchestration: allele.orchestration
+    # [<mode>]`, so a mode present in `modes` and `traits` but absent from `orchestration` has
+    # no value to pass at the one step that creates the session.
+    learned = (fill_absent("labels", cfg["linear"]["labels"], template["linear"]["labels"])
+               + fill_absent("modes", cfg["linear"]["modes"], template["linear"]["modes"])
+               + fill_absent("traits", cfg.setdefault("traits", {}), template["traits"])
+               + fill_absent("orchestration", cfg.setdefault("allele", {}).setdefault("orchestration", {}),
+                             template["allele"]["orchestration"]))
+    if learned:
+        print(f"new in this version: {', '.join(learned)}")
+
     for key, spec in cfg["linear"]["labels"].items():
         name = spec["name"]
         if name in by_name:
@@ -989,8 +1203,13 @@ def cmd_init(args) -> None:
         print(f"\nwrote {config_path}")
     print(f"created {len(created)}: {', '.join(created) or '-'}")
     print(f"reused  {len(reused)}: {', '.join(reused) or '-'}")
-    if not created and not args.dry_run:
-        print("nothing changed in the workspace — this run was a no-op, as a re-run should be")
+    print(f"config keys filled {len(learned)}: {', '.join(learned) or '-'}")
+    if not created and not learned and not args.dry_run:
+        # Counted separately on purpose. This line used to read `if not created`, which counts
+        # *workspace* creations only — so a run that rewrote config.json and re-armed a mode
+        # announced itself as a no-op.
+        print("nothing changed in the workspace or the config — this run was a no-op, as a "
+              "re-run should be")
     print(f"\nnext: review {config_path}, then `python3 {Path(__file__).name} "
           f"--instance {args.instance} doctor`")
 
@@ -1028,11 +1247,12 @@ def main() -> None:
     p = sub.add_parser("watch", parents=[common])
     p.add_argument("key")
     p.add_argument("--pr", help="OWNER/REPO#N — otherwise discovered from the ticket's attachments")
+    p.add_argument("--as", dest="as_", help="reader name; gives this watcher its own comment cursor")
     p.add_argument("--once", action="store_true")
     p.set_defaults(fn=cmd_watch)
 
     p = sub.add_parser("ledger", parents=[common])
-    p.add_argument("action", choices=["list", "get", "put"])
+    p.add_argument("action", choices=["list", "get", "put", "children"])
     p.add_argument("key", nargs="?")
     p.add_argument("fields", nargs="*", help="k=v (v parsed as JSON when it can be)")
     p.add_argument("--all", action="store_true")
@@ -1065,8 +1285,8 @@ def main() -> None:
     sub.add_parser("doctor", parents=[common]).set_defaults(fn=cmd_doctor)
 
     args = parser.parse_args()
-    if args.cmd == "ledger" and args.action in ("get", "put") and not args.key:
-        parser.error("ledger get/put need a KEY")
+    if args.cmd == "ledger" and args.action in ("get", "put", "children") and not args.key:
+        parser.error("ledger get/put/children need a KEY")
     # `doctor` resolves lazily: it is the command you run to find out why an instance will not
     # resolve, so exiting here would make it useless in exactly that case.
     if args.cmd not in ("init", "doctor"):

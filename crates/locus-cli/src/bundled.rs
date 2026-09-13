@@ -728,4 +728,157 @@ mod drift_tests {
              now that `mcpServers` is gone"
         );
     }
+
+    /// A dispatcher mode needs FOUR config sites and a brief, and missing any one
+    /// of them fails late, differently, and a long way from the cause.
+    ///
+    /// This is not hypothetical. `workers/decide.md` shipped in v0.3.1 with a brief
+    /// and nothing else — no trigger label, no `linear.modes` entry, no `traits`
+    /// entry — so `D brief` on a decision child raised `KeyError: 'decide'` and
+    /// `D label` answered `unknown label state`. The file was inert for a whole
+    /// release and this suite was green throughout, because no test knew a mode is
+    /// a tuple rather than a file.
+    ///
+    /// The four sites, and what each one breaks on its own:
+    ///   `traits.<mode>`               — `cmd_brief` does `cfg["traits"][mode]`
+    ///   `allele.orchestration.<mode>` — `SKILL.md` passes it to sessions_create
+    ///   `modes.<mode>.trigger`        — `linear_triggers` indexes `labels[...]`
+    ///   `modes.<mode>.working`        — what `D label` is handed at claim time
+    #[test]
+    fn every_dispatcher_mode_has_its_labels_traits_and_brief() {
+        let root = repo_root();
+        let raw = std::fs::read_to_string(root.join("skills/dispatcher/config.example.json"))
+            .expect("config.example.json missing");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&raw).expect("config.example.json is not valid JSON");
+
+        let labels = cfg["linear"]["labels"].as_object().expect("linear.labels");
+        let modes = cfg["linear"]["modes"].as_object().expect("linear.modes");
+        let traits = cfg["traits"].as_object().expect("traits");
+        let orchestration = cfg["allele"]["orchestration"]
+            .as_object()
+            .expect("allele.orchestration");
+
+        let mut broken = Vec::new();
+        for (mode, spec) in modes {
+            for field in ["trigger", "working"] {
+                let name = spec[field].as_str().unwrap_or_default();
+                if !labels.contains_key(name) {
+                    broken.push(format!(
+                        "modes.{mode}.{field} names label `{name}`, absent from linear.labels"
+                    ));
+                }
+            }
+            if !traits.contains_key(mode) {
+                broken.push(format!(
+                    "traits.{mode} missing — `D brief` raises KeyError: '{mode}'"
+                ));
+            }
+            if !orchestration.contains_key(mode) {
+                broken.push(format!(
+                    "allele.orchestration.{mode} missing — nothing to pass at sessions_create"
+                ));
+            }
+        }
+
+        // Every mode with traits needs a brief for `D brief` to name. `review` is
+        // deliberately in `traits` and NOT in `modes`: it is raised by a GitHub
+        // review request, never by a Linear label, so it has no trigger to name.
+        for mode in traits.keys() {
+            if !root
+                .join(format!("skills/dispatcher/workers/{mode}.md"))
+                .is_file()
+            {
+                broken.push(format!(
+                    "traits.{mode} has no workers/{mode}.md for `D brief` to name"
+                ));
+            }
+        }
+
+        assert!(
+            broken.is_empty(),
+            "config.example.json describes a mode it cannot dispatch. Each of these fails at \
+             run time, in a different command, with an error that does not name this file:\n  {}",
+            broken.join("\n  ")
+        );
+
+        // A label no mode triggers and no brief sets is an id `init` mints for
+        // nothing, and a reader cannot tell a retired label from forgotten wiring.
+        let reachable: std::collections::HashSet<&str> = modes
+            .values()
+            .flat_map(|m| [m["trigger"].as_str(), m["working"].as_str()])
+            .flatten()
+            // Set by a worker or a coordinator rather than by the poller, so they
+            // belong to no mode: `D label <KEY> <state>` writes these.
+            .chain(["needs-input", "blocked", "done", "failed"])
+            .collect();
+        let orphans: Vec<&String> = labels
+            .keys()
+            .filter(|k| !reachable.contains(k.as_str()))
+            .collect();
+        assert!(
+            orphans.is_empty(),
+            "linear.labels entries that no mode triggers and no brief sets: {orphans:?}"
+        );
+    }
+
+    /// Routing to the coordinator protocol, pinned in both directions.
+    ///
+    /// `stack.v2.md` shipped complete and inert for a release because the two
+    /// files that send a coordinator anywhere still named `stack.md`. Nothing
+    /// caught it: both files parse, both are bundled, and the wrong protocol is
+    /// still a valid document. A grep is the only detector this failure has.
+    ///
+    /// The `stack.md` half pins a redirect. Keeping a short signpost costs
+    /// nothing and catches anything still looking for the filename the old
+    /// instructions named — a worker running from a cached copy of an older
+    /// brief, most often.
+    ///
+    /// A second reason is real but narrower than an earlier version of this
+    /// comment claimed, and the overstatement is worth recording because it
+    /// read as verified: `update_content.rs:127` never removes files from
+    /// `~/.locus/`, and the dispatcher IS carried by that path (a sync into a
+    /// fresh LOCUS_HOME produces `skills/dispatcher/workers/stack.md`). So a
+    /// machine that has synced with this file bundled would keep the superseded
+    /// protocol forever after a deletion. That is LATENT: v0.3.1 shipped the
+    /// dispatcher, and no LOCUS_HOME had been synced since, so the stranding did
+    /// not yet exist anywhere. The mechanism was checked; whether it applied to
+    /// these files was not.
+    #[test]
+    fn coordinator_routing_names_the_live_protocol() {
+        let root = repo_root().join("skills/dispatcher");
+        let workers = root.join("workers");
+
+        for (file, what) in [
+            (root.join("SKILL.md"), "SKILL.md's fan-out section"),
+            (workers.join("implement.md"), "implement.md step 0"),
+        ] {
+            let text = std::fs::read_to_string(&file).expect("routing file missing");
+            assert!(
+                text.contains("stack.v2.md"),
+                "{what} does not name stack.v2.md, so a coordinator is routed to a protocol \
+                 that is not the live one — exactly how stack.v2.md shipped inert."
+            );
+        }
+
+        let v2 = std::fs::read_to_string(workers.join("stack.v2.md")).expect("stack.v2.md missing");
+        let head: String = v2.lines().take(20).collect::<Vec<_>>().join("\n");
+        assert!(
+            !head.contains("UNVALIDATED") && !head.contains("NOT IN USE"),
+            "stack.v2.md still opens with the banner saying nothing routes to it, while \
+             implement.md and SKILL.md both do. One of the two is lying to its reader."
+        );
+
+        let v1 = std::fs::read_to_string(workers.join("stack.md")).expect(
+            "workers/stack.md is gone. It must stay as a signpost: update_content.rs never \
+             removes files from ~/.locus/, so deleting it here leaves the superseded protocol \
+             on every existing install instead of replacing it.",
+        );
+        assert!(
+            v1.contains("stack.v2.md") && v1.len() < 4000,
+            "workers/stack.md should be a short signpost pointing at stack.v2.md, not a \
+             second coordinator protocol ({} bytes)",
+            v1.len()
+        );
+    }
 }

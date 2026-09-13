@@ -1,5 +1,7 @@
 {
-  "_comment": "Template for ~/.locus/data/dispatcher/<slug>/config.json. `dispatcher.py init` copies this, fills every label id from the workspace you name, and writes it. Nothing here is read at runtime from the plugin directory — the instance copy is the live one.",
+  "_comment": "Template for ~/.locus/data/dispatcher/<slug>/config.json. `dispatcher.py init` copies this, fills every label id from the workspace you name, and writes it. Nothing here is read at runtime from the plugin directory — the instance copy is the live one. A re-run of `init` against an existing instance fills in any `linear.labels`, `linear.modes` or `traits` key it has never heard of and creates the missing labels, so adding a mode here is how an installed instance learns about one.",
+
+  "_comment_decide": "`decide` has its own trigger label but shares `investigating` as its working label, so eleven labels cover five modes. A working label is never read by any code — `linear_triggers` reads only `trigger` — so the only cost is that the board shows a decide worker and an investigate worker alike while they run, and the only benefit of a tenth label would be telling those two apart mid-flight. `blocked` is not in `modes` at all: it is a resting state a coordinator writes, never a trigger anything polls for.",
 
   "linear": {
     "api_key_env": "LINEAR_API_KEY",
@@ -10,17 +12,20 @@
       "todo":          { "id": null, "name": "Agent - Todo" },
       "investigate":   { "id": null, "name": "Agent - Investigate" },
       "decompose":     { "id": null, "name": "Agent - Decompose" },
+      "decide":        { "id": null, "name": "Agent - Decide" },
       "implementing":  { "id": null, "name": "Agent - Implementing" },
       "investigating": { "id": null, "name": "Agent - Investigating" },
       "decomposing":   { "id": null, "name": "Agent - Decomposing" },
       "needs-input":   { "id": null, "name": "Agent - Needs Input" },
+      "blocked":       { "id": null, "name": "Agent - Blocked" },
       "done":          { "id": null, "name": "Agent - Done" },
       "failed":        { "id": null, "name": "Agent - Failed" }
     },
     "modes": {
       "implement":   { "trigger": "todo",        "working": "implementing" },
       "investigate": { "trigger": "investigate", "working": "investigating" },
-      "decompose":   { "trigger": "decompose",   "working": "decomposing" }
+      "decompose":   { "trigger": "decompose",   "working": "decomposing" },
+      "decide":      { "trigger": "decide",      "working": "investigating" }
     }
   },
 
@@ -36,13 +41,14 @@
     "default_project": "your-project",
     "linear_project_map": {},
     "repo_project_map": { "OWNER/REPO": "your-project" },
-    "orchestration": { "implement": "nothing", "investigate": "nothing", "decompose": "nothing", "review": "nothing" }
+    "orchestration": { "implement": "nothing", "investigate": "nothing", "decompose": "nothing", "decide": "nothing", "review": "nothing" }
   },
 
   "traits": {
     "implement":   { "traits": "implementation,pragmatic,systematic",        "role": "Implementing engineer" },
     "investigate": { "traits": "research,skeptical,hypothesis-driven",       "role": "Ticket investigator" },
     "decompose":   { "traits": "product,systems-thinking,structured-output", "role": "Ticket decomposer" },
+    "decide":      { "traits": "research,skeptical,structured-output",       "role": "Decision-ticket resolver" },
     "review":      { "traits": "implementation,skeptical,thorough",          "role": "PR review preparer" }
   },
 

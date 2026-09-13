@@ -39,10 +39,19 @@ unanswered. Here the questions are the unit of work.
    Read-only, always. Production data only when the question needs it, and only ids and
    aggregates in anything you post.
 
-4. **Ask the rest in one comment**, on the ticket named in your brief — which is often the
-   **parent**, not your own ticket. Read the acceptance criteria carefully: they usually say
-   where each answer is to be recorded. One comment, one question per line, each with what
-   turns on the answer and who you think can give it.
+4. **Ask the rest in one comment**, on the ticket the acceptance criteria name. Read them
+   carefully: they usually say where each answer is to be recorded, and it is often the
+   **parent** rather than your own ticket. If they say nothing, use your own ticket — a
+   coordinator-dispatched child has a parent to fall back to and a poller-raised one does not,
+   so "the parent" is not always a referent. One comment, one question per line, each with
+   what turns on the answer and who you think can give it.
+
+   **Commenting on any ticket that is not your own, pass `--key <YOUR KEY>`:**
+   `D comment <PARENT> --key <YOUR KEY> --mode decide`. Without it `D comment` resolves the
+   mode from the *parent's* ledger entry and signs `agent:<PARENT>/implement` — and a watcher
+   skips comments bearing its own ticket's marker, so your coordinator's watch on the parent
+   would drop the very answers it is waiting for. With it the signature is
+   `agent:<YOUR KEY>/decide`, which is both true and visible to it.
 
    `D label <KEY> needs-input`, `D ledger put <KEY> status=needs-input`, message whoever
    dispatched you. Then **keep working on everything the missing answers do not block.**
