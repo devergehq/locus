@@ -1,0 +1,61 @@
+{
+  "_comment": "Template for ~/.locus/data/dispatcher/<slug>/config.json. `dispatcher.py init` copies this, fills every label id from the workspace you name, and writes it. Nothing here is read at runtime from the plugin directory — the instance copy is the live one.",
+
+  "linear": {
+    "api_key_env": "LINEAR_API_KEY",
+    "mcp_workspace": "your-workspace",
+    "team_key": null,
+    "label_group_id": null,
+    "labels": {
+      "todo":          { "id": null, "name": "Agent - Todo" },
+      "investigate":   { "id": null, "name": "Agent - Investigate" },
+      "decompose":     { "id": null, "name": "Agent - Decompose" },
+      "implementing":  { "id": null, "name": "Agent - Implementing" },
+      "investigating": { "id": null, "name": "Agent - Investigating" },
+      "decomposing":   { "id": null, "name": "Agent - Decomposing" },
+      "needs-input":   { "id": null, "name": "Agent - Needs Input" },
+      "done":          { "id": null, "name": "Agent - Done" },
+      "failed":        { "id": null, "name": "Agent - Failed" }
+    },
+    "modes": {
+      "implement":   { "trigger": "todo",        "working": "implementing" },
+      "investigate": { "trigger": "investigate", "working": "investigating" },
+      "decompose":   { "trigger": "decompose",   "working": "decomposing" }
+    }
+  },
+
+  "github": {
+    "login": "your-github-login",
+    "review_query": "is:pr is:open archived:false user-review-requested:@me",
+    "skip_drafts": true,
+    "ignore_bots": true
+  },
+
+  "allele": {
+    "state_file": "~/.allele/state.json",
+    "default_project": "your-project",
+    "linear_project_map": {},
+    "repo_project_map": { "OWNER/REPO": "your-project" },
+    "orchestration": { "implement": "nothing", "investigate": "nothing", "decompose": "nothing", "review": "nothing" }
+  },
+
+  "traits": {
+    "implement":   { "traits": "implementation,pragmatic,systematic",        "role": "Implementing engineer" },
+    "investigate": { "traits": "research,skeptical,hypothesis-driven",       "role": "Ticket investigator" },
+    "decompose":   { "traits": "product,systems-thinking,structured-output", "role": "Ticket decomposer" },
+    "review":      { "traits": "implementation,skeptical,thorough",          "role": "PR review preparer" }
+  },
+
+  "tools": {
+    "production_mcp": null
+  },
+
+  "limits": {
+    "max_workers": 15,
+    "poll_interval_secs": 300,
+    "watch_interval_secs": 90,
+    "reemit_after_secs": 900,
+    "blocked_alert_after_secs": 120,
+    "max_lost_retries": 1
+  }
+}

@@ -225,6 +225,75 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/delegation/SKILL.md".into(),
             include_str!("../../../skills/delegation/SKILL.md"),
         ),
+        // Dispatcher — the Dispatcher's own brief, its program, and one brief per worker mode.
+        // `config.example.json` is the template `init` fills; without it `init` cannot run.
+        // Per-instance config and runtime live in ~/.locus/data/dispatcher/<slug>/, never here.
+        (
+            "skills/dispatcher/SKILL.md".into(),
+            include_str!("../../../skills/dispatcher/SKILL.md"),
+        ),
+        (
+            "skills/dispatcher/dispatcher.py".into(),
+            include_str!("../../../skills/dispatcher/dispatcher.py"),
+        ),
+        (
+            "skills/dispatcher/config.example.json".into(),
+            include_str!("../../../skills/dispatcher/config.example.json"),
+        ),
+        (
+            "skills/dispatcher/workers/_common.md".into(),
+            include_str!("../../../skills/dispatcher/workers/_common.md"),
+        ),
+        (
+            "skills/dispatcher/workers/implement.md".into(),
+            include_str!("../../../skills/dispatcher/workers/implement.md"),
+        ),
+        (
+            "skills/dispatcher/workers/investigate.md".into(),
+            include_str!("../../../skills/dispatcher/workers/investigate.md"),
+        ),
+        (
+            "skills/dispatcher/workers/decompose.md".into(),
+            include_str!("../../../skills/dispatcher/workers/decompose.md"),
+        ),
+        (
+            "skills/dispatcher/workers/review.md".into(),
+            include_str!("../../../skills/dispatcher/workers/review.md"),
+        ),
+        (
+            "skills/dispatcher/workers/decide.md".into(),
+            include_str!("../../../skills/dispatcher/workers/decide.md"),
+        ),
+        (
+            "skills/dispatcher/workers/stack.md".into(),
+            include_str!("../../../skills/dispatcher/workers/stack.md"),
+        ),
+        (
+            "skills/dispatcher/workers/stack.v2.md".into(),
+            include_str!("../../../skills/dispatcher/workers/stack.v2.md"),
+        ),
+        // Review craft — the method a review is written to, shared by review.md,
+        // _common.md, implement.md and the worked example.
+        (
+            "skills/review-craft/SKILL.md".into(),
+            include_str!("../../../skills/review-craft/SKILL.md"),
+        ),
+        (
+            "skills/review-craft/house-style.md".into(),
+            include_str!("../../../skills/review-craft/house-style.md"),
+        ),
+        (
+            "skills/review-craft/lenses.md".into(),
+            include_str!("../../../skills/review-craft/lenses.md"),
+        ),
+        (
+            "skills/review-craft/review_lint.py".into(),
+            include_str!("../../../skills/review-craft/review_lint.py"),
+        ),
+        (
+            "skills/review-craft/examples/synthetic-billing-review.md".into(),
+            include_str!("../../../skills/review-craft/examples/synthetic-billing-review.md"),
+        ),
         // Agents — traits data + archetype files
         (
             "agents/traits.yaml".into(),
@@ -457,7 +526,12 @@ mod drift_tests {
                     // companion, and filtering on `.md` alone made those
                     // invisible here *and* absent from `locus init` — the
                     // check passed while the skill shipped half-working.
-                    .is_some_and(|x| matches!(x, "md" | "py" | "sh"))
+                    //
+                    // `json` joined the list for the same reason one step later:
+                    // the dispatcher skill reads `config.example.json` from its
+                    // own directory, so an unbundled one means `init` cannot
+                    // run — and the narrower filter would have passed.
+                    .is_some_and(|x| matches!(x, "md" | "py" | "sh" | "json"))
                 {
                     let rel = path
                         .strip_prefix(&root)
