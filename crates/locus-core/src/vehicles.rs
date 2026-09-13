@@ -198,15 +198,33 @@ impl VehicleAvailability {
     /// hook re-probes at deny time and is the sole authority.
     pub fn session_notice(&self) -> String {
         match (self.allele, self.opencode) {
-            (true, _) => format!(
-                "Locus delegation: the Allele app is reachable on this machine ({}), \
+            (true, true) => format!(
+                "Locus delegation: the Allele app is reachable on this machine ({socket}), \
                  so dispatch through `allele_sessions_create` — that is the happy path. \
                  This is a fact about the machine, not about this session: if the \
                  `allele_*` tools are absent from your toolset, this session is not \
-                 connected to the running app, and you should say so and use \
-                 `locus delegate run` instead. Availability is re-checked when it \
-                 matters; do not treat this line as still true an hour from now.",
-                describe_socket()
+                 connected to the running app. Say so and use `locus delegate run` \
+                 instead. Availability is re-checked when it matters; do not treat \
+                 this line as still true an hour from now.",
+                socket = describe_socket()
+            ),
+            // Allele up, OpenCode absent. Split from the arm above rather than
+            // folded into it because the advice differs and the folded version
+            // was wrong: it sent a session that has no `allele_*` tools at
+            // `locus delegate run`, a command that cannot run here, and it was
+            // the one arm that never mentioned the escape. That caller had no
+            // working next step until it burned a denied call to discover one.
+            (true, false) => format!(
+                "Locus delegation: the Allele app is reachable on this machine ({socket}), \
+                 so dispatch through `allele_sessions_create` — that is the happy path. \
+                 OpenCode is not usable here, so there is no second sanctioned \
+                 vehicle. This is a fact about the machine, not about this session: if \
+                 the `allele_*` tools are absent from your toolset, this session is not \
+                 connected to the running app and nothing else is available. Say so, \
+                 and lead a retried delegation call's description with `{escape}` and \
+                 your reason — that permits a native subagent and records why.",
+                socket = describe_socket(),
+                escape = NO_VEHICLE_ESCAPE
             ),
             (false, true) => format!(
                 "Locus delegation is DEGRADED: the Allele app is not reachable on this \
