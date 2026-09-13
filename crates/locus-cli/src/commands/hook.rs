@@ -414,7 +414,10 @@ fn route_delegation(
         let reason = if stated.is_empty() {
             "caller asserted no sanctioned vehicle is usable, giving no reason".to_string()
         } else {
-            format!("caller asserted no sanctioned vehicle is usable: {}", stated)
+            format!(
+                "caller asserted no sanctioned vehicle is usable: {}",
+                stated
+            )
         };
         return Routing::PermitDegraded {
             message: escape_acknowledgement(),
@@ -473,8 +476,8 @@ fn append_routing_record(record: &RoutingRecord, data_dir: &Path) {
     // on exactly those machines and say nothing about it. The record's whole
     // justification is answering "how often did delegation actually degrade",
     // and an answer that is silently absent for a whole install path is not one.
-    let dir = crate::commands::stop_verifier::log_dir()
-        .unwrap_or_else(|| data_dir.join("activation"));
+    let dir =
+        crate::commands::stop_verifier::log_dir().unwrap_or_else(|| data_dir.join("activation"));
     // Losing a log line must never cost the user their tool call.
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -650,7 +653,11 @@ fn workflow_denial(event: &serde_json::Value) -> serde_json::Value {
         .unwrap_or("");
 
     let has_script = tool_input
-        .and_then(|v| v.get("script").or_else(|| v.get("scriptPath")).or_else(|| v.get("name")))
+        .and_then(|v| {
+            v.get("script")
+                .or_else(|| v.get("scriptPath"))
+                .or_else(|| v.get("name"))
+        })
         .is_some();
 
     let script_hint = if has_script {
@@ -824,7 +831,9 @@ fn warn_on_unwritten_learnings(data_dir: &Path) {
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(&prd) {
-                if has_phase_learn(&content) && !has_matching_learning_file(&e.path(), &learning_dir) {
+                if has_phase_learn(&content)
+                    && !has_matching_learning_file(&e.path(), &learning_dir)
+                {
                     eprintln!(
                         "locus: PRD {} reached phase:learn but no learning file was written",
                         prd.display()
@@ -854,10 +863,7 @@ fn is_claude_memory_path(path: &str) -> bool {
 
 fn mirror_memory_to_locus(file_path: &str, data_dir: &Path) -> Result<MirrorResult, LocusError> {
     let path = Path::new(file_path);
-    let filename = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
     if filename.is_empty() {
         return Ok(MirrorResult {
@@ -957,7 +963,13 @@ fn derive_slug_from_path(cwd: &Path) -> String {
         parts.join("-").to_lowercase()
     };
     slug.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -1208,7 +1220,8 @@ pub(crate) fn sync_prd_to_work_json(
     })?;
 
     let (frontmatter, body) = split_frontmatter(&content);
-    let fm: serde_yaml::Value = serde_yaml::from_str(frontmatter).unwrap_or(serde_yaml::Value::Null);
+    let fm: serde_yaml::Value =
+        serde_yaml::from_str(frontmatter).unwrap_or(serde_yaml::Value::Null);
 
     let slug = fm
         .get("slug")
@@ -1224,7 +1237,9 @@ pub(crate) fn sync_prd_to_work_json(
 
     let total = body
         .lines()
-        .filter(|l| l.trim_start().starts_with("- [ ] ISC-") || l.trim_start().starts_with("- [x] ISC-"))
+        .filter(|l| {
+            l.trim_start().starts_with("- [ ] ISC-") || l.trim_start().starts_with("- [x] ISC-")
+        })
         .count();
     let done = body
         .lines()
@@ -1259,8 +1274,8 @@ pub(crate) fn sync_prd_to_work_json(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let recorded_project_dir = existing_project_dir
-        .or_else(|| project_dir.map(|p| p.display().to_string()));
+    let recorded_project_dir =
+        existing_project_dir.or_else(|| project_dir.map(|p| p.display().to_string()));
 
     let mut entry = serde_json::json!({
         "slug": slug,
@@ -1284,10 +1299,7 @@ pub(crate) fn sync_prd_to_work_json(
     if !sessions.is_object() {
         *sessions = serde_json::json!({});
     }
-    sessions
-        .as_object_mut()
-        .unwrap()
-        .insert(slug, entry);
+    sessions.as_object_mut().unwrap().insert(slug, entry);
 
     let out = serde_json::to_string_pretty(&registry).map_err(|e| LocusError::Adapter {
         platform: locus_core::platform::Platform::ClaudeCode,
@@ -1313,7 +1325,7 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
             if let Some(end) = rest.find("\n---") {
                 let fm = &content[3..i + 1 + end];
                 let body_start = i + 1 + end + 4; // skip "\n---"
-                // Skip optional trailing newline.
+                                                  // Skip optional trailing newline.
                 let body = if body_start < content.len() && bytes[body_start] == b'\n' {
                     &content[body_start + 1..]
                 } else {
@@ -1360,13 +1372,16 @@ mod tests {
         )
         .unwrap();
 
-        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/myproject")))
-            .unwrap();
-
-        let work_json = std::fs::read_to_string(
-            tmp.path().join("memory").join("state").join("work.json"),
+        sync_prd_to_work_json(
+            &prd_path,
+            tmp.path(),
+            Some(Path::new("/Users/test/myproject")),
         )
         .unwrap();
+
+        let work_json =
+            std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
+                .unwrap();
         let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
 
         let entry = &v["sessions"]["myslug"];
@@ -1390,8 +1405,12 @@ mod tests {
             "---\nslug: myslug\nphase: observe\n---\n\n- [ ] ISC-1: first\n",
         )
         .unwrap();
-        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/project-a")))
-            .unwrap();
+        sync_prd_to_work_json(
+            &prd_path,
+            tmp.path(),
+            Some(Path::new("/Users/test/project-a")),
+        )
+        .unwrap();
 
         // Resync from a drifted cwd (e.g. shell cd'd into the data dir) must
         // not repoint project_dir, but must refresh phase/progress.
@@ -1400,13 +1419,11 @@ mod tests {
             "---\nslug: myslug\nphase: complete\n---\n\n- [x] ISC-1: first\n",
         )
         .unwrap();
-        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/somewhere/else")))
-            .unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/somewhere/else"))).unwrap();
 
-        let work_json = std::fs::read_to_string(
-            tmp.path().join("memory").join("state").join("work.json"),
-        )
-        .unwrap();
+        let work_json =
+            std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
+                .unwrap();
         let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
         let entry = &v["sessions"]["myslug"];
         assert_eq!(entry["project_dir"], "/Users/test/project-a");
@@ -1424,10 +1441,9 @@ mod tests {
 
         sync_prd_to_work_json(&prd_path, tmp.path(), None).unwrap();
 
-        let work_json = std::fs::read_to_string(
-            tmp.path().join("memory").join("state").join("work.json"),
-        )
-        .unwrap();
+        let work_json =
+            std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
+                .unwrap();
         let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
         assert!(v["sessions"]["myslug"].get("project_dir").is_none());
     }
@@ -1447,7 +1463,10 @@ mod tests {
             ))
         );
         assert_eq!(prd_for_work_file("/Users/test/project/src/main.rs"), None);
-        assert_eq!(prd_for_work_file("/Users/test/.locus/data/memory/work/"), None);
+        assert_eq!(
+            prd_for_work_file("/Users/test/.locus/data/memory/work/"),
+            None
+        );
     }
 
     #[test]
@@ -1473,10 +1492,9 @@ mod tests {
         .unwrap();
         resync_recent_prds(tmp.path(), None, 600).unwrap();
 
-        let work_json = std::fs::read_to_string(
-            tmp.path().join("memory").join("state").join("work.json"),
-        )
-        .unwrap();
+        let work_json =
+            std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
+                .unwrap();
         let v: serde_json::Value = serde_json::from_str(&work_json).unwrap();
         let entry = &v["sessions"]["myslug"];
         assert_eq!(entry["phase"], "execute");
@@ -1485,8 +1503,7 @@ mod tests {
         assert!(entry.get("project_dir").is_none());
 
         // …and must keep one that was recorded at creation.
-        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/owner")))
-            .unwrap();
+        sync_prd_to_work_json(&prd_path, tmp.path(), Some(Path::new("/Users/test/owner"))).unwrap();
         resync_recent_prds(tmp.path(), None, 600).unwrap();
         let v: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(tmp.path().join("memory").join("state").join("work.json"))
@@ -1529,7 +1546,12 @@ mod tests {
     #[test]
     fn pre_compact_writes_checkpoint() {
         let tmp = tempfile::tempdir().unwrap();
-        write_checkpoint(tmp.path(), "pre-compact", &serde_json::json!({"reason": "test"})).unwrap();
+        write_checkpoint(
+            tmp.path(),
+            "pre-compact",
+            &serde_json::json!({"reason": "test"}),
+        )
+        .unwrap();
         let state_dir = tmp.path().join("memory").join("state");
         let entries: Vec<_> = std::fs::read_dir(&state_dir)
             .unwrap()
@@ -1537,7 +1559,9 @@ mod tests {
             .collect();
         assert_eq!(entries.len(), 1);
         let name = entries[0].file_name();
-        assert!(name.to_string_lossy().starts_with("checkpoint-pre-compact-"));
+        assert!(name
+            .to_string_lossy()
+            .starts_with("checkpoint-pre-compact-"));
     }
 
     // ---------------------------------------------- delegation routing --
@@ -1957,7 +1981,10 @@ mod tests {
         });
 
         assert_eq!(
-            resolve_from_registry(&reg, Path::new("/Users/test/.allele/workspaces/allele/abc123")),
+            resolve_from_registry(
+                &reg,
+                Path::new("/Users/test/.allele/workspaces/allele/abc123")
+            ),
             Some("allele".to_string())
         );
         assert_eq!(
@@ -2077,10 +2104,19 @@ mod tests {
         std::fs::create_dir_all(data_dir.join("projects")).unwrap();
 
         // Simulate a Claude Code memory file
-        let claude_mem_dir = tmp.path().join(".claude").join("projects").join("encoded").join("memory");
+        let claude_mem_dir = tmp
+            .path()
+            .join(".claude")
+            .join("projects")
+            .join("encoded")
+            .join("memory");
         std::fs::create_dir_all(&claude_mem_dir).unwrap();
         let mem_file = claude_mem_dir.join("feedback_testing.md");
-        std::fs::write(&mem_file, "---\nname: test feedback\ntype: feedback\n---\n\nContent here.\n").unwrap();
+        std::fs::write(
+            &mem_file,
+            "---\nname: test feedback\ntype: feedback\n---\n\nContent here.\n",
+        )
+        .unwrap();
 
         // Temporarily change CWD for the test
         let original_dir = std::env::current_dir().unwrap();
@@ -2091,7 +2127,10 @@ mod tests {
         std::env::set_current_dir(original_dir).unwrap();
 
         assert!(result.is_ok());
-        let mirrored = data_dir.join("projects").join("test-proj").join("feedback_testing.md");
+        let mirrored = data_dir
+            .join("projects")
+            .join("test-proj")
+            .join("feedback_testing.md");
         assert!(mirrored.exists());
         let content = std::fs::read_to_string(mirrored).unwrap();
         assert!(content.contains("Content here."));
@@ -2126,9 +2165,18 @@ mod tests {
 
     #[test]
     fn simple_glob_match_handles_common_patterns() {
-        assert!(simple_glob_match("**/.allele/workspaces/allele/**", "/Users/test/.allele/workspaces/allele/abc"));
-        assert!(simple_glob_match("**/the-long-burn", "/Users/test/the-long-burn"));
-        assert!(!simple_glob_match("**/.allele/workspaces/allele/**", "/Users/test/other/path"));
+        assert!(simple_glob_match(
+            "**/.allele/workspaces/allele/**",
+            "/Users/test/.allele/workspaces/allele/abc"
+        ));
+        assert!(simple_glob_match(
+            "**/the-long-burn",
+            "/Users/test/the-long-burn"
+        ));
+        assert!(!simple_glob_match(
+            "**/.allele/workspaces/allele/**",
+            "/Users/test/other/path"
+        ));
         assert!(!simple_glob_match("", "/any/path"));
     }
 }

@@ -154,7 +154,6 @@ pub struct SkillConfig {
     pub disabled: Vec<String>,
 }
 
-
 /// Notification settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotificationConfig {

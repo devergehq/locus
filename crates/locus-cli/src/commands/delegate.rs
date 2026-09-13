@@ -626,10 +626,7 @@ fn read_manifest(path: &Path) -> Option<DelegationManifest> {
     serde_json::from_slice(&body).ok()
 }
 
-fn enumerate_delegations(
-    root: &Path,
-    now: SystemTime,
-) -> Result<Vec<DelegationEntry>, LocusError> {
+fn enumerate_delegations(root: &Path, now: SystemTime) -> Result<Vec<DelegationEntry>, LocusError> {
     if !root.exists() {
         return Ok(Vec::new());
     }
@@ -841,8 +838,9 @@ pub fn usage(args: UsageArgs) -> Result<(), LocusError> {
             let ts_sec = match &manifest {
                 Some(m) => m.completed_at,
                 None => {
-                    let Some(ts_ms) =
-                        name.strip_prefix("delegate-").and_then(|s| s.parse::<u64>().ok())
+                    let Some(ts_ms) = name
+                        .strip_prefix("delegate-")
+                        .and_then(|s| s.parse::<u64>().ok())
                     else {
                         continue;
                     };
@@ -965,10 +963,7 @@ fn print_human_usage(report: &UsageReport) -> Result<(), LocusError> {
     }
 
     output::section("Total");
-    output::field(
-        "Delegations",
-        &format!("{}", report.total_delegations),
-    );
+    output::field("Delegations", &format!("{}", report.total_delegations));
     output::field("Input tokens", &format_number(report.total.input_tokens));
     output::field("Output tokens", &format_number(report.total.output_tokens));
     output::field(
@@ -996,7 +991,9 @@ fn parse_duration(spec: &str) -> Result<Duration, LocusError> {
 
     let seconds = match unit {
         "s" => value,
-        "m" => value.checked_mul(60).ok_or_else(|| invalid_duration(spec))?,
+        "m" => value
+            .checked_mul(60)
+            .ok_or_else(|| invalid_duration(spec))?,
         "h" => value
             .checked_mul(3_600)
             .ok_or_else(|| invalid_duration(spec))?,
@@ -1179,7 +1176,10 @@ mod tests {
         );
         let mut outer = HashMap::new();
         outer.insert("opencode".to_string(), inner);
-        DelegationConfig { enabled: true, defaults: outer }
+        DelegationConfig {
+            enabled: true,
+            defaults: outer,
+        }
     }
 
     #[test]
@@ -1361,7 +1361,10 @@ mod tests {
         })
         .unwrap();
 
-        assert!(dir.exists(), "a young delegation is not deleted by --older-than 30d");
+        assert!(
+            dir.exists(),
+            "a young delegation is not deleted by --older-than 30d"
+        );
         assert!(!auth.exists(), "the credential copy must be purged anyway");
 
         fs::remove_dir_all(&root).ok();
@@ -1479,7 +1482,10 @@ mod tests {
             .as_millis() as u64;
         let id = format!("delegate-{}", now_ms);
         let dir = write_delegation(&root, &id, &[], &[]);
-        assert!(read_manifest(&dir).is_none(), "legacy dirs have no manifest");
+        assert!(
+            read_manifest(&dir).is_none(),
+            "legacy dirs have no manifest"
+        );
 
         usage(UsageArgs {
             since: "1d".into(),
@@ -1524,7 +1530,9 @@ mod tests {
         let future = SystemTime::now() + Duration::from_secs(RETENTION_DAYS * 86_400 + 3_600);
         sweep_expired(&root, future).unwrap();
 
-        assert!(dir.join("delegate-nomanifest-opencode-stdout.jsonl").exists());
+        assert!(dir
+            .join("delegate-nomanifest-opencode-stdout.jsonl")
+            .exists());
         fs::remove_dir_all(&root).ok();
     }
 
@@ -1619,10 +1627,7 @@ mod tests {
                     &format!("{}-opencode-stdout.jsonl", id),
                     b"final answer json",
                 ),
-                (
-                    &format!("{}-opencode-stderr.log", id),
-                    b"warning emitted",
-                ),
+                (&format!("{}-opencode-stderr.log", id), b"warning emitted"),
             ],
             &[("opencode.db", &[0u8; 2048])],
         );

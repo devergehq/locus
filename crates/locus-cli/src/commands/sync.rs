@@ -257,7 +257,9 @@ mod tests {
         assert!(!is_conflict_marker("======= Section Heading (RST)"));
         assert!(!is_conflict_marker("<<<< not a marker"));
         assert!(!is_conflict_marker("normal text"));
-        assert!(!is_conflict_marker("  <<<<<<< indented is not at line start"));
+        assert!(!is_conflict_marker(
+            "  <<<<<<< indented is not at line start"
+        ));
     }
 
     #[test]

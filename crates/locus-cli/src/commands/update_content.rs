@@ -255,10 +255,16 @@ pub fn check_platform_configs(home: &Path) -> Vec<String> {
             Platform::OpenCode => {
                 let config_dir = user_home.join(".config").join("opencode");
                 if !config_dir.join("AGENTS.md").exists() {
-                    warnings.push("OpenCode AGENTS.md missing. Run `locus platform add opencode`.".to_string());
+                    warnings.push(
+                        "OpenCode AGENTS.md missing. Run `locus platform add opencode`."
+                            .to_string(),
+                    );
                 }
                 if !config_dir.join("opencode.json").exists() {
-                    warnings.push("OpenCode opencode.json missing. Run `locus platform add opencode`.".to_string());
+                    warnings.push(
+                        "OpenCode opencode.json missing. Run `locus platform add opencode`."
+                            .to_string(),
+                    );
                 }
             }
             Platform::ClaudeCode => {

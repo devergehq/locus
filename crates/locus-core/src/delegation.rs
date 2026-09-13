@@ -75,7 +75,6 @@ pub enum ExecutionMode {
     Algorithmic,
 }
 
-
 impl ExecutionMode {
     /// Stable string used in CLI parsing and prompts.
     pub fn as_str(&self) -> &'static str {

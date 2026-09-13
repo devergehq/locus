@@ -260,7 +260,11 @@ fn seed_opencode_user_state(state_dir: &Path) {
         return;
     }
     for filename in ["model.json", "kv.json"] {
-        let source = home.join(".local").join("state").join("opencode").join(filename);
+        let source = home
+            .join(".local")
+            .join("state")
+            .join("opencode")
+            .join(filename);
         if source.exists() {
             let _ = fs::copy(&source, dest_dir.join(filename));
         }
@@ -419,11 +423,10 @@ pub fn finalize_delegation(
     manifest.sandbox_discarded = discard;
 
     let manifest_path = request.artifact_dir.join(DelegationManifest::FILE_NAME);
-    let body =
-        serde_json::to_string_pretty(&manifest).map_err(|e| LocusError::Adapter {
-            platform: Platform::OpenCode,
-            message: format!("Failed to serialise delegation manifest: {}", e),
-        })?;
+    let body = serde_json::to_string_pretty(&manifest).map_err(|e| LocusError::Adapter {
+        platform: Platform::OpenCode,
+        message: format!("Failed to serialise delegation manifest: {}", e),
+    })?;
     fs::write(&manifest_path, body).map_err(|e| LocusError::Filesystem {
         message: format!("Failed to write delegation manifest: {}", e),
         path: manifest_path.clone(),
@@ -470,10 +473,7 @@ fn dir_size(path: &Path) -> u64 {
     let Ok(entries) = fs::read_dir(path) else {
         return 0;
     };
-    entries
-        .flatten()
-        .map(|entry| dir_size(&entry.path()))
-        .sum()
+    entries.flatten().map(|entry| dir_size(&entry.path())).sum()
 }
 
 fn execute_delegation(
@@ -707,7 +707,10 @@ fn run_command_with_timeout(
                 let elapsed = start.elapsed();
 
                 // Send soft termination signal once when we hit the soft timeout.
-                if !soft_termination_sent && elapsed >= soft_timeout && soft_timeout > Duration::ZERO {
+                if !soft_termination_sent
+                    && elapsed >= soft_timeout
+                    && soft_timeout > Duration::ZERO
+                {
                     soft_termination_sent = true;
                     #[cfg(unix)]
                     {
@@ -792,16 +795,10 @@ fn summarize_failure(code: Option<i32>, stderr: &[u8], stdout: &[u8]) -> String 
 fn summarize_timeout(stdout: &[u8], raw_output_path: Option<&PathBuf>) -> String {
     let text = String::from_utf8_lossy(stdout).trim().to_string();
     if text.is_empty() {
-        return format_artifact_summary(
-            "Partial output may be available",
-            raw_output_path,
-        );
+        return format_artifact_summary("Partial output may be available", raw_output_path);
     }
     let compact = compact_text(&text, 1200);
-    format!(
-        "Partial output excerpt: {}",
-        compact
-    )
+    format!("Partial output excerpt: {}", compact)
 }
 
 fn format_artifact_summary(prefix: &str, raw_output_path: Option<&PathBuf>) -> String {
@@ -912,18 +909,9 @@ pub mod parse {
                 continue;
             }
             found = true;
-            usage.input_tokens += tokens
-                .get("input")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            usage.output_tokens += tokens
-                .get("output")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            usage.reasoning_tokens += tokens
-                .get("reasoning")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            usage.input_tokens += tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
+            usage.output_tokens += tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
+            usage.reasoning_tokens += tokens.get("reasoning").and_then(Value::as_u64).unwrap_or(0);
             usage.cache_read_tokens += tokens
                 .pointer("/cache/read")
                 .and_then(Value::as_u64)
@@ -932,10 +920,7 @@ pub mod parse {
                 .pointer("/cache/write")
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            usage.total_tokens += tokens
-                .get("total")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            usage.total_tokens += tokens.get("total").and_then(Value::as_u64).unwrap_or(0);
             usage.cost_usd += value
                 .pointer("/part/cost")
                 .and_then(Value::as_f64)
@@ -1189,8 +1174,7 @@ mod tests {
             args: vec!["-c".into(), "200000".into(), "/dev/zero".into()],
             envs: Vec::new(),
         };
-        let outcome = run_command_with_timeout(&spec, Duration::from_secs(10))
-            .expect("spawn ok");
+        let outcome = run_command_with_timeout(&spec, Duration::from_secs(10)).expect("spawn ok");
         match outcome {
             TimedOutput::Completed {
                 stdout,
@@ -1211,7 +1195,10 @@ mod tests {
         let request = sample_request();
         let prompt = build_delegated_prompt(&request);
 
-        assert!(prompt.contains(&format!("TIME BUDGET: {} seconds total", request.timeout_seconds)));
+        assert!(prompt.contains(&format!(
+            "TIME BUDGET: {} seconds total",
+            request.timeout_seconds
+        )));
         assert!(prompt.contains("within 2 minutes of the time limit"));
         assert!(prompt.contains("STOP your current work immediately"));
         assert!(prompt.contains("summarize what you have found"));
@@ -1359,7 +1346,10 @@ mod tests {
         assert_eq!(manifest.status, DelegationStatus::Success);
         assert_eq!(manifest.model, request.model);
         assert_eq!(manifest.task_kind, request.task_kind);
-        assert_eq!(manifest.schema_version, DelegationManifest::CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            manifest.schema_version,
+            DelegationManifest::CURRENT_SCHEMA_VERSION
+        );
         assert!(manifest.completed_at > 0);
 
         let _ = fs::remove_dir_all(&request.artifact_dir);
@@ -1540,11 +1530,18 @@ mod tests {
         std::os::unix::fs::symlink(&canonical, &sandbox_auth).unwrap();
 
         // What OpenCode does on refresh: truncate-in-place through the path.
-        fs::write(&sandbox_auth, r#"{"openai":{"type":"oauth","expires":2000}}"#).unwrap();
+        fs::write(
+            &sandbox_auth,
+            r#"{"openai":{"type":"oauth","expires":2000}}"#,
+        )
+        .unwrap();
 
         assert_eq!(latest_auth_expiry(&canonical), Some(2000));
         assert!(
-            fs::symlink_metadata(&sandbox_auth).unwrap().file_type().is_symlink(),
+            fs::symlink_metadata(&sandbox_auth)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
             "an in-place write leaves the link intact"
         );
 
@@ -1606,10 +1603,7 @@ mod tests {
 
     #[test]
     fn parse_returns_none_when_no_error_event() {
-        let stdout = concat!(
-            r#"{"type":"text","part":{"text":"all good"}}"#,
-            "\n",
-        );
+        let stdout = concat!(r#"{"type":"text","part":{"text":"all good"}}"#, "\n",);
         assert!(parse::extract_error_message(stdout.as_bytes()).is_none());
     }
 
@@ -1742,8 +1736,7 @@ mod tests {
         let _ = fs::remove_dir_all(&request.artifact_dir);
     }
 
-    const SMOKE_FIXTURE: &str =
-        include_str!("../tests/fixtures/opencode_final_answer.jsonl");
+    const SMOKE_FIXTURE: &str = include_str!("../tests/fixtures/opencode_final_answer.jsonl");
 
     #[test]
     fn parse_extracts_final_answer_from_smoke_fixture() {
@@ -1769,10 +1762,7 @@ mod tests {
             .any(|f| f.contains("locus-adapter-opencode")));
         assert!(sections.evidence.iter().any(|e| e.contains("Cargo.toml")));
         assert!(!sections.risks.is_empty());
-        assert!(sections
-            .files_referenced
-            .iter()
-            .any(|f| f == "Cargo.toml"));
+        assert!(sections.files_referenced.iter().any(|f| f == "Cargo.toml"));
         assert!(sections
             .files_referenced
             .iter()
@@ -1840,10 +1830,7 @@ mod tests {
         assert_eq!(sections.findings, vec!["finding one", "finding two"]);
         assert_eq!(sections.evidence, vec!["evidence one"]);
         assert_eq!(sections.risks, vec!["risk one"]);
-        assert_eq!(
-            sections.files_referenced,
-            vec!["src/lib.rs", "src/main.rs"]
-        );
+        assert_eq!(sections.files_referenced, vec!["src/lib.rs", "src/main.rs"]);
     }
 
     #[test]
