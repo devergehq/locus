@@ -9,6 +9,64 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [0.3.3] — 2026-09-15
+
+One new skill: the house style for Linear issues, sibling to `review-craft`.
+
+### Added
+
+- **`issue-craft`** (`9b6abfc`, DEV-669). Three skills described how to write a
+  Linear ticket and they disagreed: `plan-issue` is a runbook welded to one
+  person's loop, `fuelled-feature-ticket` is a fixed six-section template for one
+  team, and nothing at all covered a spike, a record, a request or a security
+  finding. This is one craft document, six thin shapes over a single contract,
+  and a linter.
+
+  It shares `review-craft`'s one principle and inverts one. Both demote rather
+  than delete. But a review is consumed in a feed and is budgeted end to end,
+  whereas a ticket is a durable record — read once at speed, then consulted for
+  years — so only its **first screen** is budgeted and the document is unbounded.
+  That distinction is a scar: the review budget was once applied to PR
+  descriptions, which cannot fold, so "shorten" could only be obeyed by
+  paraphrasing, and seven descriptions had to be restored from edit history.
+
+- **`issue_lint.py`**, the deterministic gate. It checks paired folds, the
+  first-screen budget, a long body that folds nothing, unfilled placeholders,
+  rotting relative dates, unpaired backticks, titles that name a topic rather
+  than make a claim, a markdown severity scale competing with Linear's own
+  priority field, and markup Linear silently drops.
+
+  The check that matters most was not in the original design. The linter was
+  tested against a real ticket previously described as a wall; it passed clean,
+  which was wrong. That ticket's actual failure is that nothing in it is folded,
+  which drove the "long body, nothing folded" check.
+
+### Notes
+
+The Linear mechanics the skill rests on were probed live rather than assumed,
+on 15 September 2026, against two throwaway issues:
+
+- `+++ Title` ... `+++` renders as a native collapsible, **collapsed by
+  default**. Linear accepts `>>>` as the opener and normalises it to `+++`.
+- An **unpaired `+++` swallows the entire rest of the document** into the fold.
+  The API returns success and nothing warns you. This is why the linter exists.
+- Folds **survive a human editing the issue in Linear's own web editor** — both
+  fold pairs came back byte-identical, so they are a first-class node rather
+  than a markdown artefact.
+- The API serves a **stale body for roughly 60 seconds** after an editor edit,
+  with `updatedAt` unchanged, so an agent reading just after a human edit can
+  get the old text.
+
+An earlier claim that folds "round-trip" rested only on the API storing the
+token. That proved storage, not rendering, and the two are different claims.
+
+The house style also records what the evidence does **not** support: an
+interview study of 26 practitioners against 31 issue-tracker smells rated
+"description too long" not problematic by 6 of 13, and the 14 problems they did
+report are system-level rather than prose-level. The legibility problem the
+skill addresses is specific to agent-authored density, which nobody has studied,
+and it says so rather than borrowing authority it does not have.
+
 ## [0.3.2] — 2026-09-14
 
 The coordinator protocol goes into service, and the three things it depended on
