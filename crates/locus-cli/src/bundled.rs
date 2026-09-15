@@ -294,6 +294,20 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/review-craft/examples/synthetic-billing-review.md".into(),
             include_str!("../../../skills/review-craft/examples/synthetic-billing-review.md"),
         ),
+        // Issue craft - sibling to review-craft: how a Linear issue is written, so a
+        // human can decide on the first screen and an agent can build from the rest.
+        (
+            "skills/issue-craft/SKILL.md".into(),
+            include_str!("../../../skills/issue-craft/SKILL.md"),
+        ),
+        (
+            "skills/issue-craft/house-style.md".into(),
+            include_str!("../../../skills/issue-craft/house-style.md"),
+        ),
+        (
+            "skills/issue-craft/issue_lint.py".into(),
+            include_str!("../../../skills/issue-craft/issue_lint.py"),
+        ),
         // Agents — traits data + archetype files
         (
             "agents/traits.yaml".into(),
