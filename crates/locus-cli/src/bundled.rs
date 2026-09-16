@@ -308,6 +308,10 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/issue-craft/issue_lint.py".into(),
             include_str!("../../../skills/issue-craft/issue_lint.py"),
         ),
+        (
+            "skills/issue-craft/examples/synthetic-defect-ticket.md".into(),
+            include_str!("../../../skills/issue-craft/examples/synthetic-defect-ticket.md"),
+        ),
         // Agents — traits data + archetype files
         (
             "agents/traits.yaml".into(),
