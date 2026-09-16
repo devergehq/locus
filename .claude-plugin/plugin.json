@@ -1,7 +1,7 @@
 {
   "name": "locus",
   "description": "Structured phased decomposition for agentic execution. Injects the Locus dispatcher next to every prompt, enforces the classification line at turn end, and ships the Algorithm as a progressively-disclosed skill.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "author": {
     "name": "Deverge",
     "email": "accounts@deverge.com.au"
