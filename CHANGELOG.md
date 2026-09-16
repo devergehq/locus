@@ -9,7 +9,9 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
-## [Unreleased]
+## [0.3.4] — 2026-09-16
+
+`issue-craft` realigned after one day in use: structure replaces the word budget.
 
 ### Changed
 
