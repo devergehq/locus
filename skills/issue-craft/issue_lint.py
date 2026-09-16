@@ -28,9 +28,23 @@ import urllib.request
 
 LINEAR_API = "https://api.linear.app/graphql"
 
-FIRST_SCREEN_WORDS = 80
-FIRST_SCREEN_CEILING = 150
-LONG_BODY_WORDS = 300
+LONG_BODY_WORDS = 300      # past this, a body with no headings has no hierarchy
+UNFOLDED_BODY_WORDS = 800  # past this, a body with no folds has probably not demoted its evidence
+TITLE_MAX_WORDS = 20
+
+# Sections that must stay visible. A fold whose title matches one of these has hidden
+# something the reader needs in order to decide.
+MUST_BE_VISIBLE = re.compile(
+    r"\b(acceptance|criteria|done when|definition of done|out of scope|scope|decision|question|blocked|blocker)\b",
+    re.I,
+)
+
+# An ask - something needed from a person. It belongs under its own heading, with the owner.
+ASK_HEADING = re.compile(r"\b(decision|question|blocked|blocker|sign-?off|needs?)\b", re.I)
+ASK_LINE = re.compile(
+    r"\b(decision (needed|required)|open question|one question|owner:|needs? a decision|decided,)\b",
+    re.I,
+)
 
 # Words that make a durable record rot. A ticket is consulted for years.
 ROTTING = re.compile(
@@ -99,17 +113,41 @@ def fetch_issue(key: str) -> tuple[str, str]:
     return issue.get("title") or "", issue.get("description") or ""
 
 
-def strip_code_fences(text: str) -> list[tuple[int, str]]:
-    """Yield (line_number, line) for lines outside fenced code blocks."""
+def strip_code_fences(text: str) -> tuple[list[tuple[int, str]], int | None]:
+    """Return (lines outside fenced code blocks, line of an unclosed fence or None)."""
     out: list[tuple[int, str]] = []
     in_fence = False
+    opened_at: int | None = None
     for n, line in enumerate(text.splitlines(), start=1):
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
+            opened_at = n if in_fence else None
             continue
         if not in_fence:
             out.append((n, line))
-    return out
+    return out, opened_at
+
+
+def is_heading(line: str) -> bool:
+    return bool(re.match(r"^\s{0,3}#{1,4}\s+\S", line))
+
+
+def fold_depth_by_line(lines: list[tuple[int, str]]) -> dict[int, str | None]:
+    """Map each line number to the title of the fold it sits inside, or None."""
+    inside: dict[int, str | None] = {}
+    stack: list[str] = []
+    for n, line in lines:
+        stripped = line.strip()
+        if stripped.startswith("+++"):
+            rest = stripped[3:].strip()
+            if rest:
+                stack.append(rest)
+            elif stack:
+                stack.pop()
+            inside[n] = stack[-1] if stack else None
+            continue
+        inside[n] = stack[-1] if stack else None
+    return inside
 
 
 def check_folds(lines: list[tuple[int, str]]) -> list[Finding]:
@@ -138,53 +176,111 @@ def check_folds(lines: list[tuple[int, str]]) -> list[Finding]:
     return found
 
 
-def check_first_screen(lines: list[tuple[int, str]]) -> list[Finding]:
-    """Everything before the first fold or the first heading is the budgeted region."""
-    words = 0
-    counted_any = False
+def check_summary(lines: list[tuple[int, str]]) -> list[Finding]:
+    """The body must open with prose - the summary - not with a fold or a heading."""
     for _n, line in lines:
         stripped = line.strip()
-        if stripped.startswith("+++") or stripped.startswith("#"):
-            break
-        if stripped:
-            counted_any = True
-            words += len(stripped.split())
-    if not counted_any:
-        return [Finding("ERROR", 1, "no first screen - the ticket opens on a fold or a heading")]
-    if words > FIRST_SCREEN_CEILING:
-        return [
-            Finding(
-                "ERROR",
-                1,
-                f"first screen is {words} words, over the {FIRST_SCREEN_CEILING} ceiling - fold something",
-            )
-        ]
-    if words > FIRST_SCREEN_WORDS:
-        return [
-            Finding(
-                "WARN",
-                1,
-                f"first screen is {words} words, over the {FIRST_SCREEN_WORDS} target "
-                "(fine if the overage is a path, a count or a figure)",
-            )
-        ]
+        if not stripped:
+            continue
+        if stripped.startswith("+++") or is_heading(stripped):
+            level = "ERROR" if stripped.startswith("+++") else "WARN"
+            return [
+                Finding(
+                    level,
+                    _n,
+                    "no summary - the ticket opens on a fold or a heading; a paragraph of prose "
+                    "above the first heading lets a reader decide without reading a section",
+                )
+            ]
+        return []
     return []
 
 
-def check_nothing_folded(lines: list[tuple[int, str]]) -> list[Finding]:
-    """A long ticket with no folds has not demoted anything. It is the wall this style exists to stop."""
+def check_hierarchy(lines: list[tuple[int, str]]) -> list[Finding]:
+    """Headings are the skeleton. A long body without them has no hierarchy, whatever it folds."""
     total = sum(len(line.split()) for _n, line in lines)
+    has_heading = any(is_heading(line) for _n, line in lines)
     has_fold = any(line.strip().startswith("+++") for _n, line in lines)
-    if total > LONG_BODY_WORDS and not has_fold:
-        return [
+    found: list[Finding] = []
+    if total > LONG_BODY_WORDS and not has_heading:
+        found.append(
             Finding(
                 "WARN",
                 None,
-                f"{total} words and nothing is folded - demote the evidence into `+++` sections "
-                "so the first screen carries the decision",
+                f"{total} words and no headings - the reader cannot find anything; "
+                "give each answer its own `##`",
             )
-        ]
-    return []
+        )
+    if total > UNFOLDED_BODY_WORDS and not has_fold:
+        found.append(
+            Finding(
+                "WARN",
+                None,
+                f"{total} words and nothing is folded - raw evidence and query output belong "
+                "in `+++` sections under the answer they support",
+            )
+        )
+    return found
+
+
+def check_folded_sections(lines: list[tuple[int, str]]) -> list[Finding]:
+    """The acceptance criteria, the scope and the ask are never folded."""
+    found: list[Finding] = []
+    for n, line in lines:
+        stripped = line.strip()
+        if stripped.startswith("+++") and stripped[3:].strip():
+            title = stripped[3:].strip()
+            if MUST_BE_VISIBLE.search(title):
+                found.append(
+                    Finding(
+                        "WARN",
+                        n,
+                        f"fold `{title}` hides a section the reader needs in order to decide - "
+                        "keep it visible under a heading and fold only the bulk beneath it",
+                    )
+                )
+    return found
+
+
+def check_ask(lines: list[tuple[int, str]]) -> list[Finding]:
+    """An ask gets its own heading with the owner. Not a trailing sentence, not a fold."""
+    has_ask_heading = any(is_heading(line) and ASK_HEADING.search(line) for _n, line in lines)
+    inside = fold_depth_by_line(lines)
+    found: list[Finding] = []
+    for n, line in lines:
+        stripped = line.strip()
+        if not stripped or is_heading(stripped) or stripped.startswith("+++"):
+            continue
+        fold = inside.get(n)
+        if ASK_LINE.search(stripped):
+            if fold:
+                found.append(
+                    Finding(
+                        "WARN",
+                        n,
+                        f"an ask is inside fold `{fold}` - nobody will see it; give it "
+                        "`## Decision needed - <owner>` near the top",
+                    )
+                )
+            elif not has_ask_heading:
+                found.append(
+                    Finding(
+                        "WARN",
+                        n,
+                        "an ask is buried in prose - give it its own heading near the top, "
+                        "with the owner named",
+                    )
+                )
+        elif fold and stripped.endswith("?") and not has_ask_heading:
+            found.append(
+                Finding(
+                    "WARN",
+                    n,
+                    f"a question inside fold `{fold}` and no ask heading anywhere - if this "
+                    "needs an answer, surface it",
+                )
+            )
+    return found
 
 
 def check_backticks(lines: list[tuple[int, str]]) -> list[Finding]:
@@ -226,6 +322,15 @@ def check_title(title: str) -> list[Finding]:
     found: list[Finding] = []
     if len(words) < 4:
         found.append(Finding("WARN", None, f"title is {len(words)} words - a claim usually needs more"))
+    if len(words) > TITLE_MAX_WORDS:
+        found.append(
+            Finding(
+                "WARN",
+                None,
+                f"title is {len(words)} words - that is the summary, not the claim; "
+                "keep the claim and move the rest into the body",
+            )
+        )
     lead = re.match(r"^\s*(fix|update|improve|investigate|refactor|add|change|review|check)\b", title, re.I)
     if lead and not re.search(r"\d", title):
         found.append(
@@ -241,12 +346,18 @@ def check_title(title: str) -> list[Finding]:
 def lint(title: str, description: str) -> list[Finding]:
     if not description.strip():
         return [Finding("ERROR", None, "description is empty")]
-    lines = strip_code_fences(description)
+    lines, unclosed_fence = strip_code_fences(description)
     findings: list[Finding] = []
+    if unclosed_fence:
+        findings.append(
+            Finding("ERROR", unclosed_fence, "code fence is never closed - everything below it renders as code")
+        )
     findings += check_title(title)
     findings += check_folds(lines)
-    findings += check_first_screen(lines)
-    findings += check_nothing_folded(lines)
+    findings += check_summary(lines)
+    findings += check_hierarchy(lines)
+    findings += check_folded_sections(lines)
+    findings += check_ask(lines)
     findings += check_backticks(lines)
     findings += check_patterns(lines)
     findings.sort(key=lambda f: (f.line or 0))

@@ -13,11 +13,11 @@ why nothing is ever deleted.
 
 ## The one rule
 
-**The first screen must let a reader decide. Everything below it is folded, and nothing is ever
-cut.**
+**A reader must be able to find the ask, and the shape of the problem, without opening anything.
+Everything bulky is folded, and nothing is ever cut.**
 
-Evidence is demoted, never dropped. A ticket that reads as three bullet points has failed just
-as badly as a wall of text: the detail is the ticket, and it stays — one click away, in the same
+Evidence is demoted, never dropped. A ticket that reads as three bullet points has failed just as
+badly as a wall of text: the detail is the ticket, and it stays — one click away, in the same
 document, where both readers can reach it.
 
 ## Why a ticket is not a review
@@ -35,17 +35,18 @@ record.** A review is read once, in a stream, and then is mostly history. A tick
 at speed and then consulted for years — by the implementer, by whoever picks it up after them,
 by the person doing the post-incident read, and by every agent that touches the area.
 
-So the budget moves. **Budget the first screen. The document is unbounded.**
-
-This works in Linear specifically because Linear folds natively, which GitHub PR descriptions do
-not. The mechanism is in "Mechanics" below, and it was verified rather than assumed.
+**So there is no word budget anywhere in a ticket.** The first version of this style budgeted the
+first screen at about 80 words, and the tickets it produced were the second scar: one flat
+paragraph, no headings, the acceptance criteria and the open question folded out of sight, and a
+reader who opened every fold looking for what they were meant to do. Short did not make it
+legible. Hierarchy does. The budget is replaced by structure, below.
 
 ## The title
 
-**A claim, with a number in it where one exists.** The title is the only part of a ticket most
-people ever read, because the backlog view is title, label and state. A title that names a topic
-makes the reader open the ticket to find out whether it matters. A title that makes a claim lets
-them decide without opening it.
+**A claim, with a number in it where one exists — and short enough to read in the backlog.** The
+title is the only part of a ticket most people ever read, because the backlog view is title, label
+and state. A title that names a topic makes the reader open the ticket to find out whether it
+matters. A title that makes a claim lets them decide without opening it.
 
 ```
 Good  An empty string silently clears content on 11 write paths
@@ -55,11 +56,16 @@ Good  pr_seen evicts the newest entries first
 Bad   Fix argStr handling
 Bad   Investigate performance issue
 Bad   Improve the poller
+Bad   `app:populate-bill-paid-events` with no bill id zeroes every `monthly_fees` row and re-fires
+      `BillMarkedAsPaidEvent` for every paid bill in history; the bulk path is to be removed
 ```
 
 The three good ones are real, and they are good because you can act on the title alone: you know
-what is broken, roughly where, and how much of it there is. The bad ones are topics wearing a
-title's clothes.
+what is broken, roughly where, and how much of it there is. The first three bad ones are topics
+wearing a title's clothes. The last is a real title this style produced: a claim, with numbers,
+and thirty words long. It is the summary paragraph moved into the title field, and it wraps to
+three lines in the backlog. **Aim for under fifteen words.** The claim goes in the title; the
+sentence that explains it goes in the summary; the decision goes in the ask.
 
 **A number in the title is worth a paragraph in the body.** "11 write paths" tells a triager the
 size of the thing before they have read a word of the description.
@@ -67,45 +73,153 @@ size of the thing before they have read a word of the description.
 This is `review-craft`'s "every finding line is a claim, not a topic", moved up one level. It
 costs nothing and it is the highest-leverage line in the ticket.
 
-## The first screen
+## The skeleton
 
-Everything above the first fold or the first `##`. This is the only budgeted region, and the
-budget is **about 80 words**, hard ceiling 150.
+**Headings are the structure of a ticket. Folds are not.** A reader's eye finds a heading before it
+reads a word; it cannot find anything inside a paragraph, and it cannot find anything inside a
+collapsed section. A ticket with no headings has one level of hierarchy, and one level is none.
 
-It answers, in this order:
+A body opens with a **summary**: what is wrong or what is missing, and what changes, in prose, in
+as many sentences as it takes and no more. Then the **ask**, if there is one (next section). Then
+`##` headings, each an answer to a question the reader has, in the order they will have them.
 
-1. **What is wrong, or what is missing.** One or two sentences. Concrete.
-2. **What changes.** One or two sentences. Not the steps — the shape.
-3. **Anything that stops a reader picking it up.** A blocking dependency, an open question, a
-   flag, a decision someone else owns.
+The headings are not fixed — see "Sections are answers to questions" — but the ones that recur are:
 
-That is all. Size, priority and ownership are Linear fields, not prose — see "Use the native
-fields".
+- **The cause** / **The mechanism.** Why it happens, down to the code path. Named files and methods.
+- **Why it matters.** Who is affected and what it costs. The numbers go here, in a table.
+- **The fix** / **What changes.** The shape of the change. What the plan delivers, not the steps.
+- **Acceptance criteria.** Visible, always. A reader deciding whether to pick this up needs to see
+  what done means, and an agent must not have to open a fold to find the contract.
+- **Deliberately out of scope.** Visible, always. Publishing what you considered and dropped is what
+  earns you the right to keep the rest focused, and it is the section that stops a well-meaning
+  implementer expanding the ticket.
+- **Alternatives rejected**, each with the reason. The single most valuable section for the next
+  person, and the one most often left out.
+- **Provenance** / **Found via.** Where this came from, and what it is related to.
 
-If the first screen cannot be written, the ticket is not understood well enough to file. That is
-a finding, not a formatting problem, and the right response is to say so rather than to pad.
+**One idea per heading, visibly stated, in bold where one sentence carries the section.** The
+reader who scans headings and bold should come away with the argument. The reader who reads the
+prose gets the reasoning. The reader who opens the folds gets the proof.
 
-**A specific outranks the budget.** If trimming to fit would cost a path, a count, a version or
-a production figure, go over. The budget exists to protect the reader's attention, not to
-compete with the facts.
+## The ask
 
-## Below the first screen
+**If the ticket needs something from a person — a decision, an answer, a sign-off — that is the most
+important thing in it, and it gets its own heading, near the top, with the owner named.** Never a
+sentence at the end of the summary. Never inside a fold. Never "one question first" as an
+afterthought.
 
-Folded, sectioned, and complete. This is the part an agent eats and a human reaches for when
-they have decided to engage. There is no length limit and there should not be one.
+The form is a heading and a blockquote, immediately after the summary:
 
-What typically lives here, when there is something true to say:
+```markdown
+## Decision needed — Patrick
 
-- **Evidence.** The call sites, the counts, the query and its result, the log line, the
-  reproduction. Dated.
-- **Mechanism.** Why it happens, down to the code path. Named files and methods.
-- **The plan.** What to change, file by file. See "Where the solution goes".
-- **Alternatives rejected**, each with the reason. This is the single most valuable section for
-  the next person, and the one most often left out.
-- **Deliberately out of scope.** Adjacent defects and tempting tidy-ups, each with its own
-  ticket where one exists. Publishing what you considered and dropped is what earns you the
-  right to keep the first screen short.
-- **Acceptance criteria.** See below.
+> **Does the bulk path stay?** It has run once in production (5 Jan 2026, 113,977 events).
+> If it stays, the reset is scoped to the fees the rebuild repopulates. If it goes, the
+> `billId` argument becomes required and the bulk branch is deleted.
+>
+> Until this is answered the ticket is not ready. The readiness label is off.
+```
+
+The heading names the kind of ask (`Decision needed`, `Open question`, `Blocked by`, `Needs
+sign-off`) and the owner. The blockquote carries the question in bold, the two or three facts
+that bear on it, and what each answer would mean. That is all. The evidence behind those facts is
+folded further down and cited from here.
+
+Three asks or more is a spike, not a ticket with questions. Write it as one and say what decision
+it unblocks.
+
+A blocker is an ask too: `## Blocked by DAR-547` with one line on what DAR-547 delivers that this
+needs. It is also a Linear relation — set both. The relation is what a poller reads; the heading is
+what a human reads.
+
+**Readiness is a label, and it is withheld while any ask is open.** See "Use the native fields".
+
+## What folds
+
+A fold is for material a human does not need in order to decide, and an agent needs in order to
+build. It costs the human one click and the agent nothing. It is the right place for:
+
+- **Raw evidence.** The call sites with line numbers, the query and its result set, the log lines,
+  the reproduction transcript.
+- **Method and inputs.** How the numbers were produced, what was pinned, what was not checked.
+- **Bulk that supports a section.** A table with forty rows; a census; the full list of files.
+
+It is the wrong place for anything the reader has to know: the ask, the acceptance criteria, the
+scope, the plan's shape, the caveats on the figures. **If a section is short enough to read, do not
+fold it.** If it is long, keep the answer visible and fold the workings under it:
+
+```markdown
+## Why it matters
+
+`GenerateClaimInvoiceItems:86` builds the Services Australia claim from the bill item, not the
+consumption, so wherever the two disagree the claim follows the stale figure. **1,504 bill items,
+$40,907.73 gross, 733 of them already claimed.**
+
++++ The census query and the per-stage split
+...forty rows...
++++
+```
+
+The visible part is the answer. The fold is the proof. A ticket that is only folds has demoted
+everything, including the parts that were the point.
+
+## Show it
+
+Linear renders tables, code fences, mermaid, checkboxes, blockquotes and bold. A ticket that uses
+none of them is a wall of prose with collapsible sections, and the eye cannot tell what matters.
+
+- **A table** for anything compared or counted: two workflows side by side, figures per cohort,
+  what each source says. If the prose has three numbers in a sentence, it is a table.
+- **A code fence** for a path, a query, a command, a config line, a quoted error. Copied, never
+  described. Inline backticks are for a name in a sentence, not for evidence.
+- **Bold** for the one sentence in a section that the reader must not miss. One per section; bold
+  everywhere is bold nowhere.
+- **A diagram** where the thing being described is a flow, a state machine, a timeline or a
+  dependency — anything a reader would otherwise have to reconstruct from prose. Mermaid renders
+  natively and is worth drawing when it replaces a paragraph, not when it restates a list. A
+  sequence of five writers to one column, the stages a bill passes through, the order two paths
+  fire in: draw it. A list of files: do not. One diagram per ticket is usual; two is fine; a
+  diagram of the acceptance criteria is decoration.
+
+````markdown
+```mermaid
+flowchart LR
+  A[BillApprovedEvent] --> B[FeeProjector]
+  A --> C[FundingConsumptionProjector]
+  D[BillItemServiceTypesCorrectedEvent] --> C
+  D -. never .-> B
+```
+````
+
+None of this is decoration. Each is a way of letting a reader take in a fact without parsing a
+sentence, which is the whole legibility problem this style exists to solve.
+
+## Editing a ticket that already exists
+
+**An agent appends. It does not rewrite.** A description is the record of what was known when the
+ticket was filed; a decision taken later is a new fact, not a correction to the old one. Rewriting
+the body to reflect the decision destroys the question that was asked, the reasoning that led to
+it, and the reader's ability to see what changed.
+
+When a decision lands, record it in the ask's own section, dated and attributed, above the original
+question:
+
+```markdown
+## Decision needed — Patrick
+
+> **Decided, 16 Sep 2026, Patrick:** the bulk path goes. `billId` becomes required.
+>
+> ~~**Does the bulk path stay?** ...~~
+```
+
+Or leave the description alone and put the decision in a comment, then link the comment. Either
+keeps the history. Neither rewrites it.
+
+**Never retitle a ticket someone else filed** without saying so in a comment. The title is what
+everyone else has been reading and linking.
+
+An agent that finds the plan wrong adds `## Update — <date>` at the top of the plan section with
+what it found. It does not silently replace the plan.
 
 ## Sections are answers to questions
 
@@ -194,7 +308,9 @@ radius in it.
 
 ## Where the solution goes
 
-**In a fold, in the body. Not in an attachment, and not mixed into the problem statement.**
+**In the body, under its own heading. Not in an attachment, and not mixed into the problem
+statement.** The shape of the fix is visible; the file-by-file plan, if it is long, is folded
+under it.
 
 The argument for an attachment is clean separation: the body stays human, the attachment carries
 the agent-grade detail. It is a good argument and it was the alternative seriously considered.
@@ -202,23 +318,24 @@ It loses on one point: an attachment is a second thing to open, for the human *a
 agent, and every extra fetch is a place where the agent gets a stale copy, gets a 404, or simply
 does not bother.
 
-A fold gives the same separation with none of the retrieval risk. Everything is on the page.
+A heading with a fold under it gives the same separation with none of the retrieval risk.
+Everything is on the page.
 
 Two rules follow:
 
-- **The problem statement never contains solution steps.** Above the first fold is what is wrong
-  and what changes in shape, never how. The moment the approach changes, a body written as steps
-  becomes a lie, and nobody edits it.
-- **Anything needing a decision is a question, never a guess written as a step.** A plan with an
-  open question is not finished. Write the question, leave the readiness label off, and say who
-  owns it.
+- **The summary never contains solution steps.** It says what is wrong and what changes in shape,
+  never how. The moment the approach changes, a summary written as steps becomes a lie, and
+  nobody edits it.
+- **Anything needing a decision is an ask, never a guess written as a step.** A plan with an open
+  question is not finished. Write it in the form under "The ask", leave the readiness label off,
+  and name who owns it.
 
 ## The six shapes
 
 Not templates. Thin adapters on the one contract, each naming what its below-the-fold must carry.
 Everything else is cut.
 
-| Shape | First screen says | Below the fold must carry |
+| Shape | Summary says | Sections it must carry |
 |---|---|---|
 | **Defect** | What is wrong, who it affects, how big | Reproduction, mechanism with the code path, the evidence census, expected vs observed |
 | **Change** | What is missing, what will exist after | The plan by file, acceptance criteria, alternatives rejected, out of scope |
@@ -249,7 +366,7 @@ real collapsible section, **collapsed by default**, which is exactly the behavio
 depends on.
 
 ```markdown
-Visible on the first screen.
+Visible, under a heading.
 
 +++ Evidence: the eleven call sites
 Everything in here is folded away by default.
@@ -273,6 +390,13 @@ read immediately after a hand edit returned the old description with an unchange
 the same read a minute later was correct. An agent that reads a ticket right after a human
 touched it can get the old text. If a read looks wrong, re-read before concluding the write
 failed — and never re-write on the strength of one stale read.
+
+**An issue link expands into a chip carrying the full title.** `[DAR-547](https://linear.app/...)`
+renders as a pill with "DAR-547" and the whole title of DAR-547 after it, inline. In prose that is
+useful. In a table cell or a blockquote it is not: a five-row table with a linked key in each row
+grows a paragraph per row, and a blockquote citing three tickets becomes three lines of other
+tickets' titles. Verified 16 Sep 2026 on DAR-566. **In tables and blockquotes, write the bare key
+in backticks** (`DAR-547`) and put the link once, in prose or in the Linear relation.
 
 **Linear supports:** tables, mermaid (in a ```mermaid fence or via `/diagram`), checkboxes,
 blockquotes, `:emoji:`, code fences, `@` mentions of issues, users and projects, and headings
@@ -326,19 +450,26 @@ late, and that was the single thing that retrospective said it would change.
 ## Before you save, check
 
 1. Would the **title alone** let someone in the backlog decide whether to open it? Does it carry
-   a number?
-2. Does the **first screen** say what is wrong, what changes, and what would stop someone
-   starting — in about 80 words?
-3. Is every section an **answer to a question**? Cut the ones that are not.
-4. Is any **path, count, figure or error** paraphrased rather than copied?
-5. Does every production fact carry its **environment and its date**? Any bare "currently"?
-6. Is every **fold paired**, and does every fold have a title?
-7. Are the **acceptance criteria observable**, and do they include the negative space?
-8. Are **priority, estimate and labels** set — rather than described in prose?
-9. Is there an **open question**? If so, is it written as a question, and is the readiness label
-   off?
-10. Did you say what you **deliberately left out**, and why?
-11. Has the linter passed?
+   a number? Is it under about fifteen words?
+2. Does the **summary** say what is wrong and what changes, in prose, without steps?
+3. If anything is needed from a person, is it under its own **heading near the top, with the owner
+   named** — not a sentence at the end of a paragraph, not inside a fold?
+4. Does the body have **headings**, and could a reader get the argument from the headings and the
+   bold alone?
+5. Are the **acceptance criteria** and **out of scope** visible, not folded?
+6. Is every fold **raw evidence, method or bulk** — and is the answer it supports visible above it?
+7. Is anything compared or counted still in prose that should be a **table**? Any path, query or
+   error described rather than in a **code fence**? Any flow or sequence that a **diagram** would
+   carry better?
+8. Is every section an **answer to a question**? Cut the ones that are not.
+9. Is any **path, count, figure or error** paraphrased rather than copied?
+10. Does every production fact carry its **environment and its date**? Any bare "currently"?
+11. Is every **fold paired**, and does every fold have a title?
+12. Are the **acceptance criteria observable**, and do they include the negative space?
+13. Are **priority, estimate and labels** set — rather than described in prose?
+14. If an ask is open, is the readiness label **off**?
+15. If you are editing an existing ticket: did you **append**, dated, rather than rewrite?
+16. Has the linter passed?
 
 ## Sources
 

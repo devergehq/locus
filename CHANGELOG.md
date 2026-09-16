@@ -9,6 +9,24 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [Unreleased]
+
+### Changed
+
+- **`issue-craft` realigned** after one day in use (DEV-681). The 15 September version budgeted
+  the opening at about 80 words and said everything below it was folded. Within a
+  day it had produced tickets with no headings, the acceptance criteria and the
+  out-of-scope section collapsed, and the one open question written as the last
+  sentence of a paragraph (DAR-544, where the reader opened every fold looking for
+  the action item and found it on the third read). The word budget is gone. In its
+  place: headings as the skeleton, the ask under its own heading near the top with
+  the owner named, folds for raw evidence and method only, tables, code fences and
+  mermaid where they carry a fact, and a rule that an agent appends to an existing
+  description rather than rewriting it. The linter drops the first-screen word
+  ceiling and gains checks for a long body with no headings, a folded criteria or
+  scope section, an ask buried in prose or a fold, a title past twenty words and an
+  unclosed code fence. A worked example ships under `skills/issue-craft/examples/`.
+
 ## [0.3.3] — 2026-09-15
 
 One new skill: the house style for Linear issues, sibling to `review-craft`.
