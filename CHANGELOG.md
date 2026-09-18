@@ -9,6 +9,66 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [Unreleased]
+
+`review-craft` takes back PR descriptions, and gives the working somewhere to go.
+
+### Changed
+
+- **`review-craft` now governs PR descriptions**, which it previously ruled out of
+  scope. It did so on two reasons. The first was sound: a description is a durable
+  record and must not inherit the 150-word review budget. The second was **false** —
+  it said a description "cannot collapse anything". GitHub renders
+  `<details><summary>` in PR bodies and in every kind of comment; the probe is
+  recorded and dated in `house-style.md`. The false reason ruled out the one
+  mechanism that reconciles *complete* with *short*, so "never budget a durable
+  record" was left to carry the argument alone and was read as "length does not
+  matter". By 18 September that had produced eleven agent-authored PRs on one repo
+  carrying 9,000–39,000 character descriptions with zero folds — 307,000 characters
+  across twelve commits, in a repo that squash-merges with `PR_BODY` as the commit
+  message. The worst was 17,638 characters for 50 changed lines, one of them
+  application code. A human reviewer flagged it; nothing in the skill would have.
+  What replaces it: **the description is the record of the decision** (why, what
+  changed in shape, what to look at, risks, references) and is budgeted at
+  `min(4000, max(800, 12 × changed lines))` **raw** characters of the body as stored,
+  excluding the Claude Code attribution footer — raw, because the squash copies the
+  body verbatim and because that is the unit the three constants were measured in; **the working — the
+  evidence, the queries and their output, the method, the alternatives rejected —
+  moves whole and verbatim into a PR comment headed `## Working notes`**, which the
+  description links to in one line. The comment is identified by that heading and
+  never by its position — the working is moved out late, so it is the newest
+  comment on the PR, not the first. Nothing is deleted; it moves. The three
+  constants are measured, not chosen: slope 12 from the 10.6-character median across
+  45 recent human-authored PRs, ceiling 4,000 from the p89 of 5,557 PR bodies, floor
+  800 from just above the p25.
+- **`issue-craft` corrected** in the same place. Its "why a ticket is not a review"
+  section repeated the false no-folds claim as part of the paraphrase scar. The scar
+  and its rule stand — *budget artefacts consumed in a feed; never budget a durable
+  record* — with a dated correction explaining that the scar's real lesson was that
+  the detail had nowhere to go, and that a budget with a destination is a move while
+  a budget without one is a paraphrase machine.
+
+### Added
+
+- **`skills/review-craft/pr_lint.py`**, the description linter, beside `review_lint.py`.
+  Takes `--repo OWNER/REPO --pr N` (via `gh`) or a local draft with an explicit
+  `--changed-lines`; it will not guess a diff size, because a budget checked against a
+  guessed denominator reports PASS about nothing. Checks the visible body against the
+  budget for that diff, a long body with no headings, unfilled template placeholders,
+  rotting relative-date words, oversized `<details>` in a body a squash will copy raw,
+  and — when the body links to working notes — that a comment carrying that heading
+  exists on the PR. Mechanics only, like `issue_lint.py`; exit 0 pass, 1 errors, 2
+  could not run.
+- **`scripts/test-pr-lint.sh`**, 37 cases in the form `scripts/test-plugin-hooks.sh`
+  already uses.
+
+### Changed (instructions)
+
+- `skills/review-craft/SKILL.md`, `skills/dispatcher/workers/implement.md` (step 5),
+  `skills/dispatcher/workers/review.md` (new step 4b) and `agents/engineer.md` now
+  describe the record/working split and require `pr_lint.py` to pass before a PR is
+  called ready. Stack children inherit it through `implement.md`.
+
 ## [0.3.4] — 2026-09-16
 
 `issue-craft` realigned after one day in use: structure replaces the word budget.

@@ -28,6 +28,13 @@ signature unless they ask for one.
    yours, and mark where you disagree rather than smoothing it over.
 4. **Only then** — not before, so it doesn't anchor you — run through the `review-craft` skill's
    lenses and add anything they surface.
+4b. **Lint the description you were given.** `python3 ~/.locus/skills/review-craft/pr_lint.py
+   --repo OWNER/REPO --pr <n>`. A description wildly over its budget for the diff is a
+   `correction`-tagged finding, not a nit: where the repo squash-merges with `PR_BODY` it becomes
+   a permanent commit message, and the working belongs in a `## Working notes` comment instead. Say
+   what should move, not "shorten it" — an author who obeys "shorten" by paraphrasing destroys the
+   specifics, which is the scar the rule was written after.
+
 5. **Read the problem, not only the diff.** Before judging the change, state the problem in your own
    words from the ticket, the PR description and the code — then ask whether this change is the right
    *shape* for it, not just whether it is correct. A patch on a symptom, a schema that will need
