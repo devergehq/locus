@@ -9,7 +9,7 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
-## [Unreleased]
+## [0.4.0] — 2026-09-20
 
 `review-craft` takes back PR descriptions, and gives the working somewhere to go.
 
