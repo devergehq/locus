@@ -9,6 +9,77 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [Unreleased]
+
+`review-craft` stops carrying one repository in its head, and starts respecting the
+template a repository already has.
+
+### Added
+
+- **Template fidelity.** `pr_lint.py` finds a repository's PR templates and reports
+  which one a description is closest to and which of its headings are missing. The
+  severity follows **the strength of the claim, not anyone's house policy**: a template
+  **supplied** by the caller (`--template PATH`, a file or a directory) is an assertion
+  that this is the shape here, so drift from it is an `ERROR`; one **discovered** by
+  walking conventional paths is an inference, so drift is a `WARN`; and a repository
+  with **no** templates produces no finding whatsoever. `--require-template` and
+  `--template-advisory` move the line either way. Discovery looks past GitHub's three
+  auto-fill paths, because a repository that wants a new PR body to arrive empty has to
+  keep its templates somewhere GitHub does not recognise — and those are exactly the
+  repositories with a considered convention. Extra headings are never a fault: a
+  template is a floor, not a cage.
+- **Caller-supplied exempt sections.** `--exempt-section NAME` (repeatable) adds to the
+  default exemption list, `--no-default-exempt` replaces it, `--exempt-cap N` moves the
+  per-section ceiling. The default list is the intersection of what templates commonly
+  ask for and is explicitly not a closed set; the agent drafting a description is the one
+  that knows which of its template's sections are fixed overhead, so it is the one that
+  should say.
+
+### Changed
+
+- **The budget charges the narrative, not the references.** Sections matching `Related`,
+  `References`, `Links`, `Security impact`, `Security`, `Deployment` and `Rollback` are
+  no longer counted, up to **750 raw characters each**. Two reference links are ~145 raw
+  characters before a word of prose — 18% of an 800-character floor — and the same count
+  fell on the security sentence and the rollback line somebody reads during an incident.
+  Shaving those to reach a character count was the rule doing harm. The cap keeps the
+  exemption honest: past it a section is charged again, so `## Related` cannot quietly
+  become the new body. 750 is p90 of 226 such sections measured across 99 live PR bodies
+  (p50 263, p75 473, p90 728, p95 1,018, max 1,634).
+- **The budget's `ERROR` threshold moved from 1.25× to 2×**, and is now stated in the
+  prose instead of living only in the source. The budget is a *target*: get close to it,
+  do not shave a path, a count or a date to get under it. 1.25× put a red check below the
+  level practitioners call acceptable — a 1,200-character body for a small diff is 1.5×,
+  and a 5,000-character description that earned its place is 1.25× of the ceiling. Both
+  were failing. **The formula, the three constants and the raw-character unit are
+  unchanged**; only the point where the tool stops advising and starts blocking has moved.
+  The warning band now says a named specific outranks the budget, which the guidance
+  claimed and the tool had no way to express.
+- **Both loosenings were verified together, not separately.** Against the twelve-PR
+  census that forced the budget, under the worst case — every PR claiming four exempt
+  sections at the full cap, 3,000 characters free — **all twelve are still `ERROR`, the
+  closest at 2.4×** against a 2.0× threshold. Checking them one at a time would have
+  shown two comfortable margins and hidden the real one.
+- **`review-craft` is de-identified.** `house-style.md` had been written against a single
+  named repository: its PRs linked by number, its domain vocabulary in the worked
+  description, its ticket keys, and in one place its internal governance record used to
+  justify a default severity. **A skill that installs anywhere must carry no repository in
+  its head**, and a default argued from one repository's policy is that repository leaking
+  into everyone else's tooling. Every measurement, date and method is unchanged and still
+  checkable; the provenance is gone. Census PRs are labelled A–L, the population is
+  described rather than named, and the worked description's domain is invented on the same
+  principle `examples/` already used. The standing rule is recorded in the file: if it
+  names somebody's repository, ticket system or internal policy, it does not belong there.
+
+### Fixed
+
+- `--exempt-section` values are now folded the same way headings are, so `on-call runbook`
+  matches a heading of `On-call runbook`. Without it the flag silently matched nothing.
+- `pr_lint.py` no longer exits 2 when probing a template path that does not exist. Template
+  discovery deliberately looks at paths that are absent in most repositories; treating the
+  first miss as a failure made the linter unrunnable anywhere but the repository it was
+  written in.
+
 ## [0.4.0] — 2026-09-20
 
 `review-craft` takes back PR descriptions, and gives the working somewhere to go.
@@ -79,7 +150,7 @@ refuses to build when they disagree.
   the opening at about 80 words and said everything below it was folded. Within a
   day it had produced tickets with no headings, the acceptance criteria and the
   out-of-scope section collapsed, and the one open question written as the last
-  sentence of a paragraph (DAR-544, where the reader opened every fold looking for
+  sentence of a paragraph (observed on a live ticket, where the reader opened every fold looking for
   the action item and found it on the third read). The word budget is gone. In its
   place: headings as the skeleton, the ask under its own heading near the top with
   the owner named, folds for raw evidence and method only, tables, code fences and
