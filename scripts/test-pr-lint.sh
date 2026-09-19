@@ -46,47 +46,47 @@ rule () { grep -qE "^  (ERROR|WARN ) $1( |\$)" "$work/out" && echo yes || echo n
 cat > "$work/good.md" <<'EOF'
 ## Why
 
-`ClinicalContributionExemption` compared the exemption against a hard-coded category
-name that has not existed since the 2026-03 rename, so every exempt participant was
-billed the standard rate.
+`OrderSurchargeExemption` compared the exemption against a hard-coded band
+name that has not existed since the 2026-03 rename, so every exempt order was
+charged the standard rate.
 
 ## What changed
 
-The comparison now resolves the category through `CategoryRepository` rather than a
+The comparison now resolves the band through `BandRepository` rather than a
 literal. One line of application code; the rest is the test that fails without it.
 
 ## What to look at
 
-Whether `CategoryRepository::byCode` is the right lookup, or whether the exemption
-should hold a category id instead of a code.
+Whether `BandRepository::byCode` is the right lookup, or whether the exemption
+should hold a band id instead of a code.
 
 ## Risks
 
-Participants already billed at the wrong rate are not corrected by this change.
-A backfill is DAR-561.
+Orders already charged at the wrong rate are not corrected by this change.
+A backfill is TICKET-561.
 
 ## References
 
-DAR-543. Working notes: the comment titled Working notes.
+TICKET-543. Working notes: the comment titled Working notes.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 
-# The measured worst case: tc-portal #9309, 50 changed lines, 17,638 characters.
+# The measured worst case from the census: 50 changed lines, 17,638 characters.
 {
   printf '## Why\n\n'
   i=0
   while [ "$i" -lt 240 ]; do
-    printf 'The census counted every write site in the billing module and recorded the query output below, row by row, with the participant id and the category code.\n'
+    printf 'The census counted every write site in the billing module and recorded the query output below, row by row, with the order id and the band code.\n'
     i=$((i + 1))
   done
 } > "$work/huge.md"
 
 echo "Budget arithmetic"
 ok "a small diff with a short body passes"      "$(run 50 "$work/good.md")" 0
-ok "50 changed lines budget 800 not 600"        "$(run 50 "$work/good.md" >/dev/null; grep -o 'budget 800' "$work/out")" "budget 800"
-ok "300 changed lines budget 3,600"             "$(run 300 "$work/good.md" >/dev/null; grep -o 'budget 3,600' "$work/out")" "budget 3,600"
-ok "25,594 changed lines caps at 4,000"         "$(run 25594 "$work/good.md" >/dev/null; grep -o 'budget 4,000' "$work/out")" "budget 4,000"
+ok "50 changed lines target 800 not 600"        "$(run 50 "$work/good.md" >/dev/null; grep -o 'target 800' "$work/out")" "target 800"
+ok "300 changed lines target 3,600"             "$(run 300 "$work/good.md" >/dev/null; grep -o 'target 3,600' "$work/out")" "target 3,600"
+ok "25,594 changed lines caps at 4,000"         "$(run 25594 "$work/good.md" >/dev/null; grep -o 'target 4,000' "$work/out")" "target 4,000"
 ok "17k body on a 50-line diff fails"           "$(run 50 "$work/huge.md")" 1
 ok "and names the budget rule"                  "$(rule 'budget')" yes
 ok "and tells the author where it goes"         "$(says 'Working notes')" yes
@@ -95,6 +95,113 @@ ok "1.1x over is a warning, not an error"       "$(python3 -c "
 import sys; sys.argv=['x']
 open('$work/slightly.md','w').write('## Why\n\n' + 'word ' * 176)
 ")$(run 50 "$work/slightly.md")" 0
+
+# The budget is a target, not a gate. The ERROR band starts at 2x (BUDGET_ERROR_MULTIPLE),
+# raised from 1.25x on 20 September 2026 because 1.25x put a red check below the level
+# practitioners call acceptable - a 1,200-char body for a small diff is 1.5x. These
+# three pin the boundary, because a threshold nobody tests is a threshold that drifts back.
+python3 -c "open('$work/b15.md','w').write('## Why\n\n' + 'x' * 1200)"   # 1.5x of 800
+python3 -c "open('$work/b19.md','w').write('## Why\n\n' + 'x' * 1580)"   # 1.98x of 800
+python3 -c "open('$work/b20.md','w').write('## Why\n\n' + 'x' * 1610)"   # 2.01x of 800
+ok "1.5x is advisory, exits 0"                 "$(run 1 "$work/b15.md")" 0
+ok "and says so rather than demanding a move"  "$(run 1 "$work/b15.md" >/dev/null; says 'Advisory below 2x')" yes
+ok "just under 2x is still a warning"          "$(run 1 "$work/b19.md")" 0
+ok "2x is an error"                            "$(run 1 "$work/b20.md")" 1
+ok "and that is where the move is named"       "$(run 1 "$work/b20.md" >/dev/null; says 'Working notes')" yes
+ok "the threshold constant is 2.0"             "$(python3 -c "import sys;sys.path.insert(0,'$root/skills/review-craft');import pr_lint;print(pr_lint.BUDGET_ERROR_MULTIPLE)")" 2.0
+
+echo "Template fidelity"
+mkdir -p "$work/tpl"
+cat > "$work/tpl/bugfix.md" <<'EOF'
+# Bug Fix Pull Request
+## Summary
+## Reviewer focus areas
+## Security impact
+## Deployment / rollback
+## Related
+EOF
+cat > "$work/tpl/README.md" <<'EOF'
+# Not a template
+## This heading must never be matched against
+EOF
+tpl () { set +e; python3 "$lint" "$2" --changed-lines "$1" --templates "$work/tpl" ${3:-} >"$work/out" 2>&1; c=$?; set -e; echo "$c"; }
+cat > "$work/full.md" <<'EOF'
+## Summary
+The exemption compared against a display label, not the enum name.
+## Reviewer focus areas
+Now on a money path; moves no money today.
+## Security impact
+None; the exemption only gets stricter.
+## Deployment / rollback
+None required. Rollback: revert the commit.
+## Related
+TICKET-543. Working notes: the comment titled Working notes.
+EOF
+ok "a filled template is quiet"          "$(tpl 50 "$work/full.md" >/dev/null; rule 'template')" no
+ok "and exits 0"                         "$(tpl 50 "$work/full.md")" 0
+{ cat "$work/full.md"; printf '\n## Extra thing we added\n\nMore detail.\n'; } > "$work/extra.md"
+ok "extra headings are not a fault"      "$(tpl 50 "$work/extra.md" >/dev/null; rule 'template')" no
+printf '## Summary\n\nJust this.\n' > "$work/thin.md"
+ok "a missing section is reported"       "$(tpl 50 "$work/thin.md" >/dev/null; rule 'template')" yes
+ok "and names the closest template"      "$(says 'bugfix.md')" yes
+ok "README.md is not a template"         "$(tpl 50 "$work/thin.md" >/dev/null; says 'never be matched')" no
+printf '## Wholly Unrelated\n\nNothing in common.\n' > "$work/alien.md"
+ok "matching nothing is called out"      "$(tpl 50 "$work/alien.md" >/dev/null; rule 'template')" yes
+ok "a repo with no templates is silent"  "$(run 50 "$work/thin.md" >/dev/null; rule 'template')" no
+
+# Severity follows the STRENGTH OF THE CLAIM, not any repo's policy. A template the caller
+# supplied is an assertion - this is the shape here - so drift is an error. One this script
+# discovered by walking conventional paths is an inference, so drift is a warning. This is
+# the whole policy, and it deliberately knows nothing about any particular repository.
+ok "a SUPPLIED template makes drift fatal"  "$(tpl 50 "$work/thin.md")" 1
+ok "and the header says it was supplied"    "$(says 'supplied template')" yes
+ok "--template-advisory softens it"         "$(tpl 50 "$work/thin.md" --template-advisory)" 0
+ok "a DISCOVERED template only warns"       "$(cd "$work" && mkdir -p docs/pr-templates && cp tpl/bugfix.md docs/pr-templates/ && set +e; python3 "$lint" "$work/thin.md" --changed-lines 50 >"$work/out" 2>&1; c=$?; set -e; echo $c)" 0
+ok "and the header says it was discovered"  "$(says 'discovered template')" yes
+ok "--require-template hardens that"        "$(cd "$work" && set +e; python3 "$lint" "$work/thin.md" --changed-lines 50 --require-template >"$work/out" 2>&1; c=$?; set -e; echo $c)" 1
+ok "--no-templates skips the check"         "$(cd "$work" && set +e; python3 "$lint" "$work/thin.md" --changed-lines 50 --no-templates >"$work/out" 2>&1; c=$?; set -e; echo $c)" 0
+ok "contradictory flags exit 2"             "$(tpl 50 "$work/thin.md" "--require-template --template-advisory")" 2
+ok "a missing --template path exits 2"      "$(set +e; python3 "$lint" "$work/thin.md" --changed-lines 50 --template "$work/nope" >"$work/out" 2>&1; c=$?; set -e; echo $c)" 2
+rm -rf "$work/docs"
+
+echo "The caller can name sections the default list does not"
+# The default exempt list is an intersection of what templates commonly ask for, not a
+# closed set. A template with its own fixed-overhead sections passes them through.
+python3 -c "
+open('$work/custom.md','w').write(
+  '## Summary\n\n' + 'x'*700 + '\n\n## On-call runbook\n\n' + 'y'*700 + '\n')"
+ok "an unlisted section is charged"      "$(run 1 "$work/custom.md" >/dev/null; rule 'budget')" yes
+xmpt () { set +e; python3 "$lint" "$2" --changed-lines "$1" --exempt-section "$3" >"$work/out" 2>&1; c=$?; set -e; echo "$c"; }
+ok "until --exempt-section names it"     "$(xmpt 1 "$work/custom.md" 'on-call runbook' >/dev/null; rule 'budget')" no
+ok "matching is case-insensitive"        "$(xmpt 1 "$work/custom.md" 'ON-CALL RUNBOOK' >/dev/null; rule 'budget')" no
+ok "and it exits 0"                      "$(xmpt 1 "$work/custom.md" 'on-call runbook')" 0
+python3 -c "
+open('$work/rel.md','w').write(
+  '## Summary\n\n' + 'x'*700 + '\n\n## Related\n\n' + 'y'*700 + '\n')"
+# 1,420 counted against 800 is 1.8x - over the target, under the 2x error band, so the
+# budget rule fires as a WARNING and the run still exits 0. Both halves are the point.
+ok "--no-default-exempt drops the rest"  "$(set +e; python3 "$lint" "$work/rel.md" --changed-lines 1 --exempt-section 'on-call runbook' --no-default-exempt >"$work/out" 2>&1; c=$?; set -e; echo $c)" 0
+ok "and then Related IS charged"         "$(rule 'budget')" yes
+python3 -c "
+open('$work/bigrel.md','w').write(
+  '## Summary\n\n' + 'x'*700 + '\n\n## Related\n\n' + 'y'*4000 + '\n')"
+ok "the cap charges the overflow"        "$(run 1 "$work/bigrel.md" >/dev/null; rule 'budget')" yes
+ok "--exempt-cap moves the ceiling"      "$(set +e; python3 "$lint" "$work/bigrel.md" --changed-lines 1 --exempt-cap 6000 >"$work/out" 2>&1; c=$?; set -e; echo $c)" 0
+
+echo "The budget charges content sections, not the template's fixed overhead"
+# Exempt sections carry free up to EXEMPT_SECTION_CAP, so an author never shaves a ticket
+# link, a security sentence or a rollback step to reach a character count.
+python3 -c "
+open('$work/exempt.md','w').write(
+  '## Summary\n\n' + 'x'*700 + '\n\n## Related\n\n' + 'y'*700 + '\n')"
+ok "700 chars of Related are free"       "$(run 1 "$work/exempt.md" >/dev/null; rule 'budget')" no
+ok "and the header says how many"        "$(says 'characters not budgeted')" yes
+python3 -c "
+open('$work/dump.md','w').write(
+  '## Summary\n\n' + 'x'*700 + '\n\n## Related\n\n' + 'y'*4000 + '\n')"
+ok "but Related is not a hiding place"   "$(run 1 "$work/dump.md" >/dev/null; rule 'budget')" yes
+ok "the cap is 750"                      "$(python3 -c "import sys;sys.path.insert(0,'$root/skills/review-craft');import pr_lint;print(pr_lint.EXEMPT_SECTION_CAP)")" 750
+ok "an exempt section shows its cap"     "$(run 1 "$work/dump.md" >/dev/null; says '750 of')" yes
 
 echo "Headings"
 printf '## Why\n\n%s\n' "$(python3 -c "print('sentence about the change. ' * 70)")" > "$work/headed.md"
@@ -155,9 +262,9 @@ echo "Working notes are found by heading, never by position"
 ok "a draft linking to them warns"       "$(run 50 "$work/good.md" >/dev/null; rule 'working-notes')" yes
 grep -v 'Working notes' "$work/good.md" > "$work/nolink.md"
 ok "one that does not is quiet"          "$(run 50 "$work/nolink.md" >/dev/null; rule 'working-notes')" no
-# On tc-portal #9309 the working-notes comment is the SEVENTH, three days after the
-# other six: the working moves out of the body late. A positional check would have
-# failed the one PR written to this convention.
+# On the first PR written to this convention the working-notes comment is the SEVENTH,
+# three days after the other six: the working moves out of the body late. A positional
+# check would have failed the one PR written to this convention.
 wn () { python3 -c "
 import sys, json; sys.path.insert(0,'$root/skills/review-craft'); import pr_lint
 body='## Related\nWorking notes: [link](x)'

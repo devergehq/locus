@@ -379,7 +379,7 @@ It carries five things and stops:
 | **What changed, in shape** | not a file list — what is now true that was not |
 | **What a reviewer should look at** | the two or three places judgement is needed |
 | **Risks** | what could go wrong, and what would show it |
-| **References** | the ticket, the PRs it depends on, the ADR |
+| **References** | the ticket, the PRs it depends on, the decision record it implements |
 
 Everything else — the evidence census, the production queries and their output, the method, the
 alternatives you rejected, the investigation transcript — is **the working**, and the working goes
@@ -392,9 +392,9 @@ Working notes: <link to the comment headed "Working notes">
 
 **Identify that comment by its heading, never by its position.** It is tempting to say "the first
 comment", and it is wrong: the working is moved out of the body once the PR has been open a while,
-so its comment is the *newest*, not the first. On `tc-portal` #9309 — the first PR written to this
-convention — it is the seventh comment, three days after the other six, behind a Linear link-back,
-a Rector report, a Greptile summary and two agent review rounds. A rule that said "first comment"
+so its comment is the *newest*, not the first. On PR A — the first description written to this
+convention — it was the seventh comment, three days after the other six, behind a ticket link-back,
+two CI bot reports and two agent review rounds. A rule that said "first comment"
 would have failed the one PR that followed it. `pr_lint.py` matches the heading on the comment's
 first line for the same reason.
 
@@ -406,8 +406,8 @@ you find yourself paraphrasing to make something fit, you have moved the wrong t
 
 - **It never enters the squash commit.** GitHub's squash message is the PR title, a blank line,
   and the body **verbatim** — every character, markup included. Comments are not in it. Measured
-  on `Trilogy-Care/tc-portal` #9097 on 18 September 2026: body 4,216 characters, squash commit
-  message 4,241 characters, one parent.
+  on a live squash-merged PR, 18 September 2026: body 4,216 characters, squash commit message
+  4,241 characters, one parent.
 - **Both readers reach it.** A human scrolls to it; an agent gets it from
   `gh api repos/OWNER/REPO/issues/N/comments` in the same breath as the body.
 - **It can be amended.** A commit message cannot. When the census is re-run and the numbers move,
@@ -422,11 +422,11 @@ excluding the Claude Code attribution footer.**
 **Raw, not "visible" — and that word is load-bearing.** The squash copies the body verbatim, so
 every table pipe, every link target, every `<details>` tag and everything folded inside one is
 copied into the commit where nothing renders and nothing collapses. It is also the unit the three
-constants below were measured in: they come from `(.body|length)` over tc-portal's PRs, raw
-stored characters. An earlier draft of `pr_lint.py` derived the constants from raw bodies and then
+constants below were measured in: they come from `(.body|length)` over the reference
+repository's PRs, raw stored characters. An earlier draft of `pr_lint.py` derived the constants from raw bodies and then
 checked them against a markup-stripped count, which made the effective budget about a quarter
 looser than anything that had been measured. "Visible" is the wrong word here and it cost one
-author real ambiguity: writing #9309's description to it, they landed at 958 raw against 797
+author real ambiguity: writing PR A's description to it, they landed at 958 raw against 797
 "visible" and could not tell which number the rule meant.
 
 The one exclusion is the **Claude Code attribution footer**, about 64 characters an author is
@@ -438,13 +438,20 @@ never copied into a commit. Different artefact, different unit.)
 `changed lines` is `additions + deletions` — `gh pr diff <n> --stat | tail -1`, or
 `gh api repos/OWNER/REPO/pulls/N --jq '.additions + .deletions'`.
 
-Three constants, each measured against `Trilogy-Care/tc-portal` on 18 September 2026 rather than
-chosen:
+**The reference repository.** The constants below are measurements, not preferences, and a
+measurement needs a population. Theirs is a private production monorepo of 5,557 pull requests
+that squash-merges with the PR body as the commit message — the case this whole section is about.
+It is not named here and its PRs are labelled A–M, because **this skill ships to many repositories
+and must carry none of them in its head.** What travels is the method and the numbers: re-run
+`(.body|length)` over your own repository and you will get your own, which is the point. If they
+differ sharply from these, trust yours.
+
+Three constants, each measured on 18 September 2026 rather than chosen:
 
 - **Slope 12.** Across 45 recently-merged human-authored PRs, the median description runs
   **10.6 characters per changed line**. Twelve is that median, rounded up. The budget is not an
-  austerity measure; it is what the people in this repo already write.
-- **Ceiling 4,000.** Across all 5,557 PRs in the repo's history the body length distribution is
+  austerity measure; it is what the people in that repository already write.
+- **Ceiling 4,000.** Across all 5,557 PRs in its history the body length distribution is
   p25 662, p50 1,330, p75 2,224, p90 4,208. A 4,000-character ceiling sits at about the 89th
   percentile: it forbids almost nothing the repo has ever routinely done. 4,000 characters is
   also roughly 55 lines wrapped at 72 columns — already a long commit message.
@@ -453,67 +460,68 @@ chosen:
 
 **The linear term governs small diffs and the ceiling governs everything else.** That is not a
 flaw in the formula, it is the shape of the problem: the worst case measured was not a large
-change with a long description, it was **#9309 — 17,638 characters of description for 50 changed
+change with a long description, it was **PR A — 17,638 characters of description for 50 changed
 lines, one of them application code and 44 of them test.** Twenty-two times its budget.
 
-The eleven-PR census that forced this rule, measured 18 September 2026 (twelve are listed; the
-`DAR` batch of 15–16 September plus #9332 and #9334). Every one has **zero folds**:
+The census that forced this rule, measured 18 September 2026 across twelve agent-authored PRs
+merged over three days. Every one has **zero folds**:
 
 | PR | Changed lines | Body chars | Budget | Over by |
 |---|---|---|---|---|
-| #9309 | 50 | 17,638 | 800 | 22× |
-| #9307 | 148 | 17,943 | 1,776 | 10× |
-| #9316 | 222 | 9,271 | 2,664 | 3× |
-| #9312 | 786 | 12,780 | 4,000 | 3× |
-| #9334 | 1,615 | 22,568 | 4,000 | 6× |
-| #9311 | 2,542 | 29,881 | 4,000 | 7× |
-| #9315 | 2,849 | 27,789 | 4,000 | 7× |
-| #9313 | 2,991 | 38,634 | 4,000 | 10× |
-| #9332 | 3,047 | 36,538 | 4,000 | 9× |
-| #9310 | 3,284 | 36,703 | 4,000 | 9× |
-| #9308 | 6,942 | 24,699 | 4,000 | 6× |
-| #9314 | 25,594 | 32,467 | 4,000 | 8× |
+| A | 50 | 17,638 | 800 | 22× |
+| B | 148 | 17,943 | 1,776 | 10× |
+| C | 222 | 9,271 | 2,664 | 3× |
+| D | 786 | 12,780 | 4,000 | 3× |
+| E | 1,615 | 22,568 | 4,000 | 6× |
+| F | 2,542 | 29,881 | 4,000 | 7× |
+| G | 2,849 | 27,789 | 4,000 | 7× |
+| H | 2,991 | 38,634 | 4,000 | 10× |
+| I | 3,047 | 36,538 | 4,000 | 9× |
+| J | 3,284 | 36,703 | 4,000 | 9× |
+| K | 6,942 | 24,699 | 4,000 | 6× |
+| L | 25,594 | 32,467 | 4,000 | 8× |
 
 **307,000 characters of description across twelve commits, against a budget of 41,000.** A human
 reviewer raised it, which is the only reason it was counted at all.
 
-*(Every figure above was read from the GitHub API on 18 September 2026. #9309's description was
+*(Every figure above was read from the GitHub API on 18 September 2026. PR A's description was
 rewritten later the same day, down to 959 characters; the 17,638 is in that PR's edit history, not
 on the PR. The other eleven were unchanged at the time of writing. A census is a measurement with
 a timestamp, and this one has both.)*
 
 **Say it plainly where it is tight.** Among the 45 *recent* human PRs the median body is 4,887
-characters — above the ceiling. The ceiling is drawn from the repo's whole history, not from last
-month, so some human authors will find it tight too, and that is a deliberate judgement rather
+characters — above the ceiling. The ceiling is drawn from that repository's whole history, not
+from last month, so some human authors will find it tight too, and that is a deliberate judgement rather
 than an accident of arithmetic. If it turns out to be wrong, it is wrong by a measurable amount
 and the census above is how you would show it.
 
 ### A worked description
 
-`Trilogy-Care/tc-portal` [#9309](https://github.com/Trilogy-Care/tc-portal/pull/9309) is the first
-PR written to this rule, on 18 September 2026. Its description went from **17,638 characters to
-958** — and nothing was lost: the census, the queries and the method moved verbatim into
-[a comment headed `## Working notes`](https://github.com/Trilogy-Care/tc-portal/pull/9309#issuecomment-5727042819),
-which is the seventh comment on that PR, not the first.
+PR A is the first description written to this rule, on 18 September 2026. It went from **17,638
+characters to 959** — and nothing was lost: the census, the queries and the method moved verbatim
+into a comment headed `## Working notes`, the seventh comment on that PR, not the first.
 
-It uses the repo's own bugfix template headings rather than the five nouns above, which is the
-point — **the five things are what a description carries, not the headings it must carry them
-under.** Write to the repo's template; the template's sections are usually these things wearing
-local names.
+It uses its repository's own bugfix **template** headings rather than the five nouns above, which
+is the point — **the five things are what a description carries, not the headings it must carry
+them under.** Write to the template; its sections are usually these things wearing local names.
+
+The change below is invented and the domain names with it, for the same reason the worked review
+in `examples/` invents its codebase: **the shape is the lesson, and a shape does not need somebody
+else's production data to teach it.** The character counts are real.
 
 ```markdown
 ## Summary
 
-**Issue:** the clinical exemption in `CalculatePackageContributionAction` never fired.
-**Root cause:** it compared the category against `'Clinical'`, the display label; the name is
-`'Clinical supports'`.
-**Fix:** compare against `ContributionCategory::CLINICAL_SUPPORTS`, as both sibling resolvers do.
+**Issue:** the zero-rate exemption in `CalculateOrderSurchargeAction` never fired.
+**Root cause:** it compared the band against `'Priority'`, the display label; the name is
+`'Priority handling'`.
+**Fix:** compare against `SurchargeBand::PRIORITY_HANDLING`, as both sibling resolvers do.
 Fixture rebuilt on it; negative test that the label stays chargeable.
 
 ## Reviewer focus areas
 
-Now live on a money path; moves no money today — 0 of 28,206 clinical `contributions` rows carry
->0%, and no clinical `default_contribution_rates` row exists (production, 15 Sep 2026).
+Now live on a money path; moves no money today — 0 of 28,206 priority `surcharges` rows carry
+>0%, and no priority `default_surcharge_rates` row exists (production, 15 Sep 2026).
 
 ## Security impact
 
@@ -521,18 +529,169 @@ None; the exemption only gets stricter.
 
 ## Related
 
-[DAR-543](…) · follow-ups DAR-606, DAR-607
-Working notes: the [comment titled Working notes](…#issuecomment-5727042819).
+`TICKET-543` · follow-ups `TICKET-606`, `TICKET-607`
+Working notes: the comment titled Working notes.
 ```
 
 Two things to copy from it. **Every claim carries its number and its date** — "0 of 28,206 rows
 (production, 15 Sep 2026)", not "no rows are affected"; that survives becoming a commit message
 read in two years. And **the reviewer-focus section states the blast radius rather than pointing
 at files**: what a reviewer needs is that this is now on a money path, not a list of what changed.
+Both survive the anonymisation, which is the test of whether they were ever about the domain.
 
 At 894 raw characters against a floor of 800 it sits about 1.1× over, which `pr_lint.py` reports
 as a warning rather than an error. That is the warning band doing its job: the overage is a
 production count and a date, and a specific outranks the budget.
+
+(894 is the *budgeted* figure. The body as stored is 959 characters; the 65-character Claude Code
+attribution footer is excluded, for the reason given above. Both numbers are right and they are
+not the same number — if you are reconciling a lint run against this page, that is why.)
+
+### The budget is a target, and the linter now says so
+
+**Under 2× the budget finding is a `WARN`. At 2× or more it is an `ERROR`.** That threshold is in
+`pr_lint.py` as `BUDGET_ERROR_MULTIPLE`, and it is stated here because an author who cannot see it
+has to guess whether the rule means *get under 800* or *get close to 800*. Those are different
+instructions and only one of them is right.
+
+The right one is **get close**. The budget is where a description should gravitate, not a line to
+shave specifics against. If trimming to fit would cost a path, a line range, a count or a date,
+**go over and say why in the body** — that escape is not a loophole in the rule, it is the rule,
+and it is now the text the linter itself prints in the warning band.
+
+**Why 2× and not tighter.** The threshold was 1.25× until 20 September 2026, which put an `ERROR`
+*below* the level the people using this rule call acceptable — a 1,200-character body for a small
+diff is 1.5×, and a 5,000-character description that genuinely earned its place is 1.25× of the
+ceiling. Both are fine by the standard this section is trying to encode. Both failed the check.
+
+Loosening it costs nothing the rule was built to catch, and that is checkable rather than hopeful:
+**the twelve-PR census above runs 3× to 22×. Every one of them is still an `ERROR` at 2×**, with
+margin on the closest. Nothing real has ever been measured between 1.25× and 3×. What lives in
+that gap is not bloated descriptions; it is careful ones — #9309 at 1.1× and #9284 at 1.2×, each
+one specific away from a red check.
+
+**What did not change.** The formula, the three constants, the raw-character unit, and the move.
+The measurement was never the problem and is the valuable part: it is what turned #9284 from
+12,340 characters for 29 changed lines into 944, with nothing deleted. Only the point at which the
+tool stops advising and starts blocking has moved.
+
+**The floor is the next thing to re-measure, not to guess at.** Two reference links — a ticket and
+a working-notes permalink — are ~145 raw characters before a word of prose, 18% of an 800-char
+floor, and the two descriptions actually written to this rule both land near 950. That is a real
+signal that 800 may be drawn low for a body carrying mandatory links. It is not a reason to start
+excluding link targets from the count: the squash copies targets verbatim into a commit message
+where nothing renders them, "raw, not visible" is the correction that cost an author a day of
+ambiguity, and unlike the attribution footer — which an author is required to carry and cannot
+remove — *which* links a description carries is a choice. If the floor is wrong it is wrong by a
+measurable amount, and the method is the one used for the original three constants: p25 of
+`(.body|length)` over the repo's history, restricted to bodies carrying a ticket link.
+
+### Write to the repository's template, and let the linter find it
+
+**A PR template is not a suggestion and a description is not a blank page.** Where a repository
+ships templates, they exist because somebody decided what a description *there* has to carry —
+and that decision usually encodes things an author drafting from scratch will not think of: the
+rollback line, the security sentence, the reference someone needs in a year. A description that is
+merely *shorter* than its template is fine. One that is *unrecognisable* from it is not shorter,
+it is different, and the repository has lost the thing it standardised on.
+
+So: **find the template, fill it, and add to it freely.** Extra headings are never a fault — a
+template is a floor, not a cage. **Keep its shape and make the prose inside it tighter; that is
+what the budget is for.** Cut a section only when it genuinely does not apply, and when you do,
+say so in a line rather than deleting the heading. Because of the exemption below, keeping a short
+section costs you nothing at all.
+
+If you are drafting a description and the repository has a template convention, **use it rather
+than inventing your own shape.** A house shape you invented is one more thing for a reader to
+learn, and it is not yours to choose.
+
+`pr_lint.py` finds templates two ways, and **the difference decides the severity**:
+
+| | | |
+|---|---|---|
+| **Supplied** | `--template PATH` (a file, or a directory of them) | an assertion that this *is* the shape here → drift is an **`ERROR`** |
+| **Discovered** | walked from conventional paths | an inference — the repo never said it was mandatory → drift is a **`WARN`** |
+| **Neither** | no templates found | **no finding at all** |
+
+That rule is the whole policy, and it deliberately contains no opinion about any particular
+repository. **Severity follows the strength of the claim.** An agent that has been told which
+template applies passes `--template` and gets a hard check; a linter that merely guessed gives
+advice. `--require-template` promotes a discovered template to `ERROR`, `--template-advisory`
+demotes a supplied one to `WARN`, for the caller who knows better than either default.
+
+The discovery order:
+
+```
+.github/PULL_REQUEST_TEMPLATE/      docs/pr-templates/      docs/pr_templates/
+.github/pr-templates/               .github/pull_request_template.md
+pull_request_template.md            docs/pull_request_template.md
+.github/PULL_REQUEST_TEMPLATE.md
+```
+
+The three GitHub auto-fill paths are there because most repositories use them. But **a repository
+that wants a new PR body to arrive empty has to keep its templates somewhere GitHub does not
+recognise** — an auto-filled body means untouched boilerplate is not an empty body, so a
+"description present" check passes while the author has written nothing. Repositories that have
+worked that out are exactly the ones with a considered template convention, which is why the list
+looks past GitHub's conventions instead of assuming they are the whole story.
+
+**The third row matters as much as the first two.** A repository with no templates gets no finding
+whatsoever. This skill runs wherever it is installed, and inventing a convention for a repository
+that has none would be the most annoying possible way to be wrong.
+
+### The budget charges the sections that explode, not the ones that must not be trimmed
+
+The budget was a flat count over the whole body, and that was wrong in a specific way: it charged
+the author for the sections that are short by nature and expensive to lose. Two reference links
+are ~145 raw characters before a word of prose — 18% of an 800-character floor — and the same
+count fell on the security sentence and on the rollback line somebody reads during an incident.
+Shaving any of those to reach a character count is the rule doing harm.
+
+**These sections carry free**, matched as case-insensitive substrings of the heading: `Related`,
+`References`, `Links`, `Security impact`, `Security`, `Deployment`, `Rollback`. What is budgeted is
+the narrative — the summary, the reviewer notes, the testing story — which is where a description
+actually explodes.
+
+**That list is the intersection of what templates commonly ask for, not a closed set.** Your
+template will have sections it does not name. Pass them:
+
+```bash
+python3 pr_lint.py --repo OWNER/REPO --pr 42 \
+  --template docs/pr-templates/bugfix.md \
+  --exempt-section "compliance" --exempt-section "on-call runbook"
+```
+
+`--exempt-section` is repeatable and **adds** to the defaults; `--no-default-exempt` discards them
+and uses only what you passed; `--exempt-cap N` moves the ceiling. The agent drafting the
+description is the one that knows which sections its template treats as fixed overhead, so it is
+the one that should say.
+
+**But the exemption is for fixed overhead, not a hiding place.** Past **750 raw characters** a
+single exempt section starts counting again, so `## Related` cannot quietly become the new body.
+750 is p90 of **226 such sections measured across 99 live PR bodies in the reference repository on
+20 September 2026** — p50 263, p75 473, p90 728, p95 1,018, max 1,634 — rounded up. Nine in ten
+real ones pass free; an outlier is carrying something that is not a reference. The linter prints
+the credit and shows the cap biting, e.g. `deployment requirements 750 of 3,009`.
+
+**The check that this does not defang the rule.** Exempting sections *and* raising the error
+threshold to 2× are two loosenings stacked, so they were tested together against the twelve-PR
+census, under the worst case: every PR claiming the maximum possible credit, four exempt sections
+each at the full cap, 3,000 characters free.
+
+**All twelve are still `ERROR`. The closest is C at 2.4×** against a 2.0× threshold — thinner
+margin than the 3.2× before the exemption, and still real. If a thirteenth case ever lands between
+2.0× and 2.4×, that is the number to revisit, and this is the calculation to redo.
+
+The effect on real descriptions is the point: **PR A goes from 894 characters and 1.1× over to 599
+budgeted and comfortably inside**, because its `Security impact` (61 chars) and `Related` (234
+chars) stop being charged. Nothing about that description changed. The rule stopped asking it to
+delete its references.
+
+*(Re-measured 20 September 2026: eleven of the twelve census PRs have since been rewritten and now
+sit between 2,661 and 6,399 characters. The table above is the 18 September measurement and stays
+as recorded — a census is a measurement with a timestamp. Anyone re-running it live will get
+different numbers and should not conclude the table is wrong; they should conclude the rule
+worked. B is the exception, still 17,874 characters at 8.9× budgeted.)*
 
 ### Reconciling this with the paraphrase scar
 
@@ -563,9 +722,10 @@ comment.
 **Probed 18 September 2026**, read-only: `cli/cli` PR
 [#13318](https://github.com/cli/cli/pull/13318) has four `<details>` blocks in its markdown body,
 and `gh api repos/cli/cli/pulls/13318 -H "Accept: application/vnd.github.html+json" --jq .body_html`
-returns real `<details>` and `<summary>` elements. On the comment side, `tc-portal` review comment
-[`r4017166314`](https://github.com/Trilogy-Care/tc-portal/pull/9309#discussion_r4017166314)
-carries one `<details>` in its markdown and one rendered `<details>` in `body_html`. GitHub
+returns real `<details>` and `<summary>` elements. On the comment side, a review comment carrying
+one `<details>` in its markdown returns one rendered `<details>` in `body_html`, checked the same
+way. (The `cli/cli` link stays because it is public and anyone can re-run the probe against it —
+that is evidence, not provenance.) GitHub
 documents the behaviour at
 [Organizing information with collapsed sections](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/organizing-information-with-collapsed-sections).
 
@@ -655,11 +815,11 @@ every kind of comment, and the probe is recorded above.
 
 The false reason did the damage. It ruled out the one mechanism that reconciles *complete* with
 *short*, so "never budget a durable record" stood alone and was read as "length does not matter".
-By 18 September that had produced eleven agent-authored PRs on `Trilogy-Care/tc-portal` carrying
-9,000–39,000 character descriptions with zero folds — 307,000 characters across twelve commits in
-a repo that squash-merges with `PR_BODY` as the commit message. The worst, #9309, was 17,638
-characters for 50 changed lines, one of application code and 44 of test. A human reviewer flagged
-it; nothing in this guide would have.
+By 18 September that had produced eleven agent-authored PRs carrying 9,000–39,000 character
+descriptions with zero folds — 307,000 characters across twelve commits in a repository that
+squash-merges with the PR body as the commit message. The worst, PR A, was 17,638 characters for
+50 changed lines, one of application code and 44 of test. A human reviewer flagged it; nothing in
+this guide would have.
 
 What replaced it is not a shorter description. It is a **destination**: the description is the
 record of the decision and is budgeted against the diff, and the working moves whole into the
@@ -683,3 +843,24 @@ found:
    copies, and it is the unit the floor, the slope and the ceiling were all measured in. The
    first `pr_lint.py` checked raw-derived constants against a stripped count, which made the real
    budget about a quarter looser than anything measured.
+
+**20 September 2026.** Two changes, and one correction to how this document is written.
+
+The budget's `ERROR` threshold moved from 1.25× to **2×**, and the budget stopped charging for
+reference, security and deployment/rollback sections — both argued above, both re-checked together
+against the census. Template fidelity is now checked, with severity following whether the template
+was supplied or merely discovered.
+
+The correction is the one worth recording. **This guide had been written against a single named
+repository** — its PRs linked by number, its domain names in the worked example, its ticket keys,
+and in one place its governance record used to justify a default severity. That is wrong for a
+skill that installs anywhere: a reader in another repository cannot open those links, the domain
+names taught nothing the invented ones do not, and **a default argued from one repository's policy
+is that repository leaking into everyone else's tooling.**
+
+So the measurements stayed and the provenance went. PRs are labelled A–M, the population is
+described rather than named, and the worked example's domain is invented on the same principle the
+worked review in `examples/` already used. Every number, date and method above is unchanged and
+still checkable — against your own repository, which is where it should have been pointed all
+along. The rule for anything added here from now on: **if it names somebody's repository, ticket
+system or internal policy, it does not belong in this file.**

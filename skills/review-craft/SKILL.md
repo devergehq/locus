@@ -78,6 +78,23 @@ Everything below is argued in `house-style.md`. This is the part worth holding i
   stored, excluding the Claude Code attribution footer. Raw, not "visible" — the squash copies
   markup, link targets and folded blocks verbatim. A specific — a path, a line range, a count, a
   date — outranks it.
+- **Write to the repository's template if it has one.** Fill it, add to it freely — extra headings
+  are never a fault. **Keep its shape and tighten the prose inside it**; that is what the budget
+  is for. Cut a section only when it genuinely does not apply, and say so in a line rather than
+  deleting the heading. A description *shorter* than its template is fine; one *unrecognisable*
+  from it is not shorter, it is different. Don't invent your own shape where a convention exists.
+- **Tell the linter what you know.** `--template PATH` says *this is the shape here* and makes
+  drift an `ERROR`; a template the linter merely discovers is a `WARN`; a repo with no templates
+  gets no finding at all. Severity follows the strength of the claim, not anyone's house policy.
+- **The budget charges the narrative, not the references.** `Related`, `Security impact`,
+  `Deployment`, `Rollback` and friends carry free up to 750 characters each. Never shave a ticket
+  link, a security sentence or a rollback step to reach a count — they are not on the count. That
+  default list is an intersection, not a closed set: pass `--exempt-section NAME` (repeatable) for
+  the ones your template asks for that it does not name.
+- **The budget is a target, not a gate.** `pr_lint.py` reports a `WARN` under **2×** and an
+  `ERROR` only at 2× or more. Get *close* to the budget; do not shave a path, a count or a date
+  to get *under* it. The census that forced the rule runs 3×–22×, so the red check still lands on
+  the thing it was built for.
 - **`<details>` does fold in a PR body.** An earlier version of this guide said otherwise and that
   was false. But a squash copies the raw tags into the commit message, so folds in the body are
   for reviewer aids you are content to keep in `git log`, never for the transcript.
@@ -90,6 +107,11 @@ python3 review_lint.py <PR> --repo OWNER/REPO         # a posted review
 python3 pr_lint.py --repo OWNER/REPO --pr <PR>        # a PR description
 python3 pr_lint.py draft.md --changed-lines 50        # a description before the PR exists
 ```
+
+**Post the `## Working notes` comment before you shorten the body.** `pr_lint.py` errors when the
+body links to working notes and no comment on the PR opens with that heading — so the intuitive
+order (rewrite the body, then post the comment) leaves a live PR sitting in a failed-lint state
+with a dead link in its description. Comment first, then edit the body to link it.
 
 `pr_lint.py` will not guess a draft's diff size. `--changed-lines` is
 `gh pr diff <n> --stat | tail -1`, or `additions + deletions` from the API. A budget checked
@@ -124,6 +146,24 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**20 September 2026 (second change).** Template fidelity is now checked: `pr_lint.py` reports
+which template a description is closest to and what it is missing. Severity follows provenance — a
+template **supplied** via `--template` is an assertion and drift is an `ERROR`; one **discovered**
+on a conventional path is an inference and drift is a `WARN`; a repository with no templates gets
+no finding. The budget now charges only the narrative sections, with references, security impact
+and deployment/rollback carrying free up to 750 characters each (p90 of 226 measured sections) and
+`--exempt-section` to add your template's own. Both argued in `house-style.md`.
+
+Also that day, `house-style.md` was **de-identified**. It had been written against one named
+repository — linked PR numbers, its domain names, its ticket keys, and in one place its internal
+governance record used to justify a default severity. Every measurement stayed; the provenance
+went. A skill that installs anywhere must carry no repository in its head.
+
+**20 September 2026.** The budget's `ERROR` threshold moved from 1.25× to **2×**, and is now
+stated in the prose instead of living only in `pr_lint.py`. The formula, the constants and the
+raw-character unit are unchanged — only the point where the tool stops advising and starts
+blocking. Argued in `house-style.md` under "The budget is a target, and the linter now says so".
 
 **18 September 2026.** This skill used to say PR descriptions were out of scope, partly on a false
 claim — that a description cannot fold. It can. The section that replaced it, and the census of
