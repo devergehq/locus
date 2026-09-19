@@ -365,25 +365,243 @@ No format survives 24 findings on a cursor change. Before a finding goes anywher
 the Google standard asks: **will the author take an action?** If not, it belongs in Suppressed with
 a reason, not in a thread. Raising fewer findings is what makes the ones you raise legible.
 
-## PR descriptions are out of scope
+## PR descriptions: the description is the record, the working is a comment
 
-This style governs **reviews and comments only**.
+A PR description is **the record of the decision**, and in a repo that squash-merges with
+`PR_BODY` as the commit message it *is* the commit message. Write it for the person who runs
+`git log` in two years, not for the person who wants to see your homework.
 
-PR descriptions follow **the repo's own templates and its own decision records**, which people
-already write to and which often make the description the permanent technical record of the
-change. Do not restyle, compress or reorganise a description to match anything here. Write it
-from the repo's template, with the sections that template gives you.
+It carries five things and stops:
 
-(An earlier version of this guide imposed a 400-word target on descriptions. It was wrong twice
-over: it cut across the repo's templates, and because a description cannot collapse anything,
-"shorten" could only be obeyed by paraphrasing — which dropped specifics like "the 94 model files
-are one import line each" and a lead about a second arch test that existed nowhere else. Seven
-descriptions were restored from GitHub's edit history.)
+| | |
+|---|---|
+| **Why** | the problem, and why it was worth changing |
+| **What changed, in shape** | not a file list — what is now true that was not |
+| **What a reviewer should look at** | the two or three places judgement is needed |
+| **Risks** | what could go wrong, and what would show it |
+| **References** | the ticket, the PRs it depends on, the ADR |
 
-## The linter is the gate, not this document
+Everything else — the evidence census, the production queries and their output, the method, the
+alternatives you rejected, the investigation transcript — is **the working**, and the working goes
+into **a comment on the PR whose first line is the heading `## Working notes`**, complete and
+verbatim. The description links to it in one line:
 
-`python3 review_lint.py <PR> --repo OWNER/REPO`, beside this file, checks the posted review
-against these rules —
+```markdown
+Working notes: <link to the comment headed "Working notes">
+```
+
+**Identify that comment by its heading, never by its position.** It is tempting to say "the first
+comment", and it is wrong: the working is moved out of the body once the PR has been open a while,
+so its comment is the *newest*, not the first. On `tc-portal` #9309 — the first PR written to this
+convention — it is the seventh comment, three days after the other six, behind a Linear link-back,
+a Rector report, a Greptile summary and two agent review rounds. A rule that said "first comment"
+would have failed the one PR that followed it. `pr_lint.py` matches the heading on the comment's
+first line for the same reason.
+
+**Nothing is deleted. It moves.** The comment is not a summary of the working; it is the working,
+with the paths, the counts, the raw query output and the dates copied rather than described. If
+you find yourself paraphrasing to make something fit, you have moved the wrong thing.
+
+### Why a comment is the right home
+
+- **It never enters the squash commit.** GitHub's squash message is the PR title, a blank line,
+  and the body **verbatim** — every character, markup included. Comments are not in it. Measured
+  on `Trilogy-Care/tc-portal` #9097 on 18 September 2026: body 4,216 characters, squash commit
+  message 4,241 characters, one parent.
+- **Both readers reach it.** A human scrolls to it; an agent gets it from
+  `gh api repos/OWNER/REPO/issues/N/comments` in the same breath as the body.
+- **It can be amended.** A commit message cannot. When the census is re-run and the numbers move,
+  the comment is edited and the history stays honest — which is exactly what a durable record
+  needs and a commit message cannot give you.
+
+### The budget, and why a budget is allowed here at all
+
+**Body length: `min(4000, max(800, 12 × changed lines))` RAW characters of the body as stored,
+excluding the Claude Code attribution footer.**
+
+**Raw, not "visible" — and that word is load-bearing.** The squash copies the body verbatim, so
+every table pipe, every link target, every `<details>` tag and everything folded inside one is
+copied into the commit where nothing renders and nothing collapses. It is also the unit the three
+constants below were measured in: they come from `(.body|length)` over tc-portal's PRs, raw
+stored characters. An earlier draft of `pr_lint.py` derived the constants from raw bodies and then
+checked them against a markup-stripped count, which made the effective budget about a quarter
+looser than anything that had been measured. "Visible" is the wrong word here and it cost one
+author real ambiguity: writing #9309's description to it, they landed at 958 raw against 797
+"visible" and could not tell which number the rule meant.
+
+The one exclusion is the **Claude Code attribution footer**, about 64 characters an author is
+required to carry and cannot remove. Charging that to their budget charges them for a tool.
+
+(`review_lint.py` *does* strip markup, and is right to. A review body is read on a page; it is
+never copied into a commit. Different artefact, different unit.)
+
+`changed lines` is `additions + deletions` — `gh pr diff <n> --stat | tail -1`, or
+`gh api repos/OWNER/REPO/pulls/N --jq '.additions + .deletions'`.
+
+Three constants, each measured against `Trilogy-Care/tc-portal` on 18 September 2026 rather than
+chosen:
+
+- **Slope 12.** Across 45 recently-merged human-authored PRs, the median description runs
+  **10.6 characters per changed line**. Twelve is that median, rounded up. The budget is not an
+  austerity measure; it is what the people in this repo already write.
+- **Ceiling 4,000.** Across all 5,557 PRs in the repo's history the body length distribution is
+  p25 662, p50 1,330, p75 2,224, p90 4,208. A 4,000-character ceiling sits at about the 89th
+  percentile: it forbids almost nothing the repo has ever routinely done. 4,000 characters is
+  also roughly 55 lines wrapped at 72 columns — already a long commit message.
+- **Floor 800.** Just above p25, and about eleven wrapped lines. Five sections need room; a
+  budget that squeezes a one-line fix's *reason* out of existence is the old mistake again.
+
+**The linear term governs small diffs and the ceiling governs everything else.** That is not a
+flaw in the formula, it is the shape of the problem: the worst case measured was not a large
+change with a long description, it was **#9309 — 17,638 characters of description for 50 changed
+lines, one of them application code and 44 of them test.** Twenty-two times its budget.
+
+The eleven-PR census that forced this rule, measured 18 September 2026 (twelve are listed; the
+`DAR` batch of 15–16 September plus #9332 and #9334). Every one has **zero folds**:
+
+| PR | Changed lines | Body chars | Budget | Over by |
+|---|---|---|---|---|
+| #9309 | 50 | 17,638 | 800 | 22× |
+| #9307 | 148 | 17,943 | 1,776 | 10× |
+| #9316 | 222 | 9,271 | 2,664 | 3× |
+| #9312 | 786 | 12,780 | 4,000 | 3× |
+| #9334 | 1,615 | 22,568 | 4,000 | 6× |
+| #9311 | 2,542 | 29,881 | 4,000 | 7× |
+| #9315 | 2,849 | 27,789 | 4,000 | 7× |
+| #9313 | 2,991 | 38,634 | 4,000 | 10× |
+| #9332 | 3,047 | 36,538 | 4,000 | 9× |
+| #9310 | 3,284 | 36,703 | 4,000 | 9× |
+| #9308 | 6,942 | 24,699 | 4,000 | 6× |
+| #9314 | 25,594 | 32,467 | 4,000 | 8× |
+
+**307,000 characters of description across twelve commits, against a budget of 41,000.** A human
+reviewer raised it, which is the only reason it was counted at all.
+
+*(Every figure above was read from the GitHub API on 18 September 2026. #9309's description was
+rewritten later the same day, down to 959 characters; the 17,638 is in that PR's edit history, not
+on the PR. The other eleven were unchanged at the time of writing. A census is a measurement with
+a timestamp, and this one has both.)*
+
+**Say it plainly where it is tight.** Among the 45 *recent* human PRs the median body is 4,887
+characters — above the ceiling. The ceiling is drawn from the repo's whole history, not from last
+month, so some human authors will find it tight too, and that is a deliberate judgement rather
+than an accident of arithmetic. If it turns out to be wrong, it is wrong by a measurable amount
+and the census above is how you would show it.
+
+### A worked description
+
+`Trilogy-Care/tc-portal` [#9309](https://github.com/Trilogy-Care/tc-portal/pull/9309) is the first
+PR written to this rule, on 18 September 2026. Its description went from **17,638 characters to
+958** — and nothing was lost: the census, the queries and the method moved verbatim into
+[a comment headed `## Working notes`](https://github.com/Trilogy-Care/tc-portal/pull/9309#issuecomment-5727042819),
+which is the seventh comment on that PR, not the first.
+
+It uses the repo's own bugfix template headings rather than the five nouns above, which is the
+point — **the five things are what a description carries, not the headings it must carry them
+under.** Write to the repo's template; the template's sections are usually these things wearing
+local names.
+
+```markdown
+## Summary
+
+**Issue:** the clinical exemption in `CalculatePackageContributionAction` never fired.
+**Root cause:** it compared the category against `'Clinical'`, the display label; the name is
+`'Clinical supports'`.
+**Fix:** compare against `ContributionCategory::CLINICAL_SUPPORTS`, as both sibling resolvers do.
+Fixture rebuilt on it; negative test that the label stays chargeable.
+
+## Reviewer focus areas
+
+Now live on a money path; moves no money today — 0 of 28,206 clinical `contributions` rows carry
+>0%, and no clinical `default_contribution_rates` row exists (production, 15 Sep 2026).
+
+## Security impact
+
+None; the exemption only gets stricter.
+
+## Related
+
+[DAR-543](…) · follow-ups DAR-606, DAR-607
+Working notes: the [comment titled Working notes](…#issuecomment-5727042819).
+```
+
+Two things to copy from it. **Every claim carries its number and its date** — "0 of 28,206 rows
+(production, 15 Sep 2026)", not "no rows are affected"; that survives becoming a commit message
+read in two years. And **the reviewer-focus section states the blast radius rather than pointing
+at files**: what a reviewer needs is that this is now on a money path, not a list of what changed.
+
+At 894 raw characters against a floor of 800 it sits about 1.1× over, which `pr_lint.py` reports
+as a warning rather than an error. That is the warning band doing its job: the overage is a
+production count and a date, and a specific outranks the budget.
+
+### Reconciling this with the paraphrase scar
+
+`issue-craft` carries the rule this came from: **budget artefacts consumed in a feed; never
+budget a durable record.** That rule is right, and it is not being repealed. It was written after
+a 150-word budget was applied to PR descriptions, and the only way to obey "shorten" was to
+paraphrase — which silently ate specifics, including a lead about a test file that existed
+nowhere else, and seven descriptions had to be restored from GitHub's edit history.
+
+The scar's real lesson was never "descriptions must be long". It was **"there was nowhere for the
+detail to go, so shortening destroyed it."** The old guide added a second, false reason —
+that a description cannot collapse anything — which ruled out the one mechanism that reconciles
+complete with short, and left "never budget" standing alone.
+
+Now there is somewhere for it to go. The working moves to a comment, whole, and the budget
+applies to what is left. **A budget with a destination is a move; a budget without one is a
+paraphrase machine.** That distinction is the whole fix.
+
+**A specific still outranks the budget.** If trimming to fit would cost a path, a line range, a
+count or a date, go over and say why in the body. The five sections exist to carry those.
+
+### `<details>` does fold in a PR body — but use it sparingly there
+
+An earlier version of this guide said a PR description "cannot collapse anything". **That is
+false.** GitHub renders `<details><summary>` in PR bodies, issue bodies and every kind of
+comment.
+
+**Probed 18 September 2026**, read-only: `cli/cli` PR
+[#13318](https://github.com/cli/cli/pull/13318) has four `<details>` blocks in its markdown body,
+and `gh api repos/cli/cli/pulls/13318 -H "Accept: application/vnd.github.html+json" --jq .body_html`
+returns real `<details>` and `<summary>` elements. On the comment side, `tc-portal` review comment
+[`r4017166314`](https://github.com/Trilogy-Care/tc-portal/pull/9309#discussion_r4017166314)
+carries one `<details>` in its markdown and one rendered `<details>` in `body_html`. GitHub
+documents the behaviour at
+[Organizing information with collapsed sections](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/organizing-information-with-collapsed-sections).
+
+**But a fold in the body is not a place to hide the transcript**, and this is the one thing that
+makes a description different from a ticket: **the squash copies the raw tags.** `<details>`,
+`<summary>` and the markdown inside them land in the commit message as literal text, where
+nothing renders them and nothing collapses them. Folded bulk in a body is still bulk in
+`git log`.
+
+So, in a PR body, `<details>` is for **reviewer aids that belong with the commit and would be
+noise unfolded** — a short changed-file list, a release checklist, a migration command someone
+will need again. Anything you fold there, you are choosing to keep in the commit message.
+Everything else goes to the comment.
+
+**A folded block counts against the budget in full**, tags and all, because the squash copies it
+in full. That is the opposite of how folds work in a review body or a Linear ticket, and it is the
+single most important thing to carry across: in a PR body, folding is a courtesy to the reader on
+the page and buys you nothing in `git log`. Keep folds in the body few and short.
+
+## The linters are the gate, not this document
+
+Two live beside this file, and they check different artefacts:
+
+| | Checks | Run it |
+|---|---|---|
+| `review_lint.py` | a **posted review** — index shape, arithmetic, thread budgets | `python3 review_lint.py <PR> --repo OWNER/REPO` |
+| `pr_lint.py` | a **PR description** — the budget for that diff, headings, placeholders, rotting dates, and that the working-notes comment it links to exists | `python3 pr_lint.py --repo OWNER/REPO --pr <N>` |
+
+`pr_lint.py` also lints a local draft, which is how you check a description *before* you open the
+PR: `python3 pr_lint.py draft.md --changed-lines 50`. It will not guess the diff size, because a
+budget checked against a guessed denominator reports PASS about nothing.
+
+Both are **mechanics only**. A clean run means nothing is broken, not that anything is worth
+reading.
+
+`review_lint.py` checks the posted review against these rules —
 index shape, method line, table links, verdict arithmetic, severity rails, the four parts,
 disposition chips, thread budgets, dead anchors, and that the PR description was left alone. It reads
 GitHub's rendered HTML rather than the markdown you sent.
@@ -404,6 +622,19 @@ paste the final output when you report. A document nobody can fail is a suggesti
 7. Does every finding say whether it is `in diff` or `pre-existing`, and carry a disposition?
 8. Does every table row link to its thread, and is every fixed thread resolved?
 
+## Before you call a PR ready, check
+
+1. Does the description carry **why, what changed in shape, what to look at, risks, references** —
+   and stop?
+2. Is the **working** — evidence, queries and their output, method, alternatives, transcript — in
+   a **PR comment headed `## Working notes`**, verbatim, with nothing paraphrased on the way?
+3. Does the description **link to that comment in one line**?
+4. Is the body inside `min(4000, max(800, 12 × changed lines))` **raw** characters (the
+   attribution footer aside), or over it for a named specific you would not paraphrase away?
+5. Does every `<details>` in the **body** hold a reviewer aid you are content to see as raw tags in
+   `git log` — not the transcript?
+6. Has `pr_lint.py` passed against the real PR, not only the draft?
+
 ## Sources
 
 The numbers above come from a market scan of nine commercial review tools and the papers cited
@@ -413,3 +644,42 @@ Three pieces of review folklore did not survive tracing, so don't repeat them: t
 reviewer ceiling" has no primary source; "70–90% defect discovery" appears only in SmartBear
 marketing, uncited; and "200–400 LOC" is a distortion of the Cisco study's "under 200, not to
 exceed 400", whose upper bound rests on the unsourced 60-minute claim.
+
+## Revision
+
+**18 September 2026.** Until today this guide ruled PR descriptions out of scope, on two reasons.
+The first was sound — descriptions follow the repo's templates and are a durable record, so the
+150-word review budget must not be carried across to them. The second was false: it said a
+description "cannot collapse anything". GitHub renders `<details><summary>` in PR bodies and in
+every kind of comment, and the probe is recorded above.
+
+The false reason did the damage. It ruled out the one mechanism that reconciles *complete* with
+*short*, so "never budget a durable record" stood alone and was read as "length does not matter".
+By 18 September that had produced eleven agent-authored PRs on `Trilogy-Care/tc-portal` carrying
+9,000–39,000 character descriptions with zero folds — 307,000 characters across twelve commits in
+a repo that squash-merges with `PR_BODY` as the commit message. The worst, #9309, was 17,638
+characters for 50 changed lines, one of application code and 44 of test. A human reviewer flagged
+it; nothing in this guide would have.
+
+What replaced it is not a shorter description. It is a **destination**: the description is the
+record of the decision and is budgeted against the diff, and the working moves whole into the
+author's first PR comment. The paraphrase scar of the original incident is honoured by the move,
+not by the absence of a budget — the seven descriptions restored from edit history in that
+incident were destroyed by having nowhere to put the detail, which is now fixed.
+
+`pr_lint.py` landed the same day, because a rule with no check is a suggestion.
+
+**Two corrections, the same day, from the first PR actually rewritten to this rule (#9309).**
+Both came from an author trying to follow the draft, which is the only way either would have been
+found:
+
+1. The draft said the working went in **the author's first comment**. It does not. The working is
+   moved out of the body after the PR has been open a while, so its comment is the *newest* — the
+   seventh on #9309, three days after the other six. It is identified by the heading
+   `## Working notes` on its first line, and the linter matches on that.
+2. The draft budgeted **"visible" characters**, which the author read as excluding markdown link
+   targets, and could not tell whether their description was 958 or 797. The budget is **raw
+   characters of the body as stored**, minus the attribution footer — that is what the squash
+   copies, and it is the unit the floor, the slope and the ceiling were all measured in. The
+   first `pr_lint.py` checked raw-derived constants against a stripped count, which made the real
+   budget about a quarter looser than anything measured.

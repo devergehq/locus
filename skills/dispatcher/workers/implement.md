@@ -23,11 +23,29 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
 4. **Build it with tests.** Tests that fail without the change and pass with it. Run the relevant
    tests, the formatter and static analysis locally before every push.
 5. **Push early and open a draft PR**, written from the repo's own PR templates and rules (title
-   `<KEY>: <what changes, in plain words>`). Leave the description in the shape those templates
-   give you — the `review-craft` house style governs reviews and comments, never descriptions.
-   Check whether the repo squash-merges with the PR body as the commit message; where it does,
-   `<details>` and mermaid in the body become permanent noise in the git log. Put the link on the
-   ticket with `D comment`.
+   `<KEY>: <what changes, in plain words>`). Keep the sections those templates give you, and fill
+   them following `review-craft`'s **"PR descriptions"** section:
+   - **The description is the record of the decision.** Why, what changed in shape, what a
+     reviewer should look at, risks, references — and it stops there. Where the repo
+     squash-merges with the PR body as the commit message, that *is* the commit message.
+   - **Your working goes in a PR comment whose first line is `## Working notes`**, complete and
+     **verbatim** — the evidence census, the queries and their output, the method, the
+     alternatives you rejected. The description links to it in one line. **Nothing is deleted;
+     it moves.** If you find yourself paraphrasing to make something fit, you are moving the
+     wrong thing: a budget obeyed by paraphrasing is the failure this rule was written after.
+     The comment is identified **by that heading, never by its position** — you move the working
+     out late, so it is the newest comment, not the first.
+   - **Budget the body at `min(4000, max(800, 12 × changed lines))` RAW characters** of the body
+     as stored (the Claude Code attribution footer aside), where changed lines is
+     `additions + deletions`. Raw, not "visible": the squash copies markup, link targets and
+     folded blocks verbatim. A path, a line range, a count or a date outranks the budget.
+   - `<details>` **does** render in a PR body, but a squash copies the raw tags into the commit
+     message. Fold only reviewer aids you are content to see in `git log`; never the transcript.
+   - **Run the linter before you call the PR ready**, and paste its output when you report:
+     `python3 ~/.locus/skills/review-craft/pr_lint.py --repo OWNER/REPO --pr <n>`. Exit 1 means
+     fix it and run it again.
+
+   Put the link on the ticket with `D comment`.
 6. **Independent self-review, posted on the PR.** It's visible there, like Greptile's, so people
    can see a review happened and compare the two.
    - Dispatch a reviewer (see "Independent help") that sees only the ticket, the PR description and

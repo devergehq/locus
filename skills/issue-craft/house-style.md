@@ -25,13 +25,23 @@ document, where both readers can reach it.
 `review-craft` budgets a review body to 150 visible words. **Do not carry that here**, and the
 reason is a scar rather than a preference.
 
-That budget was once applied to PR *descriptions*. It was wrong twice over: it cut across the
-repo's own templates, and because a description cannot collapse anything, "shorten" could only
-be obeyed by paraphrasing. Paraphrasing silently ate specifics — including a lead about a test
-file that existed nowhere else. Seven descriptions had to be restored from GitHub's edit history.
+That budget was once applied to PR *descriptions*. It cut across the repo's own templates, and
+because the detail had nowhere else to go, "shorten" could only be obeyed by paraphrasing.
+Paraphrasing silently ate specifics — including a lead about a test file that existed nowhere
+else. Seven descriptions had to be restored from GitHub's edit history.
 
 The rule that came out of it: **budget artefacts consumed in a feed; never budget a durable
-record.** A review is read once, in a stream, and then is mostly history. A ticket is read once
+record.**
+
+> **Corrected 18 September 2026.** This paragraph used to give a second reason — that "a
+> description cannot collapse anything". That is false: GitHub renders `<details><summary>` in
+> PR bodies and in every kind of comment (probe and citation in
+> `review-craft/house-style.md`). The false reason mattered, because it ruled out the one
+> mechanism that reconciles complete with short, and left "never budget" to carry the whole
+> argument by itself. `review-craft` now budgets a PR description **and** gives the working a
+> destination — the author's first PR comment, verbatim. **A budget with a destination is a
+> move; a budget without one is a paraphrase machine.** The rule below is unchanged and still
+> right for a Linear ticket, where there is no squash commit to protect and folds are native. A review is read once, in a stream, and then is mostly history. A ticket is read once
 at speed and then consulted for years — by the implementer, by whoever picks it up after them,
 by the person doing the post-incident read, and by every agent that touches the area.
 

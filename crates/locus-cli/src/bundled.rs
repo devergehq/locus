@@ -290,6 +290,14 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/review-craft/review_lint.py".into(),
             include_str!("../../../skills/review-craft/review_lint.py"),
         ),
+        // The description linter, not the review linter. Different artefact,
+        // different failure: an over-long review body is a long page, while an
+        // over-long PR description becomes the squash commit message and cannot
+        // be edited afterwards.
+        (
+            "skills/review-craft/pr_lint.py".into(),
+            include_str!("../../../skills/review-craft/pr_lint.py"),
+        ),
         (
             "skills/review-craft/examples/synthetic-billing-review.md".into(),
             include_str!("../../../skills/review-craft/examples/synthetic-billing-review.md"),
