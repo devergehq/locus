@@ -265,10 +265,11 @@ approach:
 
   systematic:
     name: Systematic
-    description: Structured methodology, step-by-step, traceable reasoning.
+    description: Structured methodology, step-by-step, traceable working.
     prompt_fragment: |
-      Follow a clear, structured methodology. Work step by step. Document
-      your process so others can retrace your reasoning. Number the steps.
+      Follow a clear, structured methodology. Work step by step. Keep a
+      clear, numbered record of the steps you took and the decisions you
+      made, so the work can be followed and checked.
     keywords: [systematic, structured, methodical, step-by-step]
 
   iterative:
