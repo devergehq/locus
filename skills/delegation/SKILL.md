@@ -151,7 +151,7 @@ comfortable ceiling for one dispatcher; beyond that, run waves and reclaim each 
 The point of dispatch over a one-shot call: the worker can come back with a question, and
 you can answer it. Brief it, let it work, respond to what it raises, and iterate.
 
-**Send your reasoning and your queries, not only your conclusions.** A conclusion cannot be
+**Send your working and your queries, not only your conclusions.** A conclusion cannot be
 checked; a method can. Corrections travel in both directions — a worker correcting the
 orchestrator is the normal case.
 

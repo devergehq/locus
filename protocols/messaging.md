@@ -100,7 +100,7 @@ Corrections travel in **both** directions. A worker correcting the orchestrator 
 normal case, not insubordination, and it includes correcting things already relayed to the
 human.
 
-**Send your reasoning and your query, not just your conclusion.** This is the whole
+**Send your working and your query, not just your conclusion.** This is the whole
 mechanism: a defect was found on 2026-08-12 only because a session shared the *query* it
 ran rather than the answer it got. A conclusion cannot be checked; a method can.
 
