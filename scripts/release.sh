@@ -8,7 +8,10 @@
 # Two phases, because `master` is protected and cannot be pushed to directly.
 #
 # Phase 1 — prepare:
-#   1. Bumps [workspace.package] version in Cargo.toml to <version>.
+#   1. Bumps the version to <version> in both Cargo.toml ([workspace.package])
+#      and .claude-plugin/plugin.json — plugin.json is not part of the Cargo
+#      workspace, and `plugin_manifest_version_matches_the_crate_version` fails
+#      the build if the two disagree, so a release has to move both.
 #   2. Refreshes Cargo.lock so the workspace crates match the new version.
 #   3. Commits the bump as "release: v<version>" on a `chore/release-v<version>`
 #      branch, leaving your current branch untouched.
@@ -119,6 +122,22 @@ open(path, "w").write(bump(src))
 print(f"Cargo.toml -> version = \"{version}\"")
 PY
 
+# --- 1b. bump .claude-plugin/plugin.json version ----------------------------
+# plugin.json is hand-maintained and outside the Cargo workspace, so cargo does
+# not touch it. Rewrite the first `"version": "..."` (the top-level manifest
+# field) in place, preserving formatting rather than reserialising the JSON.
+python3 - "$VERSION" <<'PY'
+import re, sys
+version = sys.argv[1]
+path = ".claude-plugin/plugin.json"
+src = open(path).read()
+new, n = re.subn(r'("version"\s*:\s*)"[^"]*"', rf'\1"{version}"', src, count=1)
+if n != 1:
+    raise SystemExit(f"error: could not find a \"version\" field in {path}")
+open(path, "w").write(new)
+print(f"{path} -> version = \"{version}\"")
+PY
+
 # --- 2. refresh Cargo.lock --------------------------------------------------
 echo "refreshing Cargo.lock ..."
 cargo update --workspace --offline >/dev/null 2>&1 || cargo update --workspace >/dev/null
@@ -129,7 +148,7 @@ git rev-parse -q --verify "refs/heads/$RELEASE_BRANCH" >/dev/null \
   && die "branch $RELEASE_BRANCH already exists"
 
 git checkout -q -b "$RELEASE_BRANCH"
-git add Cargo.toml Cargo.lock
+git add Cargo.toml Cargo.lock .claude-plugin/plugin.json
 git commit -m "release: $TAG" >/dev/null
 echo "committed the bump on $RELEASE_BRANCH"
 

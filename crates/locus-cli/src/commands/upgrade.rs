@@ -212,8 +212,8 @@ mod tests {
             parsed["version"].as_str(),
             Some(env!("CARGO_PKG_VERSION")),
             "plugin.json version and the workspace version disagree. \
-             scripts/release.sh bumps Cargo.toml only — plugin.json is hand-\
-             maintained, so a release has to move both."
+             scripts/release.sh bumps both — if a version was edited by hand, \
+             move plugin.json and Cargo.toml together."
         );
     }
 }
