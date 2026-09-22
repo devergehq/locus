@@ -212,6 +212,86 @@ diff. Pin it to the diff line that *triggers* the behaviour, and say in the thre
 fault is elsewhere, naming it. A finding with nothing to pin to at all — a missing ticket, a wrong
 figure in the description — stays in the body table with no link.
 
+## Draw the workflow
+
+**When a finding's mechanism is a workflow, draw it beneath the prose.** Five shapes qualify: a
+**sequence** where order matters, a **state machine**, a **before/after ordering** the fix changes,
+a **transaction boundary**, and a **branching failure mode**. Prose makes the reader rebuild these
+in their head, one clause at a time; a flowchart hands them the picture. GitHub renders a
+```` ```mermaid ```` fence natively in review bodies, inline threads, comments and PR bodies, so the
+cost is a few lines of source.
+
+This comes from one live review, not a census, and it is stated at that strength. Two of its
+findings described temporal, branching workflows that were correct and hard to follow. One
+flowchart each turned them from a wall of correct prose into something a reader took in at a
+glance, and the principal asked for it as standard practice on the strength of it.
+
+**Supplement, never replace.** The four parts stay in full; the diagram goes **directly beneath
+the alert**, outside the rail, above the `agent:` marker, and the prose points at it — "the red
+path below". A diagram without the prose loses the path, the line and the number a reader needs
+to act; prose without the diagram is where you started. Outside the rail for the same reason as
+a long proof: inside it, the coloured box grows to the height of the chart. (GitHub's markdown
+API emits the same mermaid block inside an alert, inside a `<details>` and at top level, probed
+22 September 2026 — so inside is possible, just worse.)
+
+**Before**, the finding alone:
+
+```markdown
+> [!WARNING]
+> **Should · in diff** — a correction that throws after the reopen strands the invoice OPEN · `Open`
+>
+> **What** · The preflight now refuses an unresolved bill item and empty or contradictory targets
+> before the reopen, so those paths leave the invoice SUBMITTED. The real correction still runs
+> after the reopen; if it throws for a reason the dry run missed, the invoice is left OPEN.
+> **Why it matters** · …
+> **What I'd do** · …
+```
+
+**After**, the same finding with this beneath it — and "the red path below" added to **What**:
+
+```mermaid
+flowchart TD
+    A["Reclassify group due on a<br/>never-claimed SUBMITTED invoice"] --> B{"Preflight refusals<br/>(before any reopen)"}
+    B -->|"unresolved bill item"| BLK["BLOCK before reopen<br/>invoice stays SUBMITTED"]
+    B -->|"empty / contradictory targets"| BLK
+    B -->|"passes preflight"| R["reopen at the payer"]
+    R --> C{"Real correction dryRun:false"}
+    C -->|"succeeds"| OK["re-key → UPDATED → submit"]
+    C -->|"throws, reason dry-run missed"| STR["BLOCK after reopen<br/>stranded OPEN — residual risk"]
+    classDef danger fill:#ffdddd,stroke:#c0392b,color:#111
+    classDef good fill:#ddf5dd,stroke:#2e7d32,color:#111
+    class STR danger
+    class BLK,OK good
+```
+
+The fix and the residual risk now sit on one picture: green is what the PR made safe, red is
+what it did not. The prose had both; the reader had to assemble them.
+
+**Don't overdo it.**
+
+- **Only where there is a mechanism.** A single predicate, a wrong constant, a missing include or
+  a one-line finding gets no diagram. If the chart would be two boxes and an arrow, the sentence
+  was already the picture.
+- **One diagram per workflow finding**, in the thread it explains. Never a gallery at the end of
+  the body, and never a diagram of the review's own structure.
+- **Small.** Aim for a dozen nodes or fewer. A chart that needs scrolling has become the wall of
+  prose it replaced.
+- **In the body, only under Problem fit** — when the direction argument is itself a workflow. A
+  finding's diagram lives on its thread.
+- **Nits never get one**, which the lighter nit shape already implies.
+
+**Style for both themes.** GitHub renders mermaid in light and dark, and a custom `fill:` with no
+text colour leaves near-white text on a pastel box in dark mode. **Every `classDef` that sets
+`fill:` also sets `color:`** — `color:#111` against a light fill reads in both. Let colour carry
+meaning only once the words already do: "residual risk" is in the node label, and the red
+repeats it for the reader who skims.
+
+**The budget.** In a review, a diagram costs nothing: `review_lint.py` excludes mermaid fences
+from both the body's word count and a thread's character budget, because a diagram is read as a
+picture, and the ~700 characters of source above would otherwise spend a single-finding thread's
+entire 700-character allowance. **A PR description is different** — its diagram is copied into
+the squash commit — and is covered under "A diagram in a PR body costs its source".
+
 ## Mechanics
 
 Posting is two steps, because a link to a thread needs the thread to exist:
@@ -315,9 +395,8 @@ would build instead.
 
 - **Suggested changes.** For anything mechanical, a ```suggestion block is a one-click fix and
   replaces three sentences of explanation. Use it for every Nit that has an obvious edit.
-- **Mermaid**, at most one per review, and only when the finding is about a path across three or
-  more components, a state machine, or an architecture you're proposing instead. A diagram of two
-  boxes is noise.
+- **Mermaid**, beneath any finding whose mechanism is a workflow — see "Draw the workflow" below.
+  A diagram of two boxes is noise.
 - **GitHub alerts** (`> [!WARNING]`) for at most one thing per review — the one a merger must not miss.
 
 ## Rounds: post once
@@ -745,6 +824,28 @@ in full. That is the opposite of how folds work in a review body or a Linear tic
 single most important thing to carry across: in a PR body, folding is a courtesy to the reader on
 the page and buys you nothing in `git log`. Keep folds in the body few and short.
 
+### A diagram in a PR body costs its source
+
+A diagram earns a place under *What changed, in shape* when the change **is** a workflow — a new
+state, a reordered sequence, a moved transaction boundary. Everywhere else, the rules in "Draw the
+workflow" apply unchanged.
+
+**What changes is the budget. A mermaid fence counts in full**, for the same reason a fold does:
+the squash copies the source into the commit, where nothing renders it. `pr_lint.py` does not
+exempt it, and should not — "raw, not visible" is the unit every constant was measured in, and a
+fence is raw characters like any other. The worked diagram above is ~700 characters: most of an
+800-character floor on its own.
+
+So, in order:
+
+1. **Keep it compact.** Short labels, few nodes. **Drop the `classDef` lines in a body** — they
+   are the part that reads as noise in `git log`, and a body diagram should say what matters in
+   its labels anyway. Edge labels read almost like sentences in plain text; styling does not.
+2. **If the body is still tight, relocate it**: into the `## Working notes` comment, or into a
+   review comment on the line where the workflow lives. Neither touches the body budget, and a
+   diagram on the line it explains is usually the better home regardless.
+3. **Do not fold it to hide it.** A folded diagram still counts, and still lands in the commit.
+
 ## The linters are the gate, not this document
 
 Two live beside this file, and they check different artefacts:
@@ -781,6 +882,9 @@ paste the final output when you report. A document nobody can fail is a suggesti
    in Suppressed, not in the review.
 7. Does every finding say whether it is `in diff` or `pre-existing`, and carry a disposition?
 8. Does every table row link to its thread, and is every fixed thread resolved?
+9. Does any finding describe a workflow — a sequence, a state machine, an ordering, a transaction
+   boundary, a branching failure — without a diagram beneath it? Does any diagram sit under a
+   finding that is really a single predicate?
 
 ## Before you call a PR ready, check
 
@@ -793,7 +897,9 @@ paste the final output when you report. A document nobody can fail is a suggesti
    attribution footer aside), or over it for a named specific you would not paraphrase away?
 5. Does every `<details>` in the **body** hold a reviewer aid you are content to see as raw tags in
    `git log` — not the transcript?
-6. Has `pr_lint.py` passed against the real PR, not only the draft?
+6. If the body carries a diagram, is it compact and unstyled — or would it read better on the
+   line it explains, off the budget?
+7. Has `pr_lint.py` passed against the real PR, not only the draft?
 
 ## Sources
 
@@ -864,3 +970,12 @@ worked review in `examples/` already used. Every number, date and method above i
 still checkable — against your own repository, which is where it should have been pointed all
 along. The rule for anything added here from now on: **if it names somebody's repository, ticket
 system or internal policy, it does not belong in this file.**
+
+**22 September 2026.** "Draw the workflow" replaces the old one-line rule of at most one mermaid
+diagram per review. That cap was a guess, and the first live evidence ran against it: in a review of
+an invoice update engine, two findings each described a branching, temporal workflow, and one
+flowchart apiece made them legible where correct prose had not. The rule is now one diagram per
+workflow finding, beneath its prose, never instead of it — with the theme rule and the budget
+interaction stated. `review_lint.py` stopped counting mermaid source as prose, and stopped failing a
+PR description for carrying a diagram, which this file now recommends where the change is a
+workflow. `pr_lint.py` is unchanged on purpose: a fence in a body is raw characters in a commit.
