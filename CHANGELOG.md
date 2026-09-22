@@ -13,6 +13,21 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **The Algorithm's wording no longer trips the `reasoning_extraction` refusal.**
+  Workers on Opus 5 and Opus 5.5 were refused under that category, and the API said
+  the request looked like "reverse engineering or duplicating model outputs"
+  (`req_011CfKGP9yoALfXSqKZc4Nfo`, Opus 5.5, straight after loading
+  `locus:locus-algorithm`; `req_011CfJgWvma2ep2Za2j1TyCx`, Opus 5). The OBSERVE
+  output called "reverse engineering" is now **request analysis** (`REQUEST
+  ANALYSIS:`) in `algorithm/v2.0.md`, the generated skill, and the OpenCode
+  CLAUDE.md template. Output Requirements now ask for a record of the work in the
+  response: the phase, what it found, what was decided, the evidence and the next
+  step. The old text asked for a "visible response" so the user could "trace how the
+  work moved". "One-sentence reasoning" is now "rationale", and "intermediate
+  reasoning" (when not to dispatch) is now "intermediate steps", in the spec and in
+  `protocols/orchestration.md`. Only wording changed. Phases, ISC floors, effort
+  tiers and the classification check are the same. v0.5.1 (#50) reworded some of
+  this already, and that wasn't enough.
 - **`review_lint.py` lints a principal's review.** It found reviews only by the
   `agent:<KEY>/<mode>` marker, which a review posted as the principal carries by
   design. On the reviews posted most it printed "no agent review found" and checked
