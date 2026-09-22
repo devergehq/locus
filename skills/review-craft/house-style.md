@@ -864,7 +864,7 @@ reading.
 
 `review_lint.py` checks the posted review against these rules —
 index shape, method line, table links, verdict arithmetic, severity rails, the four parts,
-disposition chips, thread budgets, dead anchors, and that the PR description was left alone. It reads
+disposition chips, thread budgets and dead anchors. The description is `pr_lint.py`'s job. It reads
 GitHub's rendered HTML rather than the markdown you sent.
 
 **A review is not finished until the linter passes.** Run it, fix what it names, run it again, and
@@ -978,4 +978,7 @@ flowchart apiece made them legible where correct prose had not. The rule is now 
 workflow finding, beneath its prose, never instead of it — with the theme rule and the budget
 interaction stated. `review_lint.py` stopped counting mermaid source as prose, and stopped failing a
 PR description for carrying a diagram, which this file now recommends where the change is a
-workflow. `pr_lint.py` is unchanged on purpose: a fence in a body is raw characters in a commit.
+workflow. `pr_lint.py` is unchanged on purpose: a fence in a body is raw characters in a commit. The same
+day, `review_lint.py` dropped its check on the PR description altogether: it failed any description
+carrying `<details>`, which this file has permitted since 18 September, and with mermaid gone too it
+tested nothing `pr_lint.py` does not already own.

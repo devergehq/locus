@@ -229,11 +229,11 @@ def main():
     L.check(not broken, "threads.renders_clean",
             f"{len(broken)} comment(s) with an unpaired backtick — a mis-paired span swallows words")
 
-    # ---- PR description must be untouched by the review style. Mermaid is not the tell: house-style
-    # recommends a diagram in a description whose change is a workflow, and pr_lint budgets it there.
-    pr = gh("api", f"repos/{a.repo}/pulls/{a.pr}")
-    L.check("<details>" not in (pr["body"] or ""),
-            "description.no_html", "descriptions are out of scope and must stay git-log readable")
+    # The PR description is not checked here. It once was, on the premise that descriptions were
+    # out of scope and a `<details>` or mermaid block in one meant the review style had leaked in.
+    # Both are now house style for descriptions, and `pr_lint.py` owns that artefact - its budget
+    # counts folds and fences raw, and `fold-in-body` warns on bulk. A review linter that failed
+    # on the author's description graded the reviewer for something they did not write.
 
     sys.exit(L.report())
 
