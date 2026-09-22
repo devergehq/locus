@@ -13,6 +13,19 @@ refuses to build when they disagree.
 
 ### Changed
 
+- **`review-craft` draws workflow findings.** Where a finding — or the Problem-fit
+  paragraph — describes a sequence, a state machine, a before/after ordering, a
+  transaction boundary or a branching failure, a small mermaid flowchart goes directly
+  beneath its prose, which points at it. Supplement, never replace; one per workflow
+  finding; a single predicate gets none; any `classDef` with a `fill:` also sets
+  `color:` so it reads in GitHub's dark theme. This replaces a cap of one diagram per
+  review. `review_lint.py` no longer counts mermaid source against a thread's or the
+  body's prose budget, and no longer fails a PR description for carrying a diagram.
+  `pr_lint.py` is unchanged: in a body the fence is raw characters in the squash commit.
+- **`review_lint.py` no longer checks the PR description.** Its `description.no_html`
+  check failed any description containing `<details>`, which `house-style.md` has
+  permitted since 18 September — so a review of a well-formed PR could fail on text the
+  reviewer never wrote. Descriptions belong to `pr_lint.py`, which already budgets folds.
 - **Dispatcher workers use allele for helpers and wait for a slot, never falling back
   on their own.** The "Independent help" rule in `skills/dispatcher/workers/_common.md`
   now makes `allele_sessions_create` the helper vehicle with no hedge. What happens next

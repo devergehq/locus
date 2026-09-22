@@ -32,8 +32,15 @@ def gh(*args):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 
+MERMAID = re.compile(r"^[ \t>]*```mermaid\b.*?^[ \t>]*```[ \t]*$", re.S | re.M)
+
+
 def visible(md: str) -> str:
-    return re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
+    """Folds and diagrams removed. A mermaid fence is read as a picture, not as prose, and its
+    source alone runs ~700 characters for a dozen nodes — a single-finding thread's whole budget.
+    Charging it would punish exactly the findings house-style asks to draw."""
+    s = re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
+    return MERMAID.sub("", s)
 
 
 def prose(md: str) -> str:
@@ -222,10 +229,11 @@ def main():
     L.check(not broken, "threads.renders_clean",
             f"{len(broken)} comment(s) with an unpaired backtick — a mis-paired span swallows words")
 
-    # ---- PR description must be untouched by the review style
-    pr = gh("api", f"repos/{a.repo}/pulls/{a.pr}")
-    L.check("<details>" not in (pr["body"] or "") and "```mermaid" not in (pr["body"] or ""),
-            "description.no_html", "descriptions are out of scope and must stay git-log readable")
+    # The PR description is not checked here. It once was, on the premise that descriptions were
+    # out of scope and a `<details>` or mermaid block in one meant the review style had leaked in.
+    # Both are now house style for descriptions, and `pr_lint.py` owns that artefact - its budget
+    # counts folds and fences raw, and `fold-in-body` warns on bulk. A review linter that failed
+    # on the author's description graded the reviewer for something they did not write.
 
     sys.exit(L.report())
 

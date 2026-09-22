@@ -63,6 +63,11 @@ Everything below is argued in `house-style.md`. This is the part worth holding i
 - **Numbers, not adjectives.** "1 in 81 draws", not "quite likely".
 - **Say what you did not check.** The coverage gap is the most honest number in a review and the
   easiest one to bury.
+- **Draw the workflow.** Where a finding describes a sequence, a state machine, a before/after
+  ordering, a transaction boundary or a branching failure, put a small ```` ```mermaid ```` flowchart
+  directly beneath its prose and point the prose at it. Supplement, never replace. One per workflow
+  finding, a dozen nodes or fewer; a single predicate gets none. Any `classDef` with a `fill:` also
+  sets `color:` — GitHub renders both themes. Free in a review; counted raw in a PR body.
 
 ### Writing the PR description
 
@@ -146,6 +151,12 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**22 September 2026.** Workflow findings now carry a mermaid diagram beneath their prose, replacing
+a cap of one diagram per review that the first live evidence ran against. `review_lint.py` excludes
+mermaid from prose budgets and no longer checks the PR description at all — that stale check
+failed any description with `<details>`, which this skill permits; `pr_lint.py` owns descriptions
+and still counts a fence raw. Argued in `house-style.md` under "Draw the workflow".
 
 **20 September 2026 (second change).** Template fidelity is now checked: `pr_lint.py` reports
 which template a description is closest to and what it is missing. Severity follows provenance — a
