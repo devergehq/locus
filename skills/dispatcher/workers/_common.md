@@ -75,12 +75,27 @@ your principal needs to know.
 
 ## Independent help
 
-For a second opinion (self-review, a blind reviewer, an investigation branch), dispatch an allele
+For a second opinion (self-review, a blind reviewer, an investigation branch), create an allele
 session with `allele_sessions_create`, composing its prompt with `locus agent compose` using
-different traits from your own. Discard your helper (`allele_sessions_discard`) once you have its
-report, because helpers count against the global session cap. If allele refuses (depth or capacity), use
+different traits from your own. That is the vehicle for a helper. Call it first, every time.
+
+Helpers count against the global session cap, and that is why you **discard your helper**
+(`allele_sessions_discard`) as soon as you have its report. It is never a reason to skip allele.
+Guessing the cap is near, or "sparing a slot", is not a refusal. Economising in advance moves the
+work to a vehicle nobody can see or interrupt, and allele is the one that counts slots.
+
+**A capacity error means wait.** If `allele_sessions_create` returns one, the system is busy,
+not absent. Tell the Dispatcher you are waiting for a slot and quote allele's error verbatim.
+Keep working on anything the helper's answer doesn't block, and retry the create until a slot
+frees up. A full cap never unlocks a less visible vehicle.
+
+**A depth-limit error means report it.** Quote the error in your ledger note and your report, and
+carry on without the helper. Don't route around it.
+
+**OpenCode only when your principal asks for it.** Use
 `locus delegate run --backend opencode --task-kind general --mode native --dir . --prompt "<prompt>" --output json`
-instead. Say which one you used. Never use native Task/Agent subagents.
+only when they have asked you to, and say so in your report. Never use native Task/Agent
+subagents.
 
 ## Never
 

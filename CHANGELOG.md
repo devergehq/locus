@@ -26,6 +26,21 @@ refuses to build when they disagree.
   check failed any description containing `<details>`, which `house-style.md` has
   permitted since 18 September — so a review of a well-formed PR could fail on text the
   reviewer never wrote. Descriptions belong to `pr_lint.py`, which already budgets folds.
+- **Dispatcher workers use allele for helpers and wait for a slot, never falling back
+  on their own.** The "Independent help" rule in `skills/dispatcher/workers/_common.md`
+  now makes `allele_sessions_create` the helper vehicle with no hedge. What happens next
+  depends on the response:
+  - A capacity error means wait and retry. The worker tells the Dispatcher it is waiting
+    and quotes allele's error.
+  - A depth error is reported and the worker carries on without the helper.
+  - OpenCode is used only when the principal asks for it.
+
+  The session cap is still mentioned, but now only as the reason to discard a helper
+  promptly. `stack.v2.md` §3 matches: a coordinator whose blind reviewer hits a capacity
+  refusal waits for a slot instead of posting its plan unreviewed. This lines the briefs
+  up with the Algorithm's "Busy is not absent". On 2026-09-21 four review workers had read
+  the cap warning as permission to send their blind reviewer to OpenCode "to spare a
+  slot" while allele had room.
 
 ## [0.5.0] — 2026-09-20
 
