@@ -9,6 +9,20 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [Unreleased]
+
+### Changed
+
+- **`review-craft` draws workflow findings.** Where a finding — or the Problem-fit
+  paragraph — describes a sequence, a state machine, a before/after ordering, a
+  transaction boundary or a branching failure, a small mermaid flowchart goes directly
+  beneath its prose, which points at it. Supplement, never replace; one per workflow
+  finding; a single predicate gets none; any `classDef` with a `fill:` also sets
+  `color:` so it reads in GitHub's dark theme. This replaces a cap of one diagram per
+  review. `review_lint.py` no longer counts mermaid source against a thread's or the
+  body's prose budget, and no longer fails a PR description for carrying a diagram.
+  `pr_lint.py` is unchanged: in a body the fence is raw characters in the squash commit.
+
 ## [0.5.0] — 2026-09-20
 
 `review-craft` stops carrying one repository in its head, and starts respecting the

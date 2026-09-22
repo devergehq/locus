@@ -32,8 +32,15 @@ def gh(*args):
     return json.loads(r.stdout) if r.stdout.strip() else None
 
 
+MERMAID = re.compile(r"^[ \t>]*```mermaid\b.*?^[ \t>]*```[ \t]*$", re.S | re.M)
+
+
 def visible(md: str) -> str:
-    return re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
+    """Folds and diagrams removed. A mermaid fence is read as a picture, not as prose, and its
+    source alone runs ~700 characters for a dozen nodes — a single-finding thread's whole budget.
+    Charging it would punish exactly the findings house-style asks to draw."""
+    s = re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
+    return MERMAID.sub("", s)
 
 
 def prose(md: str) -> str:
@@ -222,9 +229,10 @@ def main():
     L.check(not broken, "threads.renders_clean",
             f"{len(broken)} comment(s) with an unpaired backtick — a mis-paired span swallows words")
 
-    # ---- PR description must be untouched by the review style
+    # ---- PR description must be untouched by the review style. Mermaid is not the tell: house-style
+    # recommends a diagram in a description whose change is a workflow, and pr_lint budgets it there.
     pr = gh("api", f"repos/{a.repo}/pulls/{a.pr}")
-    L.check("<details>" not in (pr["body"] or "") and "```mermaid" not in (pr["body"] or ""),
+    L.check("<details>" not in (pr["body"] or ""),
             "description.no_html", "descriptions are out of scope and must stay git-log readable")
 
     sys.exit(L.report())
