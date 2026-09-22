@@ -22,6 +22,10 @@ refuses to build when they disagree.
   review. `review_lint.py` no longer counts mermaid source against a thread's or the
   body's prose budget, and no longer fails a PR description for carrying a diagram.
   `pr_lint.py` is unchanged: in a body the fence is raw characters in the squash commit.
+- **`review_lint.py` no longer checks the PR description.** Its `description.no_html`
+  check failed any description containing `<details>`, which `house-style.md` has
+  permitted since 18 September — so a review of a well-formed PR could fail on text the
+  reviewer never wrote. Descriptions belong to `pr_lint.py`, which already budgets folds.
 
 ## [0.5.0] — 2026-09-20
 
