@@ -154,8 +154,9 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 
 **22 September 2026.** Workflow findings now carry a mermaid diagram beneath their prose, replacing
 a cap of one diagram per review that the first live evidence ran against. `review_lint.py` excludes
-mermaid from prose budgets and no longer fails a description for carrying one; `pr_lint.py` still
-counts it raw. Argued in `house-style.md` under "Draw the workflow".
+mermaid from prose budgets and no longer checks the PR description at all — that stale check
+failed any description with `<details>`, which this skill permits; `pr_lint.py` owns descriptions
+and still counts a fence raw. Argued in `house-style.md` under "Draw the workflow".
 
 **20 September 2026 (second change).** Template fidelity is now checked: `pr_lint.py` reports
 which template a description is closest to and what it is missing. Severity follows provenance — a
