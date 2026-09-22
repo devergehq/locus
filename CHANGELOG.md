@@ -9,6 +9,19 @@ which puts breaking changes in the MINOR position.
 tag must equal that version with a leading `v`; `.github/workflows/release.yml`
 refuses to build when they disagree.
 
+## [Unreleased]
+
+### Changed
+
+- **Dispatcher workers use allele for helpers, and fall back only on a real refusal.**
+  The "Independent help" rule in `skills/dispatcher/workers/_common.md` now makes
+  `allele_sessions_create` the helper vehicle with no hedge. OpenCode is allowed only
+  after that call has *returned* a depth-limit or capacity error, and the error must be
+  quoted verbatim in the ledger note and in the report to the Dispatcher. The session cap
+  is still mentioned, but now only as the reason to discard a helper promptly. On
+  2026-09-21 four review workers had read it as permission to send their blind reviewer
+  to OpenCode "to spare a slot" while allele had room.
+
 ## [0.5.0] — 2026-09-20
 
 `review-craft` stops carrying one repository in its head, and starts respecting the
