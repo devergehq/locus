@@ -745,11 +745,16 @@ it, **post the plan comment with your own coverage answer and the note that the 
 not complete**, and carry on. An unreviewed coverage claim that says it is unreviewed is worth
 more than a plan comment that never gets written.
 
-The same exit covers a reviewer that was never **permitted** to start — a context without session
-creation, allele unreachable, a depth or capacity refusal. That is a different failure from a
-timeout and it deserves saying out loud rather than being mapped onto one: name which of the two
-happened in the plan comment, because "nobody could review this" and "the reviewer did not answer
-in time" carry different weight for whoever reads it.
+**A capacity refusal is not this exit. Wait for a slot.** If `allele_sessions_create` returns a
+capacity error, the system is busy, not absent. Tell the Dispatcher you are waiting for a slot for
+the blind reviewer, quoting allele's error verbatim, and retry until one frees up. No helper
+exists yet, so nothing is orphaned while you wait. Don't post the plan unreviewed to save time,
+and don't move the reviewer to OpenCode unless your principal asks you to.
+
+The same exit covers a reviewer that was never **permitted** to start: a context without session
+creation, allele unreachable, or a depth refusal. That is a different failure from a timeout, and
+the plan comment should say which of the two happened. "Nobody could review this" and "the
+reviewer did not answer in time" carry different weight for whoever reads it.
 
 ---
 

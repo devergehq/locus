@@ -84,12 +84,18 @@ Helpers count against the global session cap, and that is why you **discard your
 Guessing the cap is near, or "sparing a slot", is not a refusal. Economising in advance moves the
 work to a vehicle nobody can see or interrupt, and allele is the one that counts slots.
 
-OpenCode is allowed only after `allele_sessions_create` has **returned** a depth-limit or
-capacity error:
-`locus delegate run --backend opencode --task-kind general --mode native --dir . --prompt "<prompt>" --output json`.
-When you fall back, quote allele's error verbatim in your ledger note and in your report to the
-Dispatcher. A fallback without a quoted error is one allele never refused. Never use native
-Task/Agent subagents.
+**A capacity error means wait.** If `allele_sessions_create` returns one, the system is busy,
+not absent. Tell the Dispatcher you are waiting for a slot and quote allele's error verbatim.
+Keep working on anything the helper's answer doesn't block, and retry the create until a slot
+frees up. A full cap never unlocks a less visible vehicle.
+
+**A depth-limit error means report it.** Quote the error in your ledger note and your report, and
+carry on without the helper. Don't route around it.
+
+**OpenCode only when your principal asks for it.** Use
+`locus delegate run --backend opencode --task-kind general --mode native --dir . --prompt "<prompt>" --output json`
+only when they have asked you to, and say so in your report. Never use native Task/Agent
+subagents.
 
 ## Never
 
