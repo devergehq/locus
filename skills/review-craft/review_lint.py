@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Lint an agent review against house-style.md. Deterministic, read-only.
+"""Lint a posted review against house-style.md. Deterministic, read-only.
 
-    python3 review_lint.py <PR> --repo OWNER/REPO
+    python3 review_lint.py <PR> --repo OWNER/REPO                 # agent review, else your latest
+    python3 review_lint.py <PR> --repo OWNER/REPO --review-id ID  # exactly this review
 
-Exit 0 when every check passes, 1 otherwise. Workers run this before reporting done;
-the Dispatcher runs it before reporting that a review is ready.
+Exit 0 when every check passes, 1 otherwise, 2 when there was nothing to lint. Workers run this
+before reporting done; the Dispatcher runs it before reporting that a review is ready.
+
+A review posted as the principal carries no `agent:` marker — house-style forbids one — and this
+linter used to find only marked reviews, so it printed "no agent review found" and checked nothing
+on exactly the reviews posted most. With no marked review it now lints your latest review, and says
+which one it chose: a PASS that does not name what it read carries no information.
 
 `--repo` is required and has no default. It carried one for as long as this script lived
 beside a single repo's dispatcher, which made it a silent footgun the moment it did not:
@@ -30,6 +36,12 @@ def gh(*args):
     if r.returncode:
         sys.exit(f"gh {' '.join(args[:3])}: {r.stderr.strip()[:200]}")
     return json.loads(r.stdout) if r.stdout.strip() else None
+
+
+def die(msg):
+    """Nothing to lint is 'could not run' (2), never a verdict on a review nobody read."""
+    print(msg, file=sys.stderr)
+    sys.exit(2)
 
 
 MERMAID = re.compile(r"^[ \t>]*```mermaid\b.*?^[ \t>]*```[ \t]*$", re.S | re.M)
@@ -76,6 +88,90 @@ def count_findings(row_lines: list[str]) -> int:
     return n
 
 
+# A finding written in the body rather than on a thread: a heading carrying a severity word.
+# Case-sensitive on purpose — "what should change" is a heading, "Should" is a severity.
+FINDING_HEAD = re.compile(r"^#{2,6}[ \t]+.*\b(Blocker|Should|Nit|Question)\b.*$", re.M)
+HEADING = re.compile(r"^#{1,6}[ \t]+.*$", re.M)
+FENCE = re.compile(r"^[ \t>]*```.*?^[ \t>]*```[ \t]*$", re.S | re.M)
+
+
+def headings(md: str) -> list[re.Match]:
+    """Headings outside code fences — a `# comment` in a shell block is not a section."""
+    fences = [m.span() for m in FENCE.finditer(md)]
+    return [m for m in HEADING.finditer(md) if not any(a <= m.start() < b for a, b in fences)]
+
+
+def sections(md: str) -> list[tuple[str, str]]:
+    """(heading, whole section) for each finding written in the body — the sectioned layout."""
+    md = md or ""
+    heads = headings(md)
+    return [(m.group(0), md[m.start():heads[i + 1].start() if i + 1 < len(heads) else len(md)])
+            for i, m in enumerate(heads) if FINDING_HEAD.fullmatch(m.group(0))]
+
+
+# GitHub renders a body in a ~760px column. A table wider than that is not scrolled: its cells
+# are squeezed, and long words are broken between letters ("Que stio n"). Two things cause it —
+# a prose cell that claims the width, and a token too long to wrap. Thresholds are set to catch
+# those and nothing a house index carries. Calibrated on live reviews: one-sentence claims ran to
+# 131 characters and read fine; the cells that broke were quoted passages of 160+ carrying paths.
+# A `basename.ts:NN` link stays under 30; a full path is what crosses 40.
+CELL_PROSE, CELL_TOKEN = 140, 40
+
+
+def cells(md: str) -> list[str]:
+    s = FENCE.sub("", md or "")
+    out = []
+    for line in s.splitlines():
+        line = re.sub(r"^[ \t>]*", "", line).strip()
+        if not line.startswith("|") or re.match(r"^\|[\s:|-]+\|?$", line):
+            continue
+        # split on pipes outside code spans
+        parts, buf, code = [], "", False
+        for ch in line.strip("|"):
+            if ch == "`":
+                code = not code
+            if ch == "|" and not code:
+                parts.append(buf); buf = ""
+            else:
+                buf += ch
+        parts.append(buf)
+        out += [p.strip() for p in parts if p.strip()]
+    return out
+
+
+def shown(cell: str) -> str:
+    """What the cell renders as: link text without its target, no emphasis or code ticks."""
+    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", cell)
+    return re.sub(r"[*`_]+", "", s).strip()
+
+
+def layout(md: str) -> tuple[list[str], list[str]]:
+    prose_cells, long_tokens = [], []
+    for c in cells(md):
+        t = shown(c)
+        if len(t) > CELL_PROSE:
+            prose_cells.append(f"{len(t)} chars: {t[:40]}…")
+        long_tokens += [f"{len(w)} chars: {w[:40]}…" for w in t.split() if len(w) > CELL_TOKEN]
+    return prose_cells, long_tokens
+
+
+def unhomed_diagrams(md: str) -> int:
+    """Mermaid blocks whose nearest heading is neither a finding nor Problem fit, with no finding
+    title between them — a diagram floating free of the thing it explains."""
+    n = 0
+    for m in MERMAID.finditer(md or ""):
+        before = md[:m.start()]
+        heads = headings(before)
+        head = heads[-1] if heads else None
+        since = before[head.end():] if head else before
+        if head and (FINDING_HEAD.fullmatch(head.group(0)) or re.search(r"problem fit", head.group(0), re.I)):
+            continue
+        if SEV.search(since):
+            continue
+        n += 1
+    return n
+
+
 class Lint:
     def __init__(self):
         self.results: list[tuple[bool, str, str]] = []
@@ -102,23 +198,45 @@ def main():
     ap.add_argument("pr", type=int)
     ap.add_argument("--repo", required=True, metavar="OWNER/REPO",
                     help="the repository the PR belongs to; no default, deliberately")
+    ap.add_argument("--review-id", type=int, metavar="ID",
+                    help="lint exactly this review, marker or not, whoever posted it")
     a = ap.parse_args()
     L = Lint()
 
     reviews = gh("api", f"repos/{a.repo}/pulls/{a.pr}/reviews", "--paginate") or []
     me = gh("api", "user")["login"]
     bodies = [r for r in reviews if r["user"]["login"] == me and MARKER.search(r["body"] or "")]
-    if not bodies:
-        sys.exit("no agent review found on this PR")
-    index = max(bodies, key=lambda r: len(r["body"]))
+    if a.review_id:
+        index = next((r for r in reviews if r["id"] == a.review_id), None)
+        if not index:
+            die(f"review {a.review_id} is not on {a.repo}#{a.pr}")
+    elif bodies:
+        index = max(bodies, key=lambda r: len(r["body"]))
+    else:
+        # A principal's review: no marker, by house style. Reviews come back oldest first.
+        mine = [r for r in reviews if r["user"]["login"] == me and (r["body"] or "").strip()]
+        if not mine:
+            die(f"no review by {me} with a body on {a.repo}#{a.pr} — pass --review-id to lint another")
+        index = mine[-1]
+    agent = bool(MARKER.search(index["body"] or ""))
+    author = index["user"]["login"]
+    print(f"review {index['id']} by {author} · " + ("agent review" if agent else "principal review, no marker")
+          + f" · submitted {index.get('submitted_at') or '?'}\n")
     b = index["body"]
-    vis = visible(b)
+    found = sections(b)
+    rest = b
+    for _, sec in found:          # a finding in the body is budgeted as a thread, not as index prose
+        rest = rest.replace(sec, "")
+    vis = visible(rest)
 
     # ---- index
-    L.check(len([x for x in bodies if len(x["body"]) > 600]) == 1, "index.single",
-            f"{len(bodies)} agent bodies, {len([x for x in bodies if len(x['body']) > 600])} substantial")
-    L.check(b.lstrip().startswith("🤖"), "index.header")
-    L.check(MARKER.search(b), "index.marker")
+    if agent:
+        # A principal's review is one of their reviews on the PR, not the only one; and it
+        # carries neither the header nor the marker, deliberately. Those checks are the agent's.
+        L.check(len([x for x in bodies if len(x["body"]) > 600]) == 1, "index.single",
+                f"{len(bodies)} agent bodies, {len([x for x in bodies if len(x['body']) > 600])} substantial")
+        L.check(b.lstrip().startswith("🤖"), "index.header")
+        L.check(MARKER.search(b), "index.marker")
     method = next((l for l in b.splitlines() if l.startswith("**Method")), "")
     L.check(method and re.search(r"not (reviewed|checked)", method, re.I), "method.coverage",
             "the Method line must name what was NOT reviewed, as a count or a list")
@@ -128,7 +246,8 @@ def main():
             "method line under the verdict")
     L.check("### Problem fit" in b, "index.problem_fit")
     open_rows, done_rows = rows(b, "Open"), rows(b, "Resolved")
-    L.check(open_rows or done_rows, "index.tables", f"{len(open_rows)} open rows, {len(done_rows)} resolved rows")
+    L.check(open_rows or done_rows or found, "index.tables",
+            f"{len(open_rows)} open rows, {len(done_rows)} resolved rows, {len(found)} body sections")
     L.check(re.search(r"Suppressed", b), "index.suppressed")
     L.check("](#" not in b, "index.no_dead_anchors", "anchors never resolve in a review body")
     words = len(re.sub(r"^\|.*\|$", "", vis, flags=re.M).split())
@@ -141,7 +260,7 @@ def main():
         claimed_open = re.search(r"(\d+)\s+open", verdict.group("v"))
         claimed_fixed = re.search(r"(\d+)\s+fixed", verdict.group("v"))
         if claimed_open:
-            n = count_findings(open_rows)
+            n = count_findings(open_rows) if open_rows or done_rows else count_findings([h for h, _ in found])
             L.check(int(claimed_open.group(1)) == n, "verdict.open_count",
                     f"says {claimed_open.group(1)} open, tables hold {n}")
         if not claimed_fixed and re.search(r"all fixed", verdict.group("v"), re.I):
@@ -156,7 +275,7 @@ def main():
                     f"says {claimed_fixed.group(1)} fixed, tables hold {n}")
 
     if verdict:
-        all_rows = open_rows + done_rows
+        all_rows = open_rows + done_rows + [h for h, _ in found]
         for word, plural in (("Blocker", "Blockers"), ("Should", "Should"), ("Nit", "Nits")):
             claimed = re.search(rf"(\d+)\s+{plural}\b", verdict.group("v"))
             if not claimed:
@@ -168,10 +287,18 @@ def main():
     # ---- threads
     comments = gh("api", f"repos/{a.repo}/pulls/{a.pr}/comments?per_page=100", "--paginate") or []
     # replies (moved proof, answers to the author) are not findings and carry no shape rules
-    mine = [c for c in comments if MARKER.search(c["body"] or "") and not c.get("in_reply_to_id")]
-    L.check(mine, "threads.exist", f"{len(mine)} agent threads")
-    bad_marker = [c for c in mine if not MARKER.search(c["body"].strip().splitlines()[-1])]
-    L.check(not bad_marker, "threads.marker_last", f"{len(bad_marker)} thread(s) not ending with the marker")
+    if agent:
+        mine = [c for c in comments if MARKER.search(c["body"] or "") and not c.get("in_reply_to_id")]
+        L.check(mine, "threads.exist", f"{len(mine)} agent threads")
+        bad_marker = [c for c in mine if not MARKER.search(c["body"].strip().splitlines()[-1])]
+        L.check(not bad_marker, "threads.marker_last", f"{len(bad_marker)} thread(s) not ending with the marker")
+    else:
+        # No marker to find them by: the threads this review carries, and the author's
+        # finding-shaped threads from earlier rounds. Their casual comments are not ours to grade.
+        mine = [c for c in comments if not c.get("in_reply_to_id") and (
+                c.get("pull_request_review_id") == index["id"]
+                or c["user"]["login"] == author and SEV.search(c["body"] or ""))]
+        L.check(mine or found, "threads.exist", f"{len(mine)} threads, {len(found)} body sections")
     # read the title (the line carrying the severity), not line 0 — an alert marker sits above it,
     # and a check that depends on layout tests the wrong thing
     def title_of(c):
@@ -215,13 +342,37 @@ def main():
     L.check(not bad_parts, "threads.four_parts", f"{len(bad_parts)} missing What/Why/What I'd do")
     L.check(not no_disp, "threads.disposition_top", f"{len(no_disp)} without a disposition chip")
     L.check(not over, "threads.budget", "; ".join(over[:3]))
+    over_sec = []
+    for head, sec in found:
+        held = count_findings([head])
+        budget, n = (700 if held == 1 else 250 * held), len(prose(sec))
+        if n > budget:
+            over_sec.append(f"{prose(head)[:40]} {n}>{budget}")
+    if found:
+        L.check(not over_sec, "sections.budget", "; ".join(over_sec[:3]))
+
+    # ---- layout at GitHub's width
+    wide, long_tok = [], []
+    for md in [b] + [c["body"] for c in mine]:
+        p, t = layout(md)
+        wide += p; long_tok += t
+    L.check(not wide, "layout.table_prose",
+            f"{len(wide)} table cell(s) over {CELL_PROSE} characters — prose goes under a heading; "
+            + "; ".join(wide[:2]))
+    L.check(not long_tok, "layout.table_tokens",
+            f"{len(long_tok)} unbroken token(s) over {CELL_TOKEN} characters in a table cell — "
+            "GitHub breaks them between letters; " + "; ".join(long_tok[:2]))
+    floating = unhomed_diagrams(b)
+    L.check(not floating, "layout.diagram_homed",
+            f"{floating} diagram(s) in the body not under a finding or Problem fit", warn_only=True)
 
     # An unpaired backtick is the signature of a mis-paired span; a backtick *surviving into the
     # rendered text* is not — ``code with a `tick` inside`` is legitimate and renders correctly.
     rendered = gh_full(f"repos/{a.repo}/pulls/{a.pr}/comments?per_page=100") or []
     broken = []
+    ids = {c["id"] for c in mine}
     for c in rendered:
-        if not MARKER.search(c.get("body") or ""):
+        if not (MARKER.search(c.get("body") or "") if agent else c["id"] in ids):
             continue
         raw = re.sub(r"```.*?```", "", c["body"], flags=re.S)   # fenced blocks pair by definition
         if raw.count("`") % 2:

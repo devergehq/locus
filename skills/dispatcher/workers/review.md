@@ -52,7 +52,9 @@ signature unless they ask for one.
    linter. Claiming this ledger entry, labelling the ticket and never posting to GitHub are this
    brief's job, not the skill's.
 6b. **Lint it** before you tell anyone it's ready: `review_lint.py <PR> --repo OWNER/REPO`, from
-   the `review-craft` skill, must pass. Paste the final output in your report.
+   the `review-craft` skill, must pass. Paste the final output in your report. It reads only what
+   is posted, so once your principal's review is up, run it again with `--review-id <id>` from the
+   post's response and fix what it names by editing the review, not by posting another.
 7. `D ledger put <KEY> status=done head_sha=<sha>` → message the Dispatcher: `Review #<n> ready`.
 8. Wait. Your principal will push back, ask questions, and edit. That conversation is the review.
 

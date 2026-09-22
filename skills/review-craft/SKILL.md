@@ -68,6 +68,11 @@ Everything below is argued in `house-style.md`. This is the part worth holding i
   directly beneath its prose and point the prose at it. Supplement, never replace. One per workflow
   finding, a dozen nodes or fewer; a single predicate gets none. Any `classDef` with a `fill:` also
   sets `color:` — GitHub renders both themes. Free in a review; counted raw in a PR body.
+- **Fit GitHub's column.** A body renders about 760px wide, and a table that can't fit breaks its
+  words between letters. Cells hold a severity, an id, a one-line claim or a bare line link, and
+  nothing longer. A finding that needs prose becomes a section: a heading with severity, id and
+  title, full-width prose beneath it with `file:line` linked inside a sentence, and its diagram
+  directly below.
 
 ### Writing the PR description
 
@@ -108,7 +113,8 @@ Everything below is argued in `house-style.md`. This is the part worth holding i
 ## Using the linters
 
 ```bash
-python3 review_lint.py <PR> --repo OWNER/REPO         # a posted review
+python3 review_lint.py <PR> --repo OWNER/REPO         # a posted review: agent's, else your latest
+python3 review_lint.py <PR> --repo OWNER/REPO --review-id <ID>   # exactly that review
 python3 pr_lint.py --repo OWNER/REPO --pr <PR>        # a PR description
 python3 pr_lint.py draft.md --changed-lines 50        # a description before the PR exists
 ```
@@ -124,6 +130,11 @@ against a guessed denominator reports PASS about nothing.
 
 Both exit **0** on pass (warnings included), **1** on errors, **2** when they could not run. Both
 check **mechanics only**: a clean run means nothing is broken, not that anything is worth reading.
+
+**A principal's review is linted too.** It carries no `agent:` marker by house style, and the
+linter once found reviews only by that marker, so it checked nothing on the reviews posted most.
+With no marked review it lints your latest and says so on its first line. Only the agent header
+and marker checks are skipped.
 
 `review_lint.py` reads GitHub's *rendered* HTML rather than the markdown you sent, because the
 failure mode it exists to catch is silent: a malformed body returns HTTP 201 and a perfectly
@@ -151,6 +162,11 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**22 September 2026, later.** "Fit GitHub's column": no prose or long paths in table cells, a
+finding that needs prose written as a section, and a body diagram under its finding.
+`review_lint.py` now lints a principal's review, which carries no marker (latest by you, or
+`--review-id`). It fails wide cells and long tokens, and warns on a diagram with no finding above it.
 
 **22 September 2026.** Workflow findings now carry a mermaid diagram beneath their prose, replacing
 a cap of one diagram per review that the first live evidence ran against. `review_lint.py` excludes

@@ -11,8 +11,25 @@ refuses to build when they disagree.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`review_lint.py` lints a principal's review.** It found reviews only by the
+  `agent:<KEY>/<mode>` marker, which a review posted as the principal carries by
+  design. On the reviews posted most it printed "no agent review found" and checked
+  nothing. With no marked review it now lints your latest review. `--review-id ID`
+  lints exactly one, whoever posted it. Only the agent header and marker checks are
+  skipped, and the first line names the review that was read. Nothing to lint now
+  exits 2 rather than 1. `scripts/test-review-lint.sh` covers this against a fake `gh`.
+
 ### Changed
 
+- **`review-craft` fits GitHub's column.** A body renders about 760px wide, and a
+  table that can't fit breaks its words between letters. `house-style.md` gains "Fit
+  GitHub's column": cells hold short scannable things only, and a finding that needs
+  prose becomes a section with its diagram beneath it. `review_lint.py` fails a table
+  cell over 140 characters or an unbroken token over 40 (`layout.table_prose`,
+  `layout.table_tokens`), budgets each body section as a thread, and warns on a body
+  diagram that is not under a finding or Problem fit (`layout.diagram_homed`).
 - **`review-craft` draws workflow findings.** Where a finding — or the Problem-fit
   paragraph — describes a sequence, a state machine, a before/after ordering, a
   transaction boundary or a branching failure, a small mermaid flowchart goes directly
