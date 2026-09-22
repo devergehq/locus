@@ -276,8 +276,9 @@ what it did not. The prose had both; the reader had to assemble them.
   the body, and never a diagram of the review's own structure.
 - **Small.** Aim for a dozen nodes or fewer. A chart that needs scrolling has become the wall of
   prose it replaced.
-- **In the body, only under Problem fit** — when the direction argument is itself a workflow. A
-  finding's diagram lives on its thread.
+- **In the body, only under Problem fit or under the finding it draws** — a finding's diagram
+  lives on its thread, or, where the finding is written in the body, directly beneath its section.
+  Never under a table, and never in a "Diagrams" section of its own.
 - **Nits never get one**, which the lighter nit shape already implies.
 
 **Style for both themes.** GitHub renders mermaid in light and dark, and a custom `fill:` with no
@@ -291,6 +292,48 @@ from both the body's word count and a thread's character budget, because a diagr
 picture, and the ~700 characters of source above would otherwise spend a single-finding thread's
 entire 700-character allowance. **A PR description is different** — its diagram is copied into
 the squash commit — and is covered under "A diagram in a PR body costs its source".
+
+## Fit GitHub's column
+
+**GitHub renders a review body, a thread and a PR body in a column about 760px wide, and a table
+wider than that is squeezed, not scrolled.** Once the cells can't fit, it breaks words between
+letters. In one live review the index carried a sentence of prose in each Finding cell and full
+paths in each Where cell, and every column came out as fragments: the header read "Que stio n" and
+"Disp ositi on", the path read "Process InvoiceU pdatesAc tion.php". The diagrams sat below the
+table with nothing tying them to a finding.
+
+**A table cell holds only something short enough to scan**: a severity, an id, a one-line claim, a
+bare `basename:line` link. Never a paragraph, and never a long unbroken token such as a full path,
+a long identifier or a URL as text. When a finding needs more than a line, write it as a section:
+
+**Before**:
+
+```markdown
+| | Where | Finding |
+|---|---|---|
+| 🟠 Should | [`app/Http/Actions/Invoices/ProcessInvoiceUpdatesAction.php:212`](…) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw strands the invoice OPEN |
+```
+
+**After**:
+
+````markdown
+### 🟠 Should · S1 · a correction that throws after the reopen strands the invoice OPEN
+
+The real correction still runs after the reopen, in
+[`ProcessInvoiceUpdatesAction.php:212`](…). If it throws for a reason the dry run missed, the
+invoice is left OPEN — the red path below.
+
+```mermaid
+…
+```
+````
+
+The heading carries severity, id and title, and the prose beneath it gets the full column width.
+The path becomes a link inside a sentence, where it wraps like any other word, and the diagram
+sits under the finding it draws. The index table can stay, with a one-line claim per row; the
+section is where the argument goes. `review_lint.py` fails a table cell over 140 characters and
+an unbroken token over 40, and budgets each finding section the way it budgets a thread. It warns,
+without failing, on a body diagram that is not under a finding or Problem fit.
 
 ## Mechanics
 
@@ -864,8 +907,14 @@ reading.
 
 `review_lint.py` checks the posted review against these rules —
 index shape, method line, table links, verdict arithmetic, severity rails, the four parts,
-disposition chips, thread budgets and dead anchors. The description is `pr_lint.py`'s job. It reads
-GitHub's rendered HTML rather than the markdown you sent.
+disposition chips, thread budgets, dead anchors and table width. The description is `pr_lint.py`'s
+job. It reads GitHub's rendered HTML rather than the markdown you sent.
+
+**It lints a principal's review too.** That review carries no marker, and the linter used to
+look only for marked reviews, so on the review we post most it printed "no agent review found" and
+checked nothing. Now, with no marked review on the PR, it lints your latest one and skips only the
+header and marker checks. `--review-id ID` lints exactly that review. Its first line names the
+review it read. Nothing found exits 2, never PASS.
 
 **A review is not finished until the linter passes.** Run it, fix what it names, run it again, and
 paste the final output when you report. A document nobody can fail is a suggestion; this is the rule.
@@ -885,6 +934,8 @@ paste the final output when you report. A document nobody can fail is a suggesti
 9. Does any finding describe a workflow — a sequence, a state machine, an ordering, a transaction
    boundary, a branching failure — without a diagram beneath it? Does any diagram sit under a
    finding that is really a single predicate?
+10. Would every table survive a 760px column? No prose in a cell, no full path or long token in
+   one, and every body diagram directly under the finding it draws.
 
 ## Before you call a PR ready, check
 
@@ -899,6 +950,8 @@ paste the final output when you report. A document nobody can fail is a suggesti
    `git log` — not the transcript?
 6. If the body carries a diagram, is it compact and unstyled — or would it read better on the
    line it explains, off the budget?
+6b. Does every table in the body hold short cells only, with prose and full paths written in
+   sentences below it?
 7. Has `pr_lint.py` passed against the real PR, not only the draft?
 
 ## Sources
@@ -982,3 +1035,9 @@ workflow. `pr_lint.py` is unchanged on purpose: a fence in a body is raw charact
 day, `review_lint.py` dropped its check on the PR description altogether: it failed any description
 carrying `<details>`, which this file has permitted since 18 September, and with mermaid gone too it
 tested nothing `pr_lint.py` does not already own.
+
+**22 September 2026, later.** "Fit GitHub's column" landed after a principal's review in the house
+index came out as letter fragments at GitHub's width. `review_lint.py` had checked nothing on that
+review: it found reviews only by the agent marker, which a principal's review carries by design,
+so the rules were advice on the reviews that most needed checking. It now lints the latest review
+without a marker, or `--review-id`, and fails wide table cells and long tokens in them.
