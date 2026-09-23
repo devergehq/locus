@@ -42,7 +42,7 @@ Dispatch when any of these hold:
 
 - A single Grep/Glob/Read answers it in seconds.
 - The work depends on context already loaded here that would be costly to transfer.
-- You need to watch the intermediate reasoning directly, not just the result.
+- You need to watch the intermediate steps directly, not just the result.
 - You are at depth 3.
 
 ## Independence, and what actually produces it

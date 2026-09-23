@@ -126,7 +126,7 @@ A response without a classification line is a compliance failure — the user ca
 The Algorithm specification is inlined below. When entering the Algorithm, you MUST:
 
 1. Follow the 7-phase structure: OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN
-2. Start with OBSERVE: reverse-engineer the request, determine effort level, generate ISC criteria, select capabilities
+2. Start with OBSERVE: analyse the request, determine effort level, generate ISC criteria, select capabilities
 3. Produce structured output with phase markers at each transition
 4. Create a PRD at `{home}/data/memory/work/` to track criteria and progress
 5. Never skip phases — each phase feeds the next
