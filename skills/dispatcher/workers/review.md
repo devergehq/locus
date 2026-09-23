@@ -31,7 +31,7 @@ signature unless they ask for one.
 4b. **Lint the description you were given.** `python3 ~/.locus/skills/review-craft/pr_lint.py
    --repo OWNER/REPO --pr <n>`. A description wildly over its budget for the diff is a
    `correction`-tagged finding, not a nit: where the repo squash-merges with `PR_BODY` it becomes
-   a permanent commit message, and the working belongs in a `## Working notes` comment instead. Say
+   a permanent commit message, and the supporting detail belongs in a `## Working notes` comment instead. Say
    what should move, not "shorten it" — an author who obeys "shorten" by paraphrasing destroys the
    specifics, which is the scar the rule was written after.
 

@@ -28,12 +28,12 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
    - **The description is the record of the decision.** Why, what changed in shape, what a
      reviewer should look at, risks, references — and it stops there. Where the repo
      squash-merges with the PR body as the commit message, that *is* the commit message.
-   - **Your working goes in a PR comment whose first line is `## Working notes`**, complete and
-     **verbatim** — the evidence census, the queries and their output, the method, the
-     alternatives you rejected. The description links to it in one line. **Nothing is deleted;
+   - **The supporting detail goes in a PR comment whose first line is `## Working notes`**, complete and
+     **verbatim** — the evidence census, the queries and their output, the checks you ran, and the
+     options you weighed with the reason you chose one. The description links to it in one line. **Nothing is deleted;
      it moves.** If you find yourself paraphrasing to make something fit, you are moving the
      wrong thing: a budget obeyed by paraphrasing is the failure this rule was written after.
-     The comment is identified **by that heading, never by its position** — you move the working
+     The comment is identified **by that heading, never by its position** — you move the notes
      out late, so it is the newest comment, not the first.
    - **Budget the body at `min(4000, max(800, 12 × changed lines))` RAW characters** of the body
      as stored (the Claude Code attribution footer aside), where changed lines is
@@ -48,11 +48,11 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
    Put the link on the ticket with `D comment`.
 6. **Independent self-review, posted on the PR.** It's visible there, like Greptile's, so people
    can see a review happened and compare the two.
-   - Dispatch a reviewer (see "Independent help") that sees only the ticket, the PR description and
-     the diff, not your reasoning. Ask for a verdict line, problem fit, findings (Blocker / Should / Nit / Question ·
-     `path` · `line` · the claim in one line · evidence), what it did not verify, **and its own
-     Suppressed list** — what it considered and chose not to raise, with a reason each. Ask for that
-     explicitly: you cannot write it on its behalf, and without it the reader cannot judge the filtering.
+   - Dispatch a reviewer (see "Independent help") that works only from the ticket, the PR description and
+     the diff — the same inputs a fresh reviewer would have. Ask for a verdict line, problem fit, findings (Blocker / Should / Nit / Question ·
+     `path` · `line` · the claim in one line · evidence), what it did not verify, **and a
+     `Checked, not flagged` list** — issues it looked at and deliberately left out, with a reason each. Ask for that
+     list explicitly: without it the reader cannot tell a clean area from an unchecked one.
    - **Round 1: post its findings word for word as one GitHub review**, event `COMMENT` only. Never
      APPROVE or REQUEST_CHANGES. Don't soften, merge or drop any finding; your responses go in the
      threads, not in its text.

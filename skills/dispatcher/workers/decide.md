@@ -34,7 +34,7 @@ unanswered. Here the questions are the unit of work.
 
 3. **Answer the checkable ones first**, and post each answer as you get it rather than
    batching. A later question often turns on an earlier answer, and a half-answered ticket
-   that shows its working is more useful to the next person than a silent one.
+   that shows what it has answered so far is more useful to the next person than a silent one.
 
    Read-only, always. Production data only when the question needs it, and only ids and
    aggregates in anything you post.
