@@ -730,7 +730,7 @@ not say.
 on — "all children done ⇒ parent delivered" — and the old protocol accepted your own opinion
 on it while demanding an independent reviewer for a fifty-line diff. Dispatch one session
 (see `_common.md`, *Independent help*) with different traits, give it the parent and the
-children and **not your reasoning**, and ask it two questions: what does the parent ask for
+children and **not your own conclusion**, and ask it two questions: what does the parent ask for
 that no child delivers, and what does a child do that the parent never asked for. Merge its
 answer with yours and mark disagreements rather than smoothing them. Discard it when you have
 its report. One session, once, before any dispatch.
