@@ -13,6 +13,18 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **Worker briefs no longer trip the `reasoning_extraction` refusal.** v0.5.3 fixed the
+  Algorithm, but dispatched workers on Opus 5.5 were still refused: DAR-603, 557, 563 and 555
+  (`req_011CfLJyhfDxQxHrAdS8LySX`, `req_011CfLK6z3AkuqFgKhCb7PPQ`,
+  `req_011CfLK34vzSfN6hABdTEVTb`, `req_011CfLKAfHQb85fpSgaUrjoJ`), two of them before the
+  Algorithm skill loaded. Probing on fresh 5.5 sessions found the trigger is cumulative and
+  random: `_common.md` and `implement.md` read together were refused 7 times in 8, and each
+  alone was clear. The worker briefs and `traits.yaml` now describe the work, its evidence and
+  its decisions rather than the agent's own thinking. The self-review asks for a `Checked, not
+  flagged` list, and working notes hold "the supporting detail". Measured on 5.5, the reworded
+  pair had 0 refusals in 8 against 2 in 2 for the old pair run alongside it. One of the 8 was
+  stopped once and recovered on the retry, so the risk is reduced, not gone. Only wording
+  changed.
 - **The Algorithm's wording no longer trips the `reasoning_extraction` refusal.**
   Workers on Opus 5 and Opus 5.5 were refused under that category, and the API said
   the request looked like "reverse engineering or duplicating model outputs"
