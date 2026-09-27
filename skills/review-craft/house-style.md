@@ -335,6 +335,18 @@ section is where the argument goes. `review_lint.py` fails a table cell over 140
 an unbroken token over 40, and budgets each finding section the way it budgets a thread. It warns,
 without failing, on a body diagram that is not under a finding or Problem fit.
 
+**Four columns is the budget**: severity, Where, Finding, Disposition. Nothing beyond it earns the
+space, and the fifth column is the one that bites — fold an id into the severity cell
+(`🔴 **P1** Blocker · in diff`) rather than giving it a column of its own. `review_lint.py` fails a
+table in the **body** over four columns; a *thread* is exempt, because a thread's table is pasted
+evidence and five narrow columns there are what a thread is for.
+
+**Do not reach for a width or a character total to decide this** — both were measured and neither
+separates a broken index from ordinary practice; the log entry for 27 September has the numbers.
+A table that does not fit is *scrolled*, not reflowed: GitHub gives it `width: max-content;
+max-width: 100%; overflow: auto`, so the last column leaves the page and an index whose Disposition
+has to be scrolled to has stopped answering *is there anything for me to do*.
+
 ## Mechanics
 
 Posting is two steps, because a link to a thread needs the thread to exist:
@@ -907,7 +919,7 @@ reading.
 
 `review_lint.py` checks the posted review against these rules —
 index shape, method line, table links, verdict arithmetic, severity rails, the four parts,
-disposition chips, thread budgets, dead anchors and table width. The description is `pr_lint.py`'s
+disposition chips, thread budgets, dead anchors, table width and the body's four-column budget. The description is `pr_lint.py`'s
 job. It reads GitHub's rendered HTML rather than the markdown you sent.
 
 **It lints a principal's review too.** That review carries no marker, and the linter used to
@@ -934,8 +946,9 @@ paste the final output when you report. A document nobody can fail is a suggesti
 9. Does any finding describe a workflow — a sequence, a state machine, an ordering, a transaction
    boundary, a branching failure — without a diagram beneath it? Does any diagram sit under a
    finding that is really a single predicate?
-10. Would every table survive a 760px column? No prose in a cell, no full path or long token in
-   one, and every body diagram directly under the finding it draws.
+10. Would every table survive a 760px column? Four columns at most in the body, no prose in a
+   cell, no full path or long token in one, and every body diagram directly under the finding it
+   draws.
 
 ## Before you call a PR ready, check
 
@@ -1041,3 +1054,13 @@ index came out as letter fragments at GitHub's width. `review_lint.py` had check
 review: it found reviews only by the agent marker, which a principal's review carries by design,
 so the rules were advice on the reviews that most needed checking. It now lints the latest review
 without a marker, or `--review-id`, and fails wide table cells and long tokens in them.
+
+**27 September 2026.** The four-column budget landed after an index passed 23/24 — `layout.table_prose`
+reported `0 table cell(s) over 140 characters` — and was reported rendering as `Disposit/ion` and
+`P/1`. The per-cell checks were right about that body: its widest cell was 64 characters. What they
+could not see was that the row asked for five columns. Setting a total-width threshold was tried
+first and abandoned: measured over the 96 harvested tables that pass the per-cell checks, the sum
+of each column's widest cell has a median of 133 characters and the table reported broken was 129,
+so no cut separates it from ordinary practice; a rendered-width model fitted against Chrome
+(RMSE 49px over 123 tables) puts it at 662px with eight four-column tables wider still. Column count
+is the one dimension on which it is an outlier — 1 of 103 — so that is what the linter now checks.

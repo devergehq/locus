@@ -117,25 +117,71 @@ def sections(md: str) -> list[tuple[str, str]]:
 # A `basename.ts:NN` link stays under 30; a full path is what crosses 40.
 CELL_PROSE, CELL_TOKEN = 140, 40
 
+# What the per-cell checks above cannot see is how many columns a row asks for. GitHub ships
+# `.markdown-body table { width: max-content; max-width: 100%; display: block; overflow: auto }`,
+# so a table it cannot fit is *scrolled*, not reflowed: the last column leaves the page, and an
+# index whose Disposition sits off-screen has stopped answering "is there anything for me to do".
+#
+# The budget is four, and it is a count rather than a width because a count is the only thing the
+# evidence separates. Measured over 103 tables in real posted review bodies, 102 carry four
+# columns or fewer; the single exception is the index that prompted this check, whose fifth `Id`
+# column was carried over from an earlier round. Two rejected alternatives, so nobody re-derives
+# them: summing each column's widest cell does not work — over the 96 harvested tables that pass
+# the per-cell checks that sum runs to a median of 133 characters and the table reported broken
+# was 129, *below* the median — and neither does estimated rendered width, since eight four-column
+# tables in the same corpus measure wider than the five-column one (626-679px against 662px).
+#
+# Threads are exempt. A thread's table is pasted evidence, and the one 5-column thread table in
+# the corpus is a query result (`user_id | has_login | live orgs | rows | roles`) that is exactly
+# what a thread is for.
+BODY_COLS = 4
+
+
+def split_row(line: str) -> list[str] | None:
+    """A table row's cells; `[]` for the `|---|` delimiter, `None` for a line that is not a row.
+    The three answers are distinct because the delimiter sits *inside* a table: treating it as
+    "not a row" would end the table there and read every header as a one-row table of its own."""
+    line = re.sub(r"^[ \t>]*", "", line).strip()
+    if not line.startswith("|"):
+        return None
+    if re.match(r"^\|[\s:|-]+\|?$", line):
+        return []
+    # split on pipes outside code spans
+    parts, buf, code = [], "", False
+    for ch in line.strip("|"):
+        if ch == "`":
+            code = not code
+        if ch == "|" and not code:
+            parts.append(buf); buf = ""
+        else:
+            buf += ch
+    parts.append(buf)
+    return [p.strip() for p in parts]
+
 
 def cells(md: str) -> list[str]:
-    s = FENCE.sub("", md or "")
     out = []
-    for line in s.splitlines():
-        line = re.sub(r"^[ \t>]*", "", line).strip()
-        if not line.startswith("|") or re.match(r"^\|[\s:|-]+\|?$", line):
-            continue
-        # split on pipes outside code spans
-        parts, buf, code = [], "", False
-        for ch in line.strip("|"):
-            if ch == "`":
-                code = not code
-            if ch == "|" and not code:
-                parts.append(buf); buf = ""
-            else:
-                buf += ch
-        parts.append(buf)
-        out += [p.strip() for p in parts if p.strip()]
+    for line in FENCE.sub("", md or "").splitlines():
+        row = split_row(line)
+        if row:
+            out += [p for p in row if p]
+    return out
+
+
+def table_columns(md: str) -> list[int]:
+    """Columns demanded by each table, widest row wins. A table ends at the first line that is
+    not part of one — an empty cell still counts, since the index's first column has no header."""
+    out, cur = [], 0
+    for line in FENCE.sub("", md or "").splitlines():
+        row = split_row(line)
+        if row is None:
+            if cur:
+                out.append(cur)
+            cur = 0
+        else:
+            cur = max(cur, len(row))
+    if cur:
+        out.append(cur)
     return out
 
 
@@ -362,6 +408,11 @@ def main():
     L.check(not long_tok, "layout.table_tokens",
             f"{len(long_tok)} unbroken token(s) over {CELL_TOKEN} characters in a table cell — "
             "GitHub breaks them between letters; " + "; ".join(long_tok[:2]))
+    over_cols = [n for n in table_columns(b) if n > BODY_COLS]
+    L.check(not over_cols, "layout.table_columns",
+            f"{len(over_cols)} body table(s) over {BODY_COLS} columns — GitHub scrolls a table it "
+            "cannot fit, taking the last column off the page"
+            + (f"; found {', '.join(map(str, over_cols))}" if over_cols else ""))
     floating = unhomed_diagrams(b)
     L.check(not floating, "layout.diagram_homed",
             f"{floating} diagram(s) in the body not under a finding or Problem fit", warn_only=True)
