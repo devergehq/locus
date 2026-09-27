@@ -7,7 +7,8 @@
 #
 # What is pinned: which review gets linted (an agent review, a principal's
 # markerless one, or exactly --review-id), that a principal's review is not
-# failed for lacking the agent header, and the GitHub-width layout checks.
+# failed for lacking the agent header, the GitHub-width layout checks and the
+# four-column budget on a review body's tables.
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -100,6 +101,21 @@ flowchart TD
 ```
 EOF
 
+# A five-column index: every cell short, no long token — the columns alone are the defect.
+cat > "$work/fivecol.md" <<'EOF'
+**1 Should · 1 open.** A correction that throws after the reopen strands the invoice OPEN.
+
+**Method** · read the diff · **0 suppressed** · **1 area not reviewed** — Suppressed: none.
+
+### Problem fit
+Right shape.
+
+### Open — needs a decision
+| | Id | Where | Finding | Disposition |
+|---|---|---|---|---|
+| 🟠 Should | S1 | [`Process…Action.php:212`](https://github.com/o/r/pull/1#discussion_r1) | A throw after the reopen strands the invoice OPEN | Open |
+EOF
+
 # The house index, verbatim in shape: an agent review with one thread.
 cat > "$work/agent.md" <<'EOF'
 🤖 **Agent review · round 1** · `agent:DEV-1/review`
@@ -179,6 +195,24 @@ ok "a diagram under its finding is homed"       "$(rule layout.diagram_homed)" n
 ok "a full path in prose is fine"               "$(rule layout.table_tokens)" no
 ok "the section is budgeted as a thread"        "$(ran sections.budget)" yes
 ok "and the verdict counts sections"            "$(ran verdict.open_count)" yes
+
+fixture "[$(review 8 principal "$work/fivecol.md")]" '[]'
+ok "a five-column index fails"                  "$(run)" 1
+ok "on its column count"                        "$(rule layout.table_columns)" yes
+ok "and the budget is named"                    "$(says 'over 4 columns')" yes
+ok "and the count that broke it"                "$(says 'found 5')" yes
+ok "not on a cell: every cell is short"         "$(rule layout.table_prose)" no
+ok "nor on a token"                             "$(rule layout.table_tokens)" no
+ok "the delimiter does not split one table in two" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+print(r.table_columns(open('$work/fivecol.md').read()))")" "[5]"
+ok "the house four-column index passes"          "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+print(r.table_columns(open('$work/agent.md').read()))")" "[4]"
+ok "a wide table in a thread is not the body's" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+b = open('$work/agent.md').read()
+print([n for n in r.table_columns(b) if n > r.BODY_COLS])")" "[]"
 
 python3 -c "print('### 🟠 Should · S1 · long\n\n' + 'word ' * 200)" > "$work/longsec.md"
 { sed -n '1,7p' "$work/sectioned.md"; cat "$work/longsec.md"; } > "$work/over.md"

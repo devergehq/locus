@@ -13,6 +13,19 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **`review_lint.py` fails a review body's table over four columns.** An index on
+  Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over
+  140 characters`, correctly, its widest cell being 64 — and was reported rendering as
+  `Disposit/ion` and `P/1`. The per-cell checks cannot see how many columns a row asks for.
+  A total-width threshold was measured and rejected: over 96 harvested tables that pass the
+  per-cell checks, the sum of each column's widest cell has a median of 133 characters and the
+  table reported broken was 129, below the median; a rendered-width model fitted against Chrome
+  (RMSE 49px over 123 tables) puts eight four-column tables wider than the five-column one.
+  Column count is the one dimension on which it is an outlier — 1 of 103 real review bodies — and
+  `house-style.md` now states the budget the worked template always implied. Threads are exempt:
+  a thread's table is pasted evidence. `cells()` is unchanged, verified byte-for-byte against
+  585 real bodies and threads.
+
 - **Worker briefs no longer trip the `reasoning_extraction` refusal.** v0.5.3 fixed the
   Algorithm, but dispatched workers on Opus 5.5 were still refused: DAR-603, 557, 563 and 555
   (`req_011CfLJyhfDxQxHrAdS8LySX`, `req_011CfLK6z3AkuqFgKhCb7PPQ`,
