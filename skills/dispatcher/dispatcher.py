@@ -524,7 +524,23 @@ class Poller:
                                     is one tick of staleness against a false `review_cleared`.
 
         `matched` is None for Linear, whose query has no equivalent count, so it rests on the second
-        test alone. A source that has never returned anything is believed immediately — a fresh
+        test alone.
+
+        **On pagination, measured rather than assumed.** `issueCount` is the TOTAL number of matches,
+        not the size of the page: against the live review query on 30 September 2026, `first: 1`
+        returned `{"issueCount": 11, "returned": 1}` and `first: 50` returned
+        `{"issueCount": 11, "returned": 11}`. So `matched > count` is the normal state of a truncated
+        page and is NOT treated as a fault here — only `matched > 0` with `count == 0`, which
+        pagination cannot produce, because page one of a non-empty match always carries
+        `min(page, count)` items.
+
+        That leaves a real trap this method does not close, named here so whoever meets it does not
+        have to rediscover it: `REVIEWS_Q` asks for `first: 50`, so at 51 open review requests the
+        51st is invisible, drops out of `present`, and draws a false `review_cleared` — the same
+        class of bug as DEV-799 one layer along, with a truncated result read as a fact instead of
+        an empty one. `issueCount` now makes it detectable in one comparison (`matched > len(nodes)`
+        means truncated), but detecting it is not the same as paging and no page-two code is here.
+        Eleven requests were open when this was written; the cap is 50. A source that has never returned anything is believed immediately — a fresh
         instance with no open reviews must not sit in a suspicious state forever.
 
         **This guard is per process, and that is a real limit rather than a tidy one.** An orphaned
@@ -553,7 +569,14 @@ class Poller:
             # Affirmatively zero, which is different from no count at all: GitHub has told us the
             # search matched nothing. That is a fact about the world and is believed at once, or an
             # instance whose reviews are genuinely all done would sit one tick behind forever.
-            # `matched == 0` is False for None, which is what keeps Linear on the streak test.
+            #
+            # `matched == 0` is deliberately NOT `not matched`, and this is the line to leave alone.
+            # `None == 0` is False in Python, so a source that supplies no count at all — Linear,
+            # whose query has no `issueCount` equivalent — falls past this test to the streak test
+            # below, which is the only evidence it has. Rewriting it as `not matched` would make
+            # every Linear tick "affirmatively empty" and believe the first zero, restoring exactly
+            # the DEV-799 behaviour this method exists to stop. There is a test for it
+            # ("a first zero keeps the trigger markers"), but a test name is not an explanation.
             return True
         if streak == 1 and seen.get("last_nonempty_at"):
             emit("source_empty", source=source, matched=matched, returned=0, believed=False,
