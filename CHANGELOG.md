@@ -39,6 +39,15 @@ refuses to build when they disagree.
   signalling. Process matching is narrow on purpose: a `ps | grep dispatcher.py` on that machine
   also matched three Claude sessions quoting the docs and a `/bin/zsh -c` wrapper per watcher.
 
+- **`reap` no longer assumes a watcher with no `--instance` is ours.** A review found the comment
+  justifying that assumption was false: `instance_path` accepts an absolute path anywhere, so
+  `$DISPATCHER_INSTANCE=/opt/elsewhere/inst` is a legal launch whose argv names no instance and
+  whose instance is not the one under `DISPATCHER_HOME`. On a single-instance box that would have
+  made another instance's *live* watcher reapable — the one failure the matching rules exist to
+  prevent. A process cannot read another process's environment, so ownership is now established
+  from this instance's own `runtime/watch/` cursor instead; both ways that check can fail leave the
+  process unattributed and therefore never signalled.
+
 - **`doctor` reports the plugin version each watcher is running.** One of the nine orphans was
   executing locus 0.5.2 while every other watcher on the machine ran 0.5.4: a watcher outlives the
   install that started it, because the plugin cache keeps a directory per version and a running

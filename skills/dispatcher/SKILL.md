@@ -60,10 +60,11 @@ allele sidebar, and stop.
    install it was launched from, so two versions at once is normal after an upgrade and worth
    seeing — and fails on any whose key is finished with it. **`watch cursors`** reports stale
    cursors without failing, because a leftover file must not stop you starting. `D reap` clears
-   both, and it
-   terminates this instance's orphaned watchers and removes those cursors — run `D reap --dry-run`
-   first and show your principal what it would do. A watcher on a key someone is still working is
-   never touched by either.
+   both: it terminates this instance's orphaned watchers and removes those cursors. Run
+   `D reap --dry-run` first and show your principal what it would do. A watcher on a key someone is
+   still working is never touched by either, and a watcher whose argv names no instance is listed
+   but never signalled unless this instance holds its cursor — another process's environment cannot
+   be read, so a cursor of ours is the only evidence that the process is ours.
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
@@ -225,6 +226,11 @@ Don't push-notify claims, or anything your principal is clearly watching live.
   open decision, so **do not stop polling because the count is high** — report it.
 - **reap** → `D reap --dry-run`, show them the list, then `D reap`. Watchers whose key is finished
   with them are terminated and their cursor files removed; live keys are left alone.
+- A worker's watcher deliberately **outlives `status=done`** while its PR is open, so it can still
+  hear a review; it stops once the PR merges or closes, or immediately if the key has no PR at all.
+  If your principal wants the stricter behaviour — stop the moment the ledger says `done` — the
+  watch command takes `--exit-on-done`. Say it exists if they ask why a done key is still watched;
+  do not pass it yourself without their say-so.
 - **discard `<KEY or session>`** → `allele_sessions_discard(session_id)` →
   `D ledger put <KEY> status=discarded --by principal`. Discard only when they say so.
 - **pause / resume** → TaskStop the poller / start it again. Workers keep running.

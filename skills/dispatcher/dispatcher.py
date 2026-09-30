@@ -1343,6 +1343,27 @@ def cursor_path(key: str, as_: str | None) -> Path:
     return watch_dir() / (f"{key}.{as_}.json" if as_ else f"{key}.json")
 
 
+def attribute_instance(parsed: dict, sole: Path | None) -> Path | None:
+    """Which instance this watcher belongs to, or None when that cannot be established.
+
+    None is not a shrug — it is what keeps `reap` from signalling a process it cannot prove is
+    ours. Everything `reap` terminates comes through here.
+
+    An argv that names `--instance` answers it outright. An argv that does not needs `sole` AND a
+    cursor of ours for that key: see the comment at the `sole` assignment for why the sole instance
+    alone is not enough, and why a cursor is the only evidence available to a process that cannot
+    read another process's environment.
+    """
+    if parsed["instance"]:
+        try:
+            return instance_path(parsed["instance"]).resolve()
+        except SystemExit:
+            return None
+    if sole and cursor_path(parsed["key"], parsed["as"]).exists():
+        return sole
+    return None
+
+
 def live_watchers() -> list[dict]:
     """Every `watch` process on this machine, with the ones belonging to this instance resolved.
 
@@ -1360,10 +1381,23 @@ def live_watchers() -> list[dict]:
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(f"cannot run ps: {exc}") from None
     here = instance().resolve()
-    # A watcher resolved from $DISPATCHER_INSTANCE or by being the only instance installed carries
-    # no `--instance` in its argv, and `resolve_instance` documents both paths. Attributing it to
-    # the sole instance is safe precisely when there is one: any other resolution would have had
-    # to name it. With two or more installed, it is left unattributed and never signalled.
+    # A watcher resolved from $DISPATCHER_INSTANCE, or by being the only instance installed, carries
+    # no `--instance` in its argv — `resolve_instance` documents both paths.
+    #
+    # An earlier version of this comment claimed attributing such a watcher to the sole installed
+    # instance is safe because "any other resolution would have had to name it". **That is false**,
+    # and a review caught it: `instance_path` accepts an absolute path anywhere on the filesystem,
+    # so `$DISPATCHER_INSTANCE=/opt/elsewhere/inst` is a legal launch whose argv names no instance
+    # and whose instance is not the one under DISPATCHER_HOME. On a single-instance box that
+    # assumption would have made another instance's *live* watcher reapable — a wrong SIGTERM,
+    # which is the one failure this whole function exists to avoid.
+    #
+    # Another process's environment cannot be read from `ps`, so the gap cannot be closed by
+    # inspecting the process. It is closed with evidence from our own filesystem instead: a watcher
+    # belonging to this instance writes its cursor into *our* `runtime/watch/` at the end of every
+    # tick, so the cursor existing is corroboration that the process is ours. Both ways this fails
+    # are the safe way — a cursor already pruned, or a watcher that has not finished its first tick,
+    # leaves the process unattributed and therefore never signalled.
     installed = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
     sole = installed[0].resolve() if len(installed) == 1 else None
     found = []
@@ -1377,10 +1411,7 @@ def live_watchers() -> list[dict]:
         parsed = parse_watch_argv(argv)
         if not parsed:
             continue
-        try:
-            where = instance_path(parsed["instance"]).resolve() if parsed["instance"] else sole
-        except SystemExit:
-            where = None
+        where = attribute_instance(parsed, sole)
         mine = where is not None and where == here
         row = {"pid": pid, "etime": etime, "age": age_words(etime), "key": parsed["key"],
                "as": parsed["as"], "instance": where, "mine": mine, "status": None, "stop": None,

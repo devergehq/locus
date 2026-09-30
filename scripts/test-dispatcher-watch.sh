@@ -252,6 +252,27 @@ import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 print(d.parse_watch_argv(['/p/dispatcher.py', 'watch', 'DAR-9'])['key'])")" DAR-9
 
+echo "A watcher whose argv names no instance is only ours with evidence"
+# Everything reap signals comes through attribute_instance. An argv with no --instance could
+# belong to an instance reached through $DISPATCHER_INSTANCE, which instance_path allows to be
+# an absolute path ANYWHERE -- so "the only instance installed" is not proof of ownership, and
+# on a single-instance box that assumption would have made another instance's live watcher
+# reapable. A cursor of ours is the only evidence available, since a process cannot read
+# another process's environment.
+att () { python3 -c "
+import sys, pathlib
+sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+d._instance = pathlib.Path('$inst')
+print(d.attribute_instance({'key': '$1', 'as': None, 'instance': $2}, $3))"; }
+printf '{}' > "$inst/runtime/watch/has-cursor.json"
+rm -f "$inst/runtime/watch/no-cursor.json"
+ok "--instance in argv answers outright"        "$(att no-cursor \"/i/named\" None)" /i/named
+ok "no --instance, sole, our cursor: ours"      "$(att has-cursor None "pathlib.Path('$inst')")" "$inst"
+ok "no --instance, sole, no cursor: unknown"    "$(att no-cursor None "pathlib.Path('$inst')")" None
+ok "no --instance and no sole: unknown"         "$(att has-cursor None None)" None
+ok "a relative --instance is not attributed"    "$(att has-cursor \"rel/path\" None)" None
+
 echo "etime parses all four widths ps emits"
 for pair in "04:26 266" "15:05:54 54354" "01-20:16:46 159406" "06-14:12:27 569547"; do
   set -- $pair
