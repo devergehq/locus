@@ -97,20 +97,42 @@ ok "exits before the first tick"                 "$(run gh-test-1; python3 -c "
 import json
 print(*[e['ticks'] for e in map(json.loads, open('$work/out')) if e['event'] == 'watch_stopped'])")" 0
 
-echo "'done' waits for the PR, and --exit-on-done does not"
+echo "'done' is terminal unless there is a review to wait for"
+# cursor [pr-state] -> rewrite gh-test-1's cursor. No argument means "no PR known at all",
+# which is the case investigate/decide/decompose workers leave behind: they write status=done
+# and never open a PR. Gating the whole done branch on pr_status left every one of those
+# running the full ceiling, and doctor called it "working".
+cursor () {
+  if [ $# -eq 0 ]; then
+    printf '{}' > "$inst/runtime/watch/gh-test-1.json"
+  else
+    printf '{"pr": {"repo": "o/r", "number": 1}, "pr_status": "%s"}' "$1" \
+      > "$inst/runtime/watch/gh-test-1.json"
+  fi
+}
 put gh-test-1 status=done --by test
-ok "'done' with no PR state keeps watching"      "$(watch gh-test-1 --once)" 0
+cursor
+ok "done with no PR at all stops in one tick"    "$(watch gh-test-1)" 0
+ok "  saying there is no PR to watch"             "$(says 'no pull request to watch')" yes
+cursor open
+ok "done with an OPEN PR keeps watching"         "$(watch gh-test-1 --once)" 0
 ok "  and does not stop"                          "$(says watch_stopped)" no
-ok "--exit-on-done stops on 'done'"              "$(watch gh-test-1 --exit-on-done)" 0
+cursor open
+ok "--exit-on-done stops on done regardless"     "$(watch gh-test-1 --exit-on-done)" 0
 ok "  naming the flag"                            "$(says exit-on-done)" yes
-python3 - "$inst" <<'PY'
-import json, pathlib, sys
-p = pathlib.Path(sys.argv[1]) / "runtime/watch/gh-test-1.json"
-p.parent.mkdir(parents=True, exist_ok=True)
-p.write_text(json.dumps({"pr_status": "merged"}))
-PY
-ok "'done' plus a merged PR stops in one tick"    "$(watch gh-test-1)" 0
-ok "  naming the PR state"                        "$(says "its PR is merged")" yes
+for state in merged closed; do
+  cursor "$state"
+  ok "done plus a $state PR stops in one tick"   "$(watch gh-test-1)" 0
+  ok "  naming the PR state"                     "$(says "its PR is $state")" yes
+  # The cursor is KEPT: pr_status lives only in it, so deleting it would make the next relaunch
+  # under the persistent Monitor re-derive the merge over a full tick's API calls, forever.
+  ok "  and keeps the cursor it read it from"    "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
+  ok "  and reports that it kept it"             "$(says cursor_removed.:.false)" yes
+done
+put gh-test-1 status=merged --by test
+cursor
+ok "a merged ledger status stops too"            "$(watch gh-test-1)" 0
+ok "  and removes the cursor, being ledger-only" "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" no
 
 echo "The ceiling binds even when the ledger never moves"
 put gh-test-1 status=active --by test
@@ -139,6 +161,14 @@ ok "reap removes its --as cursor"                "$([ -f "$inst/runtime/watch/gh
 ok "reap keeps the live key's cursor"            "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
 ok "reap keeps an unattributable cursor"         "$([ -f "$inst/runtime/watch/no-such-key.json" ] && echo yes || echo no)" yes
 ok "  and says it did"                           "$(says 'match no ledger entry')" yes
+# A leftover FILE must not stop the Dispatcher starting. SKILL.md's start-up step says "anything
+# cross: tell your principal and stop", and tc-portal holds 112 of these. An orphaned PROCESS
+# earns that hard stop because it spends API budget; a dead file costs disk and can wait.
+printf '{}' > "$inst/runtime/watch/gh-test-2.json"
+put gh-test-2 status=discarded --by test
+set +e; D doctor > "$work/out" 2>&1; set -e
+ok "a stale cursor is reported, not failed"      "$(grep -q "watch cursors" "$work/out" && grep -q "x watch cursors" "$work/out" && echo yes || echo no)" no
+ok "  and is still named for the next reap"      "$(says 'for finished keys')" yes
 
 echo "doctor and reap see a real live watcher"
 # The interval goes up to a minute first, and that is the point of the case rather than a
@@ -170,6 +200,8 @@ set +e; D doctor > "$work/out" 2>&1; set -e
 ok "doctor is clean afterwards"                  "$(says 'ORPHAN')" no
 interval 1
 
+ok "the usage header claims no --all flag"       "$(grep -c -- "reap .--dry-run. .--all." "$disp")" 0
+
 echo "reap refuses the processes that look like watchers but are not"
 ok "a zsh -c wrapper is not a watcher"           "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
@@ -190,6 +222,22 @@ ok "--instance=PATH equals form parses"          "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 print(d.parse_watch_argv(['python3', '/p/dispatcher.py', '--instance=/i/tc-portal', 'watch', 'K'])['instance'])")" /i/tc-portal
+ok "--max-hours value is not read as the key"    "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-hours', '2', 'DAR-563'])['key'])")" DAR-563
+ok "--max-ticks value is not read as the key"    "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-ticks', '5', 'DAR-563'])['key'])")" DAR-563
+ok "--exit-on-done consumes no value"            "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--exit-on-done', 'DAR-563'])['key'])")" DAR-563
+ok "python3 -c holding the script is not one"    "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.parse_watch_argv(['python3', '-c', '/p/dispatcher.py', 'watch', 'K']))")" None
 ok "a poll process is not a watcher"             "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
@@ -232,10 +280,13 @@ p = d.Poller()
 for _ in range(3): p.mark_quiet(True)
 p.mark_quiet(False)
 print(p.state['quiet_ticks'], 'quiet_since' in p.state)")" "0 False"
+set +e; D status > "$work/out" 2>&1; set -e
+ok "a never-polled instance says so"             "$(says 'never polled')" yes
 python3 - "$inst" <<'PY'
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]) / "runtime/poll-state.json"
-p.write_text(json.dumps({"quiet_ticks": 7, "quiet_since": "2026-09-30T01:00:00+00:00"}))
+p.write_text(json.dumps({"started": "2026-09-30T00:00:00+00:00", "quiet_ticks": 7,
+                         "quiet_since": "2026-09-30T01:00:00+00:00"}))
 PY
 set +e; D status > "$work/out" 2>&1; set -e
 ok "status prints the count"                     "$(says 'quiet ticks: 7 consecutive')" yes

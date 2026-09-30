@@ -97,7 +97,10 @@ report, not for work it would need to delegate.
 
 ## After you're done
 
-Stay alive with your watcher running until your principal discards you.
+Stay alive until your principal discards you. Your watcher stays with you through the review — it
+does **not** stop merely because you reported `done` — but it does stop once the PR is merged or
+closed, because at that point there is nothing left on it to hear. Expect a `watch_stopped` with
+`status: done` then, and treat it as the end of the pass rather than a fault.
 
 - `pr_review` / `pr_comment` from a human asking for a change: make it, push, and reply once on
   GitHub, signed — start the reply with `🤖 agent:<KEY>/implement` — saying what changed.

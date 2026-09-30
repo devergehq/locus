@@ -20,7 +20,7 @@ one instance installed. `doctor` prints both roots.
   watch KEY [--pr OWNER/REPO#N] [--once] A worker's eyes on its own ticket and PR.
                                          Stops when the key's ledger status says nothing will
                                          speak on it again, or at --max-hours / --max-ticks.
-  reap [--dry-run] [--all]               Terminate this instance's orphaned watchers and
+  reap [--dry-run]                       Terminate this instance's orphaned watchers and
                                          remove cursor files for keys that are finished with.
   ledger list [--all] | get KEY | put KEY [k=v ...] [--note TEXT] [--by WHO]
   label ISSUE STATE [--state NAME]       Set the ticket's one Agent-group label ('none' clears).
@@ -180,17 +180,20 @@ REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
 #               `SKILL.md`'s `session_lost` row re-queues the work to a *replacement*, which
 #               starts its own watcher). A watcher on a `lost` key is delivering to nobody.
 #   `deferred`  no session should exist and the item is never dispatched again.
-#   `merged`    NOT a member, and its absence is the interesting one. Nothing in this repo
-#               writes it — `grep -rn "status=merged"` is empty — because `implement.md` records
-#               a merge as `status=done --note "merged"`. Listing it would look thorough while
-#               firing never, and would hide the fact that the post-merge status is `done`.
+#   `merged`    A member, but read the next sentence before relying on it. Nothing in this repo
+#               writes it — `grep -rn "status=merged"` is empty — because `implement.md` records a
+#               merge as `status=done --note "merged"`, so **the status to reason about after a
+#               merge is `done`, not this.** It is a member anyway because `stack.v2.md` tells a
+#               coordinator at :149 and :1453 that `merged` is terminal, so someone following the
+#               documented vocabulary will eventually write it; membership costs nothing if they
+#               never do, and the alternative is that watcher running the full ceiling.
 #   `stopped`   NOT a member. `_common.md` has a stopped worker write the status and *wait*, and
 #               what it waits for — a re-label, a human comment — reaches it only through this
 #               watcher. Killing it strands the worker. It is bounded by the ceiling instead,
 #               which every watcher gets regardless of status.
 #   `done`      NOT a member, and it is the membership DEV-795 and this file disagree about.
 #               See `watch_stop_reason`.
-WATCH_DEAD = {"discarded", "failed", "lost", "skipped", "deferred"}
+WATCH_DEAD = {"discarded", "failed", "lost", "merged", "skipped", "deferred"}
 
 # A PR state that means the review is over. `Watcher.pull_request` already computes and persists
 # `pr_status`, so this is read from the cursor file rather than from GitHub.
@@ -843,19 +846,37 @@ def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, s
     the distinction costs another local read and no request. A `done` key whose PR is merged or
     closed stops on the next tick; a `done` key with an open PR stops only at the ceiling.
 
+    **A `done` key with no pull request at all is terminal**, and getting that wrong was the one
+    real leak in the first version of this function. `investigate.md`, `decide.md` and
+    `decompose.md` all write `status=done` and never open a PR, while `_common.md` step 3 arms a
+    watcher for every mode — so gating the whole `done` branch on `pr_status`, a field only
+    `pull_request()` ever sets, left every finished non-PR worker running to the ceiling and
+    reported it as `working` to both `doctor` and `reap`. The review loop is the *only* reason
+    `done` is not terminal, so the exception has to be conditional on there being a review to wait
+    for. `state["pr"]` is that test: `Watcher.__init__` fills it from `--pr` or the ledger's
+    `repo`/`number`, and `issue()` fills it from the ticket's attachments.
+
     `--exit-on-done` is the ticket's acceptance criterion taken literally, kept because it is the
     behaviour the principal asked for and the choice is his. It is not the default, and the
     reason is in the PR.
+
+    The third element of the return is **whether the ledger alone decided it**, which is what tells
+    `cmd_watch` it may delete the cursor. Terminality read from the ledger is reconstructible on the
+    next process; terminality read from a file you are about to delete is not.
     """
     status = (ledger_get(key) or {}).get("status")
     if status in WATCH_DEAD:
-        return status, f"ledger status '{status}' — nothing will speak on this key again"
+        return status, f"ledger status '{status}' — nothing will speak on this key again", True
     if status == "done":
+        if exit_on_done:
+            return status, "ledger status 'done' and --exit-on-done was given", True
+        if not state.get("pr"):
+            return status, "ledger status 'done' and no pull request to watch", True
         pr = state.get("pr_status")
         if pr in PR_CLOSED:
-            return status, f"ledger status 'done' and its PR is {pr}"
-        if exit_on_done:
-            return status, "ledger status 'done' and --exit-on-done was given"
+            # Cursor kept: `pr_status` lives only in it, so deleting it would make the next
+            # relaunch re-derive the merge over a full tick's API calls, forever.
+            return status, f"ledger status 'done' and its PR is {pr}", False
     return None
 
 
@@ -886,9 +907,9 @@ def cmd_watch(args) -> None:
     while True:
         stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
         if stop:
-            status, why = stop
+            status, why, from_ledger = stop
             emit("watch_stopped", key=args.key, reason="ledger", status=status, ticks=ticks,
-                 cursor_removed=watcher.forget(), detail=why)
+                 cursor_removed=from_ledger and watcher.forget(), detail=why)
             return
         watcher.tick()
         ticks += 1
@@ -1110,10 +1131,13 @@ def cmd_status(args) -> None:
     # or not anything was delivered. This says it. `quiet_since` is the honest half of the pair: a
     # count of ticks means nothing without the interval that produced them.
     quiet = read_json(poll_state(), {})
-    ticks = quiet.get("quiet_ticks", 0)
-    since = f" since {quiet['quiet_since']}" if ticks and quiet.get("quiet_since") else ""
-    print(f"quiet ticks: {ticks} consecutive{since}"
-          f"{' — no events delivered' if ticks else ' — last tick had events'}")
+    if not quiet.get("started"):
+        print("quiet ticks: — (this instance has never polled)")
+    else:
+        ticks = quiet.get("quiet_ticks", 0)
+        since = f" since {quiet['quiet_since']}" if ticks and quiet.get("quiet_since") else ""
+        print(f"quiet ticks: {ticks} consecutive{since}"
+              f"{' — no events delivered' if ticks else ' — last tick had events'}")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
@@ -1129,7 +1153,11 @@ def cmd_status(args) -> None:
 # which bare word is the ledger key: `watch --pr Trilogy-Care/tc-portal#9395 DAR-614` is a real
 # command line off this machine, and a walker that skipped only `--instance`'s value would read
 # the repo#number as the key, look it up, find no entry, and report the wrong thing.
-WATCH_VALUE_FLAGS = {"--instance", "--as", "--pr"}
+# `--max-ticks` and `--max-hours` are here because they were added by the same change as this set
+# and were missed: `watch --max-hours 2 DAR-563` parses `2` as the key, which spares a real orphan
+# forever and lists it under a key that does not exist. Any flag added to the `watch` parser that
+# takes a value must be added here too, and a `store_true` flag must not be.
+WATCH_VALUE_FLAGS = {"--instance", "--as", "--pr", "--max-ticks", "--max-hours"}
 
 
 def etime_secs(etime: str) -> int | None:
@@ -1198,6 +1226,11 @@ def parse_watch_argv(argv: list[str]) -> dict | None:
         return None
     script = next((i for i, a in enumerate(argv[:3]) if os.path.basename(a) == "dispatcher.py"), None)
     if script is None:
+        return None
+    # `python3 -c '/x/dispatcher.py watch K'` puts the script at index 2 behind a python argv[0], so
+    # it is the one shape both filters above pass together. `-c` means the following token is a
+    # program to read, never a script to run, so its presence before the script settles it.
+    if "-c" in argv[:script]:
         return None
     head = os.path.basename(argv[0]).casefold()
     if script > 0 and not (head.startswith("python") or head == "dispatcher.py"):
@@ -1442,12 +1475,19 @@ def cmd_doctor(args) -> None:
         return f"{note}, {len(unattributed)} unattributable" if unattributed else note
 
     def cursors():
+        # Reports, never fails. `SKILL.md`'s start-up step says "anything ✗: tell your principal and
+        # stop", and there are 112 stale cursors on `tc-portal` — so failing here would stop the
+        # Dispatcher from starting until someone swept a directory of dead files. An orphaned
+        # *process* is worth that hard stop because it is spending API budget; a leftover file is
+        # costing nothing but disk and can wait for the next `reap`.
         prunable, unknown = prunable_cursors()
         total = len(list(watch_dir().glob("*.json"))) if watch_dir().exists() else 0
+        note = f"{total} cursor file(s)"
         if prunable:
-            raise RuntimeError(f"{len(prunable)} of {total} cursor file(s) belong to finished keys "
-                               f"— `reap` removes them")
-        return f"{total} cursor file(s)" + (f", {len(unknown)} matching no ledger entry" if unknown else "")
+            note += f", {len(prunable)} for finished keys — `reap` removes them"
+        if unknown:
+            note += f", {len(unknown)} matching no ledger entry"
+        return note
 
     check("watchers", watchers)
     check("watch cursors", cursors)
