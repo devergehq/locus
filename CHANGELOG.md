@@ -26,7 +26,12 @@ refuses to build when they disagree.
   keeps the 11 Sep stamp as the evidence. Replayed against the live GitHub data with a 19-day-old
   `started`: 11 open requests, 11 flagged `backlog: false` before, 11 flagged `backlog: true` and
   a `poller_started` after. `scripts/test-dispatcher-poller.sh` pins it against a poisoned state
-  fixture, and reverses the fix in a copy of the source to prove the suite discriminates (DEV-794).
+  fixture, and reverses the fix in a copy of the source to prove the suite discriminates. One
+  behaviour change comes with it: because the flag is per process, a host that runs `poll --once`
+  on a cadence — which is what production does as of 30 Sep, the `Monitor`-hosted poller having
+  lost the principal's trust — flags *every* unclaimed review request `backlog: true`, so none
+  auto-dispatches and each needs a human decision. That is what the Dispatcher was already doing
+  by hand (DEV-794).
 
 - **A thrown poller section now reports off stdout.** `Poller.error()` reported a failing section
   by calling `emit()`, which writes to stdout — the same channel that may be the thing that is
