@@ -13,6 +13,33 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **The dispatcher's start-up backlog is reachable again.** `Poller.__init__` read `first_tick`
+  out of the *persisted* state file — `not self.state.get("started")` — while `tick()` writes
+  `started` to disk, so `backlog` was true once per instance **lifetime** rather than once per
+  session. The `tc-portal` instance carried `"started": "2026-09-11T13:18:11+00:00"` for 19 days,
+  which made SKILL.md step 4's whole start-up contract (list the review backlog, ask before
+  dispatching) unreachable dead code for all of them: `review_backlog` was `[]` and stayed `[]`,
+  and on 30 Sep a three-hour session surfaced 1 of 10 open review requests. `first_tick` is now a
+  property of the process, which needs no migration — every instance already carrying a poisoned
+  `started` is fixed by its next arm, with no version marker to interpret. `started` is now
+  written with `setdefault`, so it keeps its meaning (when this instance's poller first ran) and
+  keeps the 11 Sep stamp as the evidence. Replayed against the live GitHub data with a 19-day-old
+  `started`: 11 open requests, 11 flagged `backlog: false` before, 11 flagged `backlog: true` and
+  a `poller_started` after. `scripts/test-dispatcher-poller.sh` pins it against a poisoned state
+  fixture, and reverses the fix in a copy of the source to prove the suite discriminates (DEV-794).
+
+- **A thrown poller section now reports off stdout.** `Poller.error()` reported a failing section
+  by calling `emit()`, which writes to stdout — the same channel that may be the thing that is
+  broken — at most once per signature per 1800s, with the timestamps persisted *across* sessions.
+  So a failure repeating for a week could report twice an hour, to nobody, and leave no trace
+  anywhere else: `state["errors"]` is only the rate-limit clock and is written once at end of
+  tick, so a section that throws and then a process that dies left nothing at all. New
+  `Poller.record_error()` writes every occurrence to stderr and appends it, with a traceback, to
+  `runtime/poller-errors.jsonl` before `tick()` reaches its state write. The file is trimmed by
+  bytes at 256 KiB, keeping the newest. `status` now prints the last error and its age. The
+  `error` event on stdout is unchanged, rate limit included, so existing readers see no
+  difference (DEV-794).
+
 - **`review_lint.py` fails a review body's table over four columns.** An index on
   Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over
   140 characters`, correctly, its widest cell being 64 — and was reported rendering as

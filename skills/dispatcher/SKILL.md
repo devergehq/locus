@@ -73,6 +73,11 @@ allele sidebar, and stop.
    - A `review_request` with `"backlog": true` means **ask, don't dispatch**, even on a later tick.
      The poller keeps start-up items flagged as backlog until they're claimed or skipped. Only
      `"backlog": false` is automatic.
+   - "First tick" means the first tick of the **poller process**, not of the instance. So if the
+     poller is re-armed mid-session, it announces a backlog again — of whatever is still open and
+     still undecided, because claimed and skipped items are pruned out of it. Re-asking about the
+     set nobody has decided on is the intended behaviour; before DEV-794 this was keyed on the
+     state file instead, which made it fire once per instance ever and never again.
 5. Tell your principal, in three lines: what's running, what's queued, and what you're watching.
 
 ## Capacity

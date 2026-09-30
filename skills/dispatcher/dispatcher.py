@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -136,6 +137,11 @@ def poll_state() -> Path:
 def heartbeat() -> Path:
     return runtime() / "poller-heartbeat"
 
+
+def error_log() -> Path:
+    """Where a thrown poller section is recorded, independently of stdout. See `record_error`."""
+    return runtime() / "poller-errors.jsonl"
+
 # Ledger statuses. WORKING counts against max_workers; ALIVE means a session should exist.
 #
 # `blocked` is a working status deliberately, but NOT for the two reasons first written down
@@ -167,6 +173,10 @@ REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
 LINEAR_KEY = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 PR_URL = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
 BODY_LIMIT = 1500
+# The error log is bounded so a section failing every tick for a month cannot fill the disk.
+# Trimmed by bytes rather than by a line count, because records vary by an order of magnitude with
+# the length of the traceback, and a fixed line count spends most of the budget or none of it.
+ERROR_LOG_MAX_BYTES = 256 * 1024
 
 
 # --------------------------------------------------------------------------- basics
@@ -384,7 +394,32 @@ class Poller:
         self.state.setdefault("prs_present", None)
         # State written before backlog tracking existed: whatever was already pending is backlog.
         self.state.setdefault("review_backlog", sorted(self.state["prs_present"] or []))
-        self.first_tick = not self.state.get("started")
+        # Keyed on THIS PROCESS, and never on the state file. `started` is persisted, so reading
+        # it made `backlog` true once per instance LIFETIME instead of once per session: the
+        # `tc-portal` instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
+        # whole start-up contract -- list the review backlog, ask before dispatching -- was
+        # unreachable dead code for every one of them (DEV-794). A fresh `Poller` is a fresh
+        # session's eyes, so the first tick of the process is the first tick, full stop.
+        #
+        # This is also the answer to the migration question, and the answer is that there is
+        # nothing to migrate. Every instance already carrying a poisoned `started` is fixed by its
+        # next arm. The two alternatives both cost more and buy less: a version marker has to
+        # interpret the poisoned key and leaves a fork in behaviour between instances created
+        # before and after the fix, and a separate session-scoped field needs a session identity
+        # that nothing in the sanctioned host can supply -- `Monitor` does not hand the command one.
+        #
+        # `started` is still written below, as write-only provenance -- when this instance's poller
+        # first ran -- so nothing that reads it breaks and the 11 Sep date stays on disk as the
+        # evidence for this bug.
+        #
+        # The cost, stated because it is real rather than hidden: a host that re-arms the poller
+        # announces a backlog on each arm, and `poll --once` driven by an external loop would
+        # announce one every tick. The sanctioned host is the looping `poll` of SKILL.md step 3 --
+        # one process per session -- and `review_backlog` is pruned at the end of every
+        # `review_requests` pass to keys that are still present AND still unclaimed. So what a
+        # re-arm re-asks about is exactly the set nobody has decided on yet, which is the set worth
+        # re-asking about.
+        self.first_tick = True
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -401,7 +436,51 @@ class Poller:
         self.state["once"][mark] = now_iso()
         return True
 
+    def record_error(self, section: str, exc: Exception) -> None:
+        """Record a thrown section where stdout reaching a reader is not a precondition.
+
+        Two destinations, both unconditional, because the rate limit in `error()` is a courtesy to
+        the Dispatcher's event stream and not a reason to lose the record:
+
+          stderr                       the host's own log. Under `Monitor` that is the task's
+                                       output file; under background Bash, the redirect.
+          runtime/poller-errors.jsonl  outlives the host. Appended and closed per record, and
+                                       BEFORE `tick()` reaches its state write, so a section that
+                                       throws followed by a process that dies still leaves the
+                                       reason on disk. `state["errors"]` cannot do that: it is only
+                                       the rate-limit clock, and it is written once at end of tick.
+
+        DEV-794 is what this absence cost. `error()` reported a thrown section by emitting on the
+        same stdout that may be the broken thing, at most once per signature per 1800s with the
+        timestamps persisted ACROSS sessions -- so a failure repeating for a week could report
+        twice an hour, to nobody, and leave no trace anywhere else. The one question that ticket
+        could not settle from the evidence it had -- "is a section throwing and being swallowed?"
+        -- is a question this file answers by existing.
+        """
+        print(f"poller: {section} failed: {type(exc).__name__}: {str(exc)[:200]}",
+              file=sys.stderr, flush=True)
+        record = {"at": now_iso(), "section": section,
+                  "error": f"{type(exc).__name__}: {exc}"[:400],
+                  "traceback": traceback.format_exc()[-1200:]}
+        try:
+            path = error_log()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Keep the tail: the newest failure is the one being diagnosed. The slice is in
+            # characters against a cap in bytes, which is deliberate slack -- this is a guard
+            # against filling a disk, not an accounting of one -- and the partial first line the
+            # slice lands in is dropped rather than left as unparseable JSON.
+            if path.exists() and path.stat().st_size > ERROR_LOG_MAX_BYTES:
+                tail = path.read_text(errors="replace")[-(ERROR_LOG_MAX_BYTES // 2):]
+                path.write_text(tail.split("\n", 1)[-1] if "\n" in tail else "")
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            # Failing to record a failure must never be the thing that kills the poller. stderr
+            # has already carried it by this point, so the record is degraded, not lost.
+            pass
+
     def error(self, section: str, exc: Exception) -> None:
+        self.record_error(section, exc)
         sig = f"{section}:{str(exc)[:80]}"
         last = self.state["errors"].get(sig)
         if not last or time.time() - last > 1800:
@@ -418,7 +497,11 @@ class Poller:
             except Exception as exc:  # one failing source must never kill the poller
                 self.error(section.__name__, exc)
         if self.first_tick:
-            self.state["started"] = now_iso()
+            # `setdefault`, not assignment. `first_tick` is now true once per PROCESS, so an
+            # assignment here would rewrite `started` on every arm and destroy the one thing it is
+            # still for: when this instance's poller first ran. Write-once keeps it honest, and
+            # keeps `tc-portal`'s 2026-09-11 stamp on disk as the evidence for DEV-794.
+            self.state.setdefault("started", now_iso())
             self.first_tick = False
             emit("poller_started", working=working_count(), max_workers=cfg["limits"]["max_workers"],
                  ledger_open=sum(1 for e in ledger.values() if e.get("status") in ALIVE))
@@ -916,6 +999,30 @@ def allele_dispatch_limit(cfg: dict) -> str:
         return "?"
 
 
+def last_error() -> str | None:
+    """The newest record in the poller's error log, for `status`. None when there is none.
+
+    Read defensively on purpose: a `status` that raises because the error log is unreadable would
+    hide every other number on the line, which is the opposite of what the log is for.
+    """
+    try:
+        lines = [l for l in error_log().read_text(errors="replace").splitlines() if l.strip()]
+    except OSError:
+        return None
+    if not lines:
+        return None
+    try:
+        record = json.loads(lines[-1])
+    except ValueError:
+        return lines[-1][:200]
+    age = ""
+    try:
+        age = f", {int(time.time() - parse_iso(record['at']))}s ago"
+    except (KeyError, ValueError):
+        pass
+    return f"{record.get('section')}{age}: {record.get('error')} · {len(lines)} in {error_log()}"
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     try:
@@ -934,6 +1041,12 @@ def cmd_status(args) -> None:
     print(f"poller heartbeat: {age} · ledger working {working_count()}/{cfg['limits']['max_workers']}"
           f" (advisory) · allele dispatched {allele_dispatched(live)}/{allele_dispatch_limit(cfg)}"
           f" (enforced)")
+    # The heartbeat above says the poller is alive. It does NOT say an event reached anyone, and
+    # DEV-794 is three hours of `heartbeat 31s ago` over a poller that surfaced 1 of 10 review
+    # requests. Until the event channel is acknowledged rather than hoped at, the most useful
+    # second number is whether a section has been throwing -- which stdout may never have carried.
+    failure = last_error()
+    print(f"last poller error: {failure}" if failure else "last poller error: none recorded")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
