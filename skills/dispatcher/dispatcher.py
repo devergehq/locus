@@ -413,12 +413,25 @@ class Poller:
         # evidence for this bug.
         #
         # The cost, stated because it is real rather than hidden: a host that re-arms the poller
-        # announces a backlog on each arm, and `poll --once` driven by an external loop would
-        # announce one every tick. The sanctioned host is the looping `poll` of SKILL.md step 3 --
-        # one process per session -- and `review_backlog` is pruned at the end of every
-        # `review_requests` pass to keys that are still present AND still unclaimed. So what a
-        # re-arm re-asks about is exactly the set nobody has decided on yet, which is the set worth
-        # re-asking about.
+        # announces a backlog on each arm, and a host that runs `poll --once` on a cadence
+        # announces one every tick.
+        #
+        # That second host is not hypothetical. As of 30 September 2026 it is the PRODUCTION one:
+        # the principal stopped hosting the poller under `Monitor` -- the arrangement this ticket
+        # is about -- and drives `poll --once` in the foreground instead, "until we can guarantee
+        # that the monitor has some rigor to it and we can start to trust it again". Under that
+        # host every unclaimed review request reads as `backlog: true`, so none of them
+        # auto-dispatches and each one needs a human decision.
+        #
+        # That is chosen here rather than merely tolerated, because it is exactly what the
+        # Dispatcher is already doing by hand -- and by hand means from memory, which is the
+        # failure mode the contract exists to remove. `review_backlog` is pruned at the end of
+        # every `review_requests` pass to keys that are still present AND still unclaimed, so what
+        # a fresh process re-asks about is the set nobody has decided on yet.
+        #
+        # If the automatic path is ever wanted back under a per-tick host, the flag needs a session
+        # identity supplied by the caller, and the reason none is available today is the second row
+        # of the migration table on the pull request.
         self.first_tick = True
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
