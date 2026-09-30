@@ -11,7 +11,86 @@ refuses to build when they disagree.
 
 ## [Unreleased]
 
+### Added
+
+- **CI runs the four `scripts/test-*.sh` harnesses.** They covered the Python skill scripts and
+  nothing executed them, so DEV-794's own finding — "nothing caught it, because nothing tested it" —
+  would have stayed true of the suite written to close it. All four are green together (65 + 26 + 79
+  + 36 = 206 assertions) and none needs credentials, the network or a built binary. None had ever run
+  on Linux, so the first red run there is information rather than a regression.
+
 ### Fixed
+
+- **An empty GitHub search is no longer read as an empty inbox.** `review_requests()` and
+  `linear_triggers()` both treated a zero-result tick as a fact about the world and committed the
+  destructive state that follows from it. Executed, the review side cleared a live review with the
+  reason `"review request removed"` for an open PR, re-emitted a PR the principal had **skipped** as
+  `rerequested: true`, fired a false `review_rerequested`, and dropped a start-up item's backlog flag
+  permanently — which silently undoes the backlog fix above, so the two ship together. The Linear
+  side deleted every trigger marker, re-emitting each one on recovery with its `backlog` flag lost.
+  `REVIEWS_Q` now requests GitHub's `issueCount`, and new `Poller.trust_empty()` believes an empty
+  result only on the **second** consecutive zero, refusing it outright when the search says it
+  matched work and returned none of it. An unbelieved zero emits `source_empty` and skips the commit
+  entirely, so recovery is a no-op rather than a burst of false events. A first draft also believed
+  `issueCount == 0` at once, on the reasoning that GitHub had affirmatively said "nothing matched";
+  review showed that `issueCount` and `nodes` come from the same query against the same
+  eventually-consistent index, so a stale index reports zero for both — the exact shape the guard
+  exists to refuse — and an `issueCount: 0` tick reproduced all four harms on the guarded source.
+  Truncation is guarded too: above `REVIEW_PAGE` the surplus is absent from `nodes` and GitHub's
+  search order is not stable between ticks, so 52 open requests produced two false `review_cleared`
+  against PRs under active review. On a truncated page the **cleared sweep** is skipped while
+  `prs_present` is still committed, as the union of what was known and what came back — a first
+  version returned without committing it, which froze the snapshot and re-offered a `skipped` PR as
+  `rerequested: true` once per tick, ungated, for as long as the truncation lasted. That was worse
+  than not guarding truncation at all, inside truncation's own trigger condition, and review caught
+  it. The cost of the guard is clearance detection alone: a review that genuinely stops being
+  requested is not reported until the count drops back under a full page. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
+  is what would have shown the 30 Sep incident, where `poller heartbeat: 31s ago` was true
+  throughout, and `SKILL.md` gains the `source_empty` handler and the `sources:` line. `poll` gains
+  `--backlog`/`--no-backlog` so a host can state the start-up policy instead of inheriting it from
+  its own shape; the default is unchanged. `poller_started` now fires once per process regardless of
+  that flag, carrying `backlog_suppressed`, because a session whose first call carried `--no-backlog`
+  auto-dispatched everything open and emitted nothing at all to say a process had run with the policy
+  off — a policy nobody can observe is barely better than one nobody chose. `status` no longer raises on a `sources` bucket or an
+  error record written by another version of this file — `parse_iso(None)` throws `AttributeError`,
+  which the original `except (TypeError, ValueError)` did not catch, in a function whose whole job is
+  not to hide the rest of the line. The guard is per process: an orphaned poller on an older plugin
+  version still commits an empty result as fact, and can roll the `sources` values back, because
+  `poll_state()` takes no lock across its read-modify-write (DEV-799, folded into DEV-794's PR).
+
+- **The dispatcher's start-up backlog is reachable again.** `Poller.__init__` read `first_tick`
+  out of the *persisted* state file — `not self.state.get("started")` — while `tick()` writes
+  `started` to disk, so `backlog` was true once per instance **lifetime** rather than once per
+  session. The `tc-portal` instance carried `"started": "2026-09-11T13:18:11+00:00"` for 19 days,
+  which made SKILL.md step 4's whole start-up contract (list the review backlog, ask before
+  dispatching) unreachable dead code for all of them: `review_backlog` was `[]` and stayed `[]`,
+  and on 30 Sep a three-hour session surfaced 1 of 10 open review requests. `first_tick` is now a
+  property of the process, which needs no migration — every instance already carrying a poisoned
+  `started` is fixed by its next arm, with no version marker to interpret. `started` is now
+  written with `setdefault`, so it keeps its meaning (when this instance's poller first ran) and
+  keeps the 11 Sep stamp as the evidence. Replayed against the live GitHub data with a 19-day-old
+  `started`: 11 open requests, 11 flagged `backlog: false` before, 11 flagged `backlog: true` and
+  a `poller_started` after. `scripts/test-dispatcher-poller.sh` pins it against a poisoned state
+  fixture, and reverses the fix in a copy of the source to prove the suite discriminates. One
+  behaviour change comes with it: because the flag is per process, every run of a host that drives
+  `poll --once` on a cadence — which is what production does as of 30 Sep, the `Monitor`-hosted
+  poller having lost the principal's trust — announces a backlog, so any review request it
+  surfaces is flagged `backlog: true`, none auto-dispatches, and each needs a human decision. That
+  is what the Dispatcher was already doing by hand. `due()` still gates emission at
+  `reemit_after_secs`, so a key is announced at most once per that window however often the poller
+  runs; what fires on every run is `poller_started` (DEV-794).
+
+- **A thrown poller section now reports off stdout.** `Poller.error()` reported a failing section
+  by calling `emit()`, which writes to stdout — the same channel that may be the thing that is
+  broken — at most once per signature per 1800s, with the timestamps persisted *across* sessions.
+  So a failure repeating for a week could report twice an hour, to nobody, and leave no trace
+  anywhere else: `state["errors"]` is only the rate-limit clock and is written once at end of
+  tick, so a section that throws and then a process that dies left nothing at all. New
+  `Poller.record_error()` writes every occurrence to stderr and appends it, with a traceback, to
+  `runtime/poller-errors.jsonl` before `tick()` reaches its state write. The file is trimmed by
+  bytes at 256 KiB, keeping the newest. `status` now prints the last error and its age. The
+  `error` event on stdout is unchanged, rate limit included, so existing readers see no
+  difference (DEV-794).
 
 - **`review_lint.py` fails a review body's table over four columns.** An index on
   Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over

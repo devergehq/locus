@@ -137,3 +137,18 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --all-features
+
+      # The four shell harnesses covering the Python skill scripts, which nothing ran until
+      # DEV-794. That ticket's own finding was "nothing caught it, because nothing tested it", so
+      # shipping a suite no job executes would have left the sentence true. They are added together
+      # because the doctrine above allows it: all four are green (65 + 26 + 79 + 36 = 206
+      # assertions), and "do not mark a check required until it is green" is about the check, not
+      # about how many files it covers. Each fakes `gh` on PATH or works on temp files, so none
+      # needs credentials, the network, or a built binary -- but none had run on Linux before this,
+      # so the first red run here is information rather than a regression.
+      - name: Run shell test harnesses
+        run: |
+          for f in scripts/test-*.sh; do
+            echo "== $f"
+            sh "$f"
+          done

@@ -16,7 +16,7 @@ Resolve an instance with --instance <slug>, or $DISPATCHER_INSTANCE, or by havin
 one instance installed. `doctor` prints both roots.
 
   init --instance SLUG                   Create the Agent label group and write config.json.
-  poll [--once]                          Dispatcher's eyes. One JSON line per new event.
+  poll [--once] [--backlog|--no-backlog] Dispatcher's eyes. One JSON line per new event.
   watch KEY [--pr OWNER/REPO#N] [--once] A worker's eyes on its own ticket and PR.
   ledger list [--all] | get KEY | put KEY [k=v ...] [--note TEXT] [--by WHO]
   label ISSUE STATE [--state NAME]       Set the ticket's one Agent-group label ('none' clears).
@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -136,6 +137,11 @@ def poll_state() -> Path:
 def heartbeat() -> Path:
     return runtime() / "poller-heartbeat"
 
+
+def error_log() -> Path:
+    """Where a thrown poller section is recorded, independently of stdout. See `record_error`."""
+    return runtime() / "poller-errors.jsonl"
+
 # Ledger statuses. WORKING counts against max_workers; ALIVE means a session should exist.
 #
 # `blocked` is a working status deliberately, but NOT for the two reasons first written down
@@ -167,6 +173,10 @@ REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
 LINEAR_KEY = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 PR_URL = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
 BODY_LIMIT = 1500
+# The error log is bounded so a section failing every tick for a month cannot fill the disk.
+# Trimmed by bytes rather than by a line count, because records vary by an order of magnitude with
+# the length of the traceback, and a fixed line count spends most of the budget or none of it.
+ERROR_LOG_MAX_BYTES = 256 * 1024
 
 
 # --------------------------------------------------------------------------- basics
@@ -366,14 +376,22 @@ def triggers_query(team_key: str | None) -> tuple[str, dict]:
         return TRIGGERS_Q % (", $team: String!", "\n    team: { key: { eq: $team } },"), {"team": team_key}
     return TRIGGERS_Q % ("", ""), {}
 
+# The review query's page size, named because two places must agree about it: the query asks for
+# this many, and `review_requests` treats `issueCount` exceeding a FULL page as truncation. With the
+# number written twice, a change to one would silently turn the truncation check into a check on any
+# count/hit-list disagreement -- which fires outside truncation and, before the union commit below,
+# had a cost.
+REVIEW_PAGE = 50
+
 REVIEWS_Q = """
 query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: %d) {
+    issueCount
     nodes { ... on PullRequest {
       number title url isDraft headRefOid createdAt author { login } repository { nameWithOwner }
     } }
   }
-}"""
+}""" % REVIEW_PAGE
 
 
 class Poller:
@@ -384,7 +402,58 @@ class Poller:
         self.state.setdefault("prs_present", None)
         # State written before backlog tracking existed: whatever was already pending is backlog.
         self.state.setdefault("review_backlog", sorted(self.state["prs_present"] or []))
-        self.first_tick = not self.state.get("started")
+        # Keyed on THIS PROCESS, and never on the state file. `started` is persisted, so reading
+        # it made `backlog` true once per instance LIFETIME instead of once per session: the
+        # `tc-portal` instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
+        # whole start-up contract -- list the review backlog, ask before dispatching -- was
+        # unreachable dead code for every one of them (DEV-794). A fresh `Poller` is a fresh
+        # session's eyes, so the first tick of the process is the first tick, full stop.
+        #
+        # This is also the answer to the migration question, and the answer is that there is
+        # nothing to migrate. Every instance already carrying a poisoned `started` is fixed by its
+        # next arm. The two alternatives both cost more and buy less: a version marker has to
+        # interpret the poisoned key and leaves a fork in behaviour between instances created
+        # before and after the fix, and a separate session-scoped field needs a session identity
+        # that nothing in the sanctioned host can supply -- `Monitor` does not hand the command one.
+        #
+        # `started` is still written below, as write-only provenance -- when this instance's poller
+        # first ran -- so nothing that reads it breaks and the 11 Sep date stays on disk as the
+        # evidence for this bug.
+        #
+        # The cost, stated because it is real rather than hidden: a host that re-arms the poller
+        # announces a backlog on each arm, and so does every run of a host that drives
+        # `poll --once` on a cadence.
+        #
+        # Not on every tick, though, and the difference is worth being exact about because the
+        # first draft of this comment got it wrong. `due()` gates emission at
+        # `reemit_after_secs`, so a given key is announced at most once per that window however
+        # often the poller runs. Measured over three consecutive fresh processes inside one
+        # window: run 1 emitted the `review_request`, runs 2 and 3 emitted none. What fires on
+        # every run is `poller_started`, not the backlog list.
+        #
+        # That second host is not hypothetical. As of 30 September 2026 it is the PRODUCTION one:
+        # the principal stopped hosting the poller under `Monitor` -- the arrangement this ticket
+        # is about -- and drives `poll --once` in the foreground instead, "until we can guarantee
+        # that the monitor has some rigor to it and we can start to trust it again". Under that
+        # host every unclaimed review request reads as `backlog: true`, so none of them
+        # auto-dispatches and each one needs a human decision.
+        #
+        # That is chosen here rather than merely tolerated, because it is exactly what the
+        # Dispatcher is already doing by hand -- and by hand means from memory, which is the
+        # failure mode the contract exists to remove. `review_backlog` is pruned at the end of
+        # every `review_requests` pass to keys that are still present AND still unclaimed, so what
+        # a fresh process re-asks about is the set nobody has decided on yet.
+        #
+        # If the automatic path is ever wanted back under a per-tick host, the flag needs a session
+        # identity supplied by the caller, and the reason none is available today is the second row
+        # of the migration table on the pull request.
+        self.first_tick = True
+        # Separate from `first_tick`, which `--no-backlog` may switch off. This one records that a
+        # new process ran at all, and nothing may suppress it: raised in review after a session whose
+        # FIRST call carried `--no-backlog` auto-dispatched three requests and emitted no
+        # `poller_started`, leaving nothing downstream aware that a process had run with the policy
+        # off. A policy nobody can observe is barely better than one nobody chose.
+        self.announced = False
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -401,7 +470,134 @@ class Poller:
         self.state["once"][mark] = now_iso()
         return True
 
+    def record_error(self, section: str, exc: Exception) -> None:
+        """Record a thrown section where stdout reaching a reader is not a precondition.
+
+        Two destinations, both unconditional, because the rate limit in `error()` is a courtesy to
+        the Dispatcher's event stream and not a reason to lose the record:
+
+          stderr                       the host's own log. Under `Monitor` that is the task's
+                                       output file; under background Bash, the redirect.
+          runtime/poller-errors.jsonl  outlives the host. Appended and closed per record, and
+                                       BEFORE `tick()` reaches its state write, so a section that
+                                       throws followed by a process that dies still leaves the
+                                       reason on disk. `state["errors"]` cannot do that: it is only
+                                       the rate-limit clock, and it is written once at end of tick.
+
+        DEV-794 is what this absence cost. `error()` reported a thrown section by emitting on the
+        same stdout that may be the broken thing, at most once per signature per 1800s with the
+        timestamps persisted ACROSS sessions -- so a failure repeating for a week could report
+        twice an hour, to nobody, and leave no trace anywhere else. The one question that ticket
+        could not settle from the evidence it had -- "is a section throwing and being swallowed?"
+        -- is a question this file answers by existing.
+        """
+        print(f"poller: {section} failed: {type(exc).__name__}: {str(exc)[:200]}",
+              file=sys.stderr, flush=True)
+        record = {"at": now_iso(), "section": section,
+                  "error": f"{type(exc).__name__}: {exc}"[:400],
+                  "traceback": traceback.format_exc()[-1200:]}
+        try:
+            path = error_log()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Keep the tail: the newest failure is the one being diagnosed. The slice is in
+            # characters against a cap in bytes, which is deliberate slack -- this is a guard
+            # against filling a disk, not an accounting of one -- and the partial first line the
+            # slice lands in is dropped rather than left as unparseable JSON.
+            if path.exists() and path.stat().st_size > ERROR_LOG_MAX_BYTES:
+                tail = path.read_text(errors="replace")[-(ERROR_LOG_MAX_BYTES // 2):]
+                path.write_text(tail.split("\n", 1)[-1] if "\n" in tail else "")
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            # Failing to record a failure must never be the thing that kills the poller. stderr
+            # has already carried it by this point, so the record is degraded, not lost.
+            pass
+
+    def trust_empty(self, source: str, count: int, matched: int | None = None) -> bool:
+        """Is an empty result from `source` the truth, or the source failing quietly?
+
+        Returns True when the caller may act on `count` as fact — which for an empty result means
+        committing the destructive state that follows from "nothing is there".
+
+        DEV-799. Both sources used to treat an empty result as an empty world. On the review side
+        that cleared live reviews with the reason "review request removed", re-emitted a PR the
+        principal had **skipped** as `rerequested`, and dropped a start-up item's backlog flag so it
+        would auto-dispatch — which silently undoes DEV-794's fix. On the Linear side it deleted
+        every trigger marker. Nothing threw and nothing was recorded, so the tick committed the
+        emptiness as fact and the next tick could not tell.
+
+        **One test decides it: an empty result is believed only on the second consecutive zero.**
+        Everything vanishing in one tick is far more often a flaky index than a real emptying, and
+        the cost of believing it a tick late is one tick of staleness against a false
+        `review_cleared`. A source that has never returned anything is believed at once — a fresh
+        instance with no open reviews must not sit in a suspicious state forever — and that case is
+        carried by `last_nonempty_at` being absent, not by any special-casing of the count.
+
+        `matched` (GitHub's `issueCount`) then sharpens it in one direction only: `matched > 0` with
+        `count == 0` is the search telling us it matched work and returned none of it, which is not
+        a fact about the world at any streak length and is never believed.
+
+        **An earlier version of this method also believed `matched == 0` at once, and that was a
+        blocker found in review.** The reasoning was that GitHub had affirmatively said "nothing
+        matched", so it was a fact. It is not: `issueCount` and `nodes` are computed from the same
+        query against the same eventually-consistent index, so a stale index returns `0` for both —
+        which is precisely the shape this method exists to catch, and the short-circuit waved it
+        through. Executed against the guarded source, an `issueCount: 0` tick reproduced all four
+        DEV-799 harms verbatim. The stated cost of removing it was also wrong: the claim was that a
+        genuinely-emptied instance would "sit one tick behind forever", when the second zero
+        believes, so the cost is one tick once. **Do not reinstate it without a captured
+        `(issueCount, len(nodes))` pair from a degraded response showing the two disagree.**
+
+        **On pagination, measured rather than assumed.** `issueCount` is the TOTAL number of matches,
+        not the size of the page: against the live review query on 30 September 2026, `first: 1`
+        returned `{"issueCount": 11, "returned": 1}` and `first: 50` returned
+        `{"issueCount": 11, "returned": 11}`. So `matched > count` on a full page is ordinary
+        truncation rather than a failing search — handled by the caller, which refuses the
+        destructive commit for a different reason (see `review_requests`) — while `matched > 0` with
+        `count == 0` is unreachable by pagination, because page one of a non-empty match always
+        carries `min(page, count)` items.
+
+        **This guard is per process only in the sense that its code is.** `zero_streak` is persisted
+        in `poll-state.json`, so under a host that runs `poll --once` on a cadence the streak
+        accumulates across runs, which is what makes the second-zero rule work there at all. What
+        does not carry is the guard itself: an orphaned poller can outlive the plugin version that
+        started it — one process reaped on 30 September 2026 was running locus 0.5.2 against this
+        same instance — and a poller without this method commits an empty result as fact. The
+        `sources` bucket's *keys* survive such a poller, because it reads the whole state file and
+        writes it back; its *values* can be rolled back to that poller's read-time snapshot, because
+        `poll_state()` takes no lock across the read-modify-write where `ledger_put` explicitly
+        does. Nothing here can fix that; DEV-795 owns the lifecycle.
+        """
+        seen = self.state.setdefault("sources", {}).setdefault(source, {})
+        if count:
+            seen.update(last_count=count, last_at=now_iso(), last_nonempty_at=now_iso(),
+                        zero_streak=0)
+            return True
+        streak = seen.get("zero_streak", 0) + 1
+        seen.update(last_count=0, last_at=now_iso(), zero_streak=streak)
+        if matched:
+            # `matched` is truthy only when the source both reported a count and returned nothing.
+            # No rate limit on the decision, only on the telling: the decision must be made every
+            # tick or the destructive commit slips through on the quiet ones.
+            if self.due(f"{source}|matched_not_returned", 900):
+                emit("source_empty", source=source, matched=matched, returned=0, believed=False,
+                     last_nonempty_at=seen.get("last_nonempty_at"),
+                     reason=f"{source} matched {matched} and returned 0 — treating as a fault")
+            return False
+        if streak == 1 and seen.get("last_nonempty_at"):
+            # Deliberately reached for BOTH `matched == 0` and `matched is None`. The distinction
+            # between them — `None == 0` is False in Python, so a source with no count at all, such
+            # as Linear, has only this test — no longer selects between code paths, and that is the
+            # point: after the blocker above, an affirmative zero and an absent count are treated
+            # identically, because neither is evidence that the world is empty.
+            emit("source_empty", source=source, matched=matched, returned=0, believed=False,
+                 last_nonempty_at=seen.get("last_nonempty_at"),
+                 reason=f"{source} returned 0 after a non-empty tick — waiting for a second")
+            return False
+        return True
+
     def error(self, section: str, exc: Exception) -> None:
+        self.record_error(section, exc)
         sig = f"{section}:{str(exc)[:80]}"
         last = self.state["errors"].get(sig)
         if not last or time.time() - last > 1800:
@@ -417,11 +613,20 @@ class Poller:
                 section(cfg, ledger, backlog)
             except Exception as exc:  # one failing source must never kill the poller
                 self.error(section.__name__, exc)
-        if self.first_tick:
-            self.state["started"] = now_iso()
-            self.first_tick = False
+        if not self.announced:
+            # Keyed on `announced`, not on `first_tick`, because `--no-backlog` sets `first_tick`
+            # False before the first tick and these three things are not the flag's business.
+            #
+            # `setdefault`, not assignment. `first_tick` is true once per PROCESS, so an assignment
+            # here would rewrite `started` on every arm and destroy the one thing it is still for:
+            # when this instance's poller first ran. Write-once keeps it honest, and keeps
+            # `tc-portal`'s 2026-09-11 stamp on disk as the evidence for DEV-794.
+            self.state.setdefault("started", now_iso())
+            self.announced = True
             emit("poller_started", working=working_count(), max_workers=cfg["limits"]["max_workers"],
+                 backlog_suppressed=not backlog,
                  ledger_open=sum(1 for e in ledger.values() if e.get("status") in ALIVE))
+        self.first_tick = False
         write_json(poll_state(), self.state)
         heartbeat().write_text(now_iso())
 
@@ -467,6 +672,18 @@ class Poller:
                     emit("linear_retrigger", **common)
             elif self.due(f"{key}|trigger|{mode}", every):
                 emit("linear_trigger", backlog=backlog, **common)
+        # Called AFTER the emission loop, where `review_requests` calls it before. Both are correct
+        # for the same reason and only one of them used to say so: the loop is a no-op whenever the
+        # result is empty, which is the only case that can return False, so nothing above has been
+        # emitted and nothing needs undoing. If a later edit gives this loop a side effect that
+        # fires on an empty result, move this call above it.
+        if not self.trust_empty("linear", len(data["issues"]["nodes"])):
+            # The sweep below is this section's destructive commit. On an unbelieved empty result it
+            # would delete every trigger marker, and recovery would then re-emit each one — a fresh
+            # `linear_trigger` having lost `backlog: true`, and a false `linear_retrigger` for
+            # anything the ledger has working. Narrower than the review side, because only tickets
+            # still carrying a trigger label are in the query at all, but the same shape.
+            return
         # A ticket that left the trigger query and comes back later should fire at once.
         for mark in [m for m in self.state["emitted"] if "|trigger|" in m or "|retrigger|" in m]:
             if mark.split("|")[0] not in seen:
@@ -475,10 +692,42 @@ class Poller:
     def review_requests(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         g = cfg["github"]
         data = gh("api", "graphql", "-f", f"query={REVIEWS_Q}", "-f", f"q={g['review_query']}")
+        search = data["data"]["search"]
+        nodes = search["nodes"]
+        # The RAW node count, not `len(present)`. A page of nothing but drafts is a real "nothing
+        # is requested" once `skip_drafts` has filtered it, and judging trust on the filtered
+        # count would report that as a failing search.
+        matched = search.get("issueCount")
+        trusted = self.trust_empty("github", len(nodes), matched)
+        if trusted and matched and len(nodes) >= REVIEW_PAGE and matched > len(nodes):
+            # TRUNCATION, which is a third shape and not a variant of emptiness. `first: 50` means
+            # the surplus is simply absent from `nodes`, and GitHub's search order is not stable
+            # between ticks, so which 50 come back shifts with no change in the world. Executed with
+            # 52 open: page one, then the same 52 rotated by two, produced two `review_cleared`
+            # reading "review request removed" against PRs open and under active review. That is
+            # DEV-799's opening harm reached through a NON-empty response.
+            #
+            # The emission loop below still runs — the rows that did come back are real and the
+            # Dispatcher should see them. Only the CLEARED SWEEP is skipped; `prs_present` is still
+            # committed, as the union of what was known and what came back, because freezing it is
+            # what produced the blocker described at that early return. The cost is clearance
+            # detection for as long as the truncation lasts: while over the page size, a review that
+            # genuinely stops being requested is not reported. Silence about a real clearance is the
+            # better failure than a confident false one, but it is a failure and it is bounded only
+            # by somebody paging the query.
+            #
+            # `TRIGGERS_Q` carries the same `first: 50` and Linear reports no count at all, so on
+            # that source this is undetectable as well as unguarded.
+            if self.due("github|truncated", 900):
+                emit("source_empty", source="github", matched=matched, returned=len(nodes),
+                     believed=False,
+                     reason=f"github matched {matched} and returned {len(nodes)} — page one of "
+                            f"first: 50 only, so the cleared sweep is skipped")
+            trusted = False
         every = cfg["limits"]["reemit_after_secs"]
         previous = self.state["prs_present"]
         present = {}
-        for pr in data["data"]["search"]["nodes"]:
+        for pr in nodes:
             if not pr or (g.get("skip_drafts") and pr.get("isDraft")):
                 continue
             repo = pr["repository"]["nameWithOwner"]
@@ -504,6 +753,36 @@ class Poller:
                     emit("review_request", backlog=key in self.state["review_backlog"], **common)
             elif returned and status in ALIVE:
                 emit("review_rerequested", **common)
+        if not trusted:
+            # Everything below this line commits "nothing is requested" as fact: it prunes the
+            # start-up backlog, tells the Dispatcher that live reviews were cleared, and overwrites
+            # `prs_present`, which is what makes the NEXT tick read every PR as newly returned.
+            #
+            # A PARTIAL result needs the middle course, and getting this wrong was a blocker found in
+            # review. The comment here used to say "the loop above emitted nothing — `nodes` is empty
+            # whenever `trusted` is False — so there is nothing to undo". That invariant was true
+            # when only emptiness could clear `trusted`, and the truncation guard above broke it in
+            # the same breath as documenting it: a truncated page is FULL, so the loop does emit, and
+            # returning without committing froze `prs_present` at its pre-truncation snapshot.
+            # `returned` was then measured against that snapshot every tick, and its two ungated
+            # emits — a `skipped` PR re-offered as `rerequested: true`, and a false
+            # `review_rerequested` — fired once per tick for as long as the truncation lasted.
+            # Executed: three truncated ticks, six false events, overriding an explicit human skip
+            # three times. Worse than not guarding truncation at all, inside truncation's own
+            # trigger condition.
+            #
+            # So: commit the UNION. The rows that came back are real and are kept; the rows that did
+            # not come back are kept too, so nothing reads as newly returned next tick. Pruning the
+            # backlog against the union also stops it growing by a page per run. What stays off for
+            # the duration is only clearance detection — a review that genuinely stops being
+            # requested is not reported until the count drops back under the page size.
+            if matched and nodes:
+                self.state["prs_present"] = {**(previous or {}), **present}
+                self.state["review_backlog"] = sorted({
+                    k for k in self.state["review_backlog"]
+                    if (k in present or k in (previous or {}))
+                    and (ledger.get(k) or {}).get("status") in (None, "queued")})
+            return
         # Anything claimed, skipped or no longer requested has left the start-up backlog.
         self.state["review_backlog"] = sorted({
             k for k in self.state["review_backlog"]
@@ -575,6 +854,8 @@ class Poller:
 def cmd_poll(args) -> None:
     runtime().mkdir(parents=True, exist_ok=True)
     poller = Poller()
+    if getattr(args, "backlog", None) is not None:
+        poller.first_tick = args.backlog
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         poller.tick()
@@ -916,6 +1197,66 @@ def allele_dispatch_limit(cfg: dict) -> str:
         return "?"
 
 
+def last_error() -> str | None:
+    """The newest record in the poller's error log, for `status`. None when there is none.
+
+    Read defensively on purpose: a `status` that raises because the error log is unreadable would
+    hide every other number on the line, which is the opposite of what the log is for.
+    """
+    try:
+        lines = [l for l in error_log().read_text(errors="replace").splitlines() if l.strip()]
+    except OSError:
+        return None
+    if not lines:
+        return None
+    try:
+        record = json.loads(lines[-1])
+    except ValueError:
+        return lines[-1][:200]
+    # `ago` rather than a bare `pass`: an unreadable `at` used to drop the age from the line with no
+    # sign it had been dropped, which is the same conflation `ago` was fixed to avoid.
+    age = f", {ago(record.get('at'))}"
+    return f"{record.get('section')}{age}: {record.get('error')} · {len(lines)} in {error_log()}"
+
+
+def ago(stamp: str | None) -> str:
+    """A human age for a stored timestamp, distinguishing absent data from unreadable data.
+
+    `except Exception` rather than a tuple, deliberately. `parse_iso(None)` raises `AttributeError`
+    on `None.replace`, which the original tuple did not catch — so a `sources` bucket written by
+    another version of this file, with different key names, took `status` down with it. `status` is
+    SKILL.md start-up step 2, and a diagnostic that raises is worse than one that shrugs.
+    """
+    if stamp is None:
+        return "never"
+    try:
+        return f"{int(time.time() - parse_iso(stamp))}s ago"
+    except Exception:
+        return "unreadable"
+
+
+def source_summary() -> str | None:
+    """Per-source counts for `status`: what each source last returned, and when it last had work.
+
+    This is the line that would have shown DEV-794 on the day. `poller heartbeat: 31s ago` was true
+    throughout an incident in which the GitHub search was returning nothing over ten open review
+    requests, because a heartbeat measures the process and not what the process could see.
+    """
+    sources = read_json(poll_state(), {}).get("sources") or {}
+    if not sources:
+        return None
+    parts = []
+    for name in sorted(sources):
+        seen = sources[name]
+        part = f"{name} {seen.get('last_count', '?')} items {ago(seen.get('last_at'))}"
+        if not seen.get("last_count") and seen.get("last_nonempty_at"):
+            part += f" (last non-empty {ago(seen['last_nonempty_at'])})"
+        if seen.get("zero_streak"):
+            part += f" [{seen['zero_streak']} empty in a row]"
+        parts.append(part)
+    return " · ".join(parts)
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     try:
@@ -934,6 +1275,16 @@ def cmd_status(args) -> None:
     print(f"poller heartbeat: {age} · ledger working {working_count()}/{cfg['limits']['max_workers']}"
           f" (advisory) · allele dispatched {allele_dispatched(live)}/{allele_dispatch_limit(cfg)}"
           f" (enforced)")
+    # The heartbeat above says the poller is alive. It does NOT say an event reached anyone, and
+    # DEV-794 is three hours of `heartbeat 31s ago` over a poller that surfaced 1 of 10 review
+    # requests. Until the event channel is acknowledged rather than hoped at, the most useful
+    # second number is whether a section has been throwing -- which stdout may never have carried.
+    # What each source last returned. An empty source is the failure mode the heartbeat cannot
+    # see, and the one that cost six days of unsurfaced review requests (DEV-794, DEV-799).
+    sources = source_summary()
+    print(f"sources: {sources}" if sources else "sources: nothing recorded yet")
+    failure = last_error()
+    print(f"last poller error: {failure}" if failure else "last poller error: none recorded")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
@@ -1242,6 +1593,16 @@ def main() -> None:
 
     p = sub.add_parser("poll", parents=[common])
     p.add_argument("--once", action="store_true")
+    # The backlog announcement is a property of the PROCESS by default (DEV-794), which is right
+    # for the sanctioned long-lived host and for a per-tick host's first run alike. These let a
+    # caller say so explicitly instead of relying on the host's shape, which is the difference
+    # between a policy and an emergent consequence — raised in review on #63. The default is
+    # unchanged, so neither flag is required.
+    p.add_argument("--backlog", dest="backlog", action="store_true", default=None,
+                   help="announce a start-up backlog on this run's first tick (the default)")
+    p.add_argument("--no-backlog", dest="backlog", action="store_false",
+                   help="suppress it: for a host that drives `poll --once` on a cadence and has "
+                        "already asked its principal about the backlog once")
     p.set_defaults(fn=cmd_poll)
 
     p = sub.add_parser("watch", parents=[common])
