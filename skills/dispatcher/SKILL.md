@@ -56,8 +56,11 @@ allele sidebar, and stop.
 
 1. `D doctor`. Anything ✗: tell your principal and stop. Two of its checks are about processes
    rather than config: **`watchers`** lists every `watch` process on the machine with its key, age
-   and ledger status and fails on any whose key is finished with it, and **`watch cursors`** fails
-   when `runtime/watch/` is holding cursors for finished keys. Both are cleared by `D reap`, which
+   and ledger status **and the plugin version each one is running** — an orphan keeps executing the
+   install it was launched from, so two versions at once is normal after an upgrade and worth
+   seeing — and fails on any whose key is finished with it. **`watch cursors`** reports stale
+   cursors without failing, because a leftover file must not stop you starting. `D reap` clears
+   both, and it
    terminates this instance's orphaned watchers and removes those cursors — run `D reap --dry-run`
    first and show your principal what it would do. A watcher on a key someone is still working is
    never touched by either.
@@ -213,6 +216,10 @@ Don't push-notify claims, or anything your principal is clearly watching live.
 
 - **status** → `D status` plus a line per live session. Its second line is `quiet ticks: N
   consecutive` — the number of polls in a row that delivered nothing, and the time it went quiet.
+  It also names how many quiet runs have been recorded and the longest, read from
+  `runtime/quiet-log.jsonl`, which gains one line each time a quiet run **ends**. That file exists
+  so a quiet-tick threshold can be chosen from a distribution rather than from a guess; quote it
+  when your principal asks how quiet the nights actually are.
   Say it when they ask what is happening: "nothing, for the last N polls" is an answer, where a
   heartbeat alone is not. Whether a quiet dispatcher should stop on its own is your principal's
   open decision, so **do not stop polling because the count is high** — report it.

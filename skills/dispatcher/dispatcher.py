@@ -140,6 +140,10 @@ def poll_state() -> Path:
 def heartbeat() -> Path:
     return runtime() / "poller-heartbeat"
 
+
+def quiet_log() -> Path:
+    return runtime() / "quiet-log.jsonl"
+
 # Ledger statuses. WORKING counts against max_workers; ALIVE means a session should exist.
 #
 # `blocked` is a working status deliberately, but NOT for the two reasons first written down
@@ -477,7 +481,7 @@ class Poller:
             self.first_tick = False
             emit("poller_started", working=working_count(), max_workers=cfg["limits"]["max_workers"],
                  ledger_open=sum(1 for e in ledger.values() if e.get("status") in ALIVE))
-        self.mark_quiet(quiet)
+        self.mark_quiet(quiet, cfg)
         write_json(poll_state(), self.state)
         heartbeat().write_text(now_iso())
 
@@ -627,7 +631,7 @@ class Poller:
         for sid in [s for s in self.state["blocked"] if s not in tracked]:
             del self.state["blocked"][sid]
 
-    def mark_quiet(self, quiet: bool) -> None:
+    def mark_quiet(self, quiet: bool, cfg: dict) -> None:
         """Count consecutive ticks that said nothing, so "nothing is happening" can be read.
 
         Quiet means *no events at all*, not "no work found", and the difference bites: a tick in
@@ -641,11 +645,47 @@ class Poller:
         first, or stop only its poller is DEV-795's open decision and the principal's to make;
         a counter is useful under all three and commits to none, which is why it ships alone.
         """
-        self.state["quiet_ticks"] = self.state.get("quiet_ticks", 0) + 1 if quiet else 0
+        was = self.state.get("quiet_ticks", 0)
         if quiet:
+            self.state["quiet_ticks"] = was + 1
             self.state.setdefault("quiet_since", now_iso())
-        else:
-            self.state.pop("quiet_since", None)
+            return
+        if was:
+            self.log_quiet_run(was, cfg)
+        self.state["quiet_ticks"] = 0
+        self.state.pop("quiet_since", None)
+
+    def log_quiet_run(self, ticks: int, cfg: dict) -> None:
+        """Append one line when a quiet run *ends*, so a threshold can be chosen from a
+        distribution instead of from arithmetic.
+
+        DEV-795 asks whether an idle dispatcher should stop itself, and warns in the same breath
+        that the cost driving the question is the principal's observation rather than a measured
+        figure — so it also warns against picking a threshold by arithmetic on it. This is the
+        cheap measurement that replaces the arithmetic: after a week of real traffic the file
+        answers how long quiet runs actually last overnight versus in the working day, which is
+        the only honest input to an N-quiet-ticks threshold.
+
+        Logged at the END of a run rather than each tick, because a run's length is the quantity
+        of interest and a per-tick log would be 288 lines a day saying nothing.
+
+        **The field order is the format.** Anything plotting this reads positionally or by key,
+        and a dict literal keeps insertion order where a comprehension over a sorted set would
+        not. Add new fields at the end.
+        """
+        record = {
+            "ended_at": now_iso(),
+            "started_at": self.state.get("quiet_since"),
+            "ticks": ticks,
+            "interval_secs": cfg["limits"]["poll_interval_secs"],
+            "secs": ticks * cfg["limits"]["poll_interval_secs"],
+        }
+        try:
+            with quiet_log().open("a") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            # A measurement that cannot be written must not take the poller down with it.
+            print(f"warning: cannot append to {quiet_log().name}: {exc}", file=sys.stderr)
 
 
 def cmd_poll(args) -> None:
@@ -1109,6 +1149,22 @@ def allele_dispatch_limit(cfg: dict) -> str:
         return "?"
 
 
+def quiet_runs() -> list[int]:
+    """Lengths of the quiet runs recorded so far. Unreadable or absent reads as none, because a
+    diagnostic that fails on its own optional log file is worse than one that says nothing."""
+    try:
+        lines = quiet_log().read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(int(json.loads(line)["ticks"]))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     try:
@@ -1131,13 +1187,18 @@ def cmd_status(args) -> None:
     # or not anything was delivered. This says it. `quiet_since` is the honest half of the pair: a
     # count of ticks means nothing without the interval that produced them.
     quiet = read_json(poll_state(), {})
+    # The recorded runs print either way. A poll-state that has never started still sits beside a
+    # quiet-log from a previous install or a restored backup, and a measurement that exists but is
+    # not shown is the same failure as not taking it.
+    runs = quiet_runs()
+    seen = f" · {len(runs)} run(s) recorded, longest {max(runs)} ticks" if runs else ""
     if not quiet.get("started"):
-        print("quiet ticks: — (this instance has never polled)")
+        print(f"quiet ticks: — (this instance has never polled){seen}")
     else:
         ticks = quiet.get("quiet_ticks", 0)
         since = f" since {quiet['quiet_since']}" if ticks and quiet.get("quiet_since") else ""
         print(f"quiet ticks: {ticks} consecutive{since}"
-              f"{' — no events delivered' if ticks else ' — last tick had events'}")
+              f"{' — no events delivered' if ticks else ' — last tick had events'}{seen}")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
@@ -1255,7 +1316,27 @@ def parse_watch_argv(argv: list[str]) -> dict | None:
         i += 1
     if cmd != "watch" or not key:
         return None
-    return {"key": key, "as": as_, "instance": where}
+    return {"key": key, "as": as_, "instance": where, "script": argv[script]}
+
+
+VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)+$")
+
+
+def script_version(script: str) -> str | None:
+    """The plugin version a watcher is *running*, read out of its own script path.
+
+    Not cosmetic. `gh-tc-portal-9395`'s watcher was executing locus 0.5.2 while every other
+    watcher on the box ran 0.5.4: an orphan outlives the install that started it, because the
+    plugin cache keeps a directory per version and a running process holds the path it was
+    launched with. So `reap` must never key on one `dispatcher.py` location — it matches any argv
+    token whose basename is `dispatcher.py`, which is what makes it version-agnostic — and
+    `doctor` has to *show* the version, or the next person debugging a missed watcher has no way
+    to see that two different programs are involved.
+    """
+    for part in reversed(Path(script).parts):
+        if VERSION_SEGMENT.match(part):
+            return part
+    return None
 
 
 def cursor_path(key: str, as_: str | None) -> Path:
@@ -1302,7 +1383,8 @@ def live_watchers() -> list[dict]:
             where = None
         mine = where is not None and where == here
         row = {"pid": pid, "etime": etime, "age": age_words(etime), "key": parsed["key"],
-               "as": parsed["as"], "instance": where, "mine": mine, "status": None, "stop": None}
+               "as": parsed["as"], "instance": where, "mine": mine, "status": None, "stop": None,
+               "script": parsed["script"], "version": script_version(parsed["script"])}
         if mine:
             row["status"] = (ledger_get(parsed["key"]) or {}).get("status")
             row["stop"] = watch_stop_reason(parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False)
@@ -1472,7 +1554,15 @@ def cmd_doctor(args) -> None:
             raise RuntimeError(f"{len(orphans)} orphaned watcher(s) on a finished key — `reap` "
                                f"terminates them: {', '.join(w['key'] for w in orphans)}")
         note = f"{len(rows)} live, {sum(1 for w in rows if w['mine'])} on this instance"
-        return f"{note}, {len(unattributed)} unattributable" if unattributed else note
+        if unattributed:
+            note += f", {len(unattributed)} unattributable"
+        # More than one plugin version running at once is normal after an upgrade and worth
+        # saying out loud: an orphan keeps executing the install it was launched from, so a
+        # version column is how you notice that the code you are reading is not the code running.
+        versions = sorted({w["version"] for w in rows if w["version"]})
+        if len(versions) > 1:
+            note += f" · running {', '.join(versions)}"
+        return note
 
     def cursors():
         # Reports, never fails. `SKILL.md`'s start-up step says "anything ✗: tell your principal and
@@ -1499,14 +1589,14 @@ def cmd_doctor(args) -> None:
     for ok, name, detail in checks:
         print(f"{'✓' if ok else '✗'} {name}: {detail}")
     if rows:
-        print(f"\n{'PID':<8} {'KEY':<22} {'AGE':>8} {'LEDGER':<12} WATCHER")
+        print(f"\n{'PID':<8} {'KEY':<22} {'AGE':>8} {'VER':<7} {'LEDGER':<12} WATCHER")
         for w in rows:
             if not w["mine"]:
                 note = f"another instance ({w['instance']})" if w["instance"] else "instance unknown — not reapable"
             else:
                 note = f"ORPHAN — {w['stop'][1]}" if w["stop"] else "working"
             reader = f" --as {w['as']}" if w["as"] else ""
-            print(f"{w['pid']:<8} {w['key'] + reader:<22} {w['age']:>8} "
+            print(f"{w['pid']:<8} {w['key'] + reader:<22} {w['age']:>8} {w['version'] or '?':<7} "
                   f"{(w['status'] or '?') if w['mine'] else '?':<12} {note}")
     sys.exit(0 if all(ok for ok, *_ in checks) else 1)
 

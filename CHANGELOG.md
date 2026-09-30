@@ -39,10 +39,21 @@ refuses to build when they disagree.
   signalling. Process matching is narrow on purpose: a `ps | grep dispatcher.py` on that machine
   also matched three Claude sessions quoting the docs and a `/bin/zsh -c` wrapper per watcher.
 
+- **`doctor` reports the plugin version each watcher is running.** One of the nine orphans was
+  executing locus 0.5.2 while every other watcher on the machine ran 0.5.4: a watcher outlives the
+  install that started it, because the plugin cache keeps a directory per version and a running
+  process holds the path it was launched with. `reap` was already version-agnostic — it matches any
+  argv token whose basename is `dispatcher.py` — but nothing showed that two different programs
+  were involved, which is how a future reaper would appear to miss watchers it had never been able
+  to see.
+
 - **`status` reports consecutive quiet ticks.** The poller counts ticks that emitted nothing and
   `status` prints the run length and when it started, so "nothing is happening" can be read rather
   than inferred from a heartbeat that advances either way. Counting only: whether an idle
-  dispatcher should stop on its own, ask first, or stop just its poller is an open decision.
+  dispatcher should stop on its own, ask first, or stop just its poller is an open decision. Each
+  quiet run's length is appended to `runtime/quiet-log.jsonl` when the run **ends**, so that
+  decision's threshold can be set from a week of real traffic rather than by arithmetic on an
+  unmeasured cost — which is what the ticket asked for.
 
 - **`review_lint.py` fails a review body's table over four columns.** An index on
   Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over

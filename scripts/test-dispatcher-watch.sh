@@ -267,8 +267,9 @@ os.environ['DISPATCHER_RUNTIME'] = '$inst/runtime'
 sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 d._instance = __import__('pathlib').Path('$inst')
+cfg = d.load_config()
 p = d.Poller()
-for _ in range(3): p.mark_quiet(True)
+for _ in range(3): p.mark_quiet(True, cfg)
 print(p.state['quiet_ticks'])")" 3
 ok "an event resets it to zero"                  "$(python3 -c "
 import os, sys
@@ -276,10 +277,53 @@ os.environ['DISPATCHER_RUNTIME'] = '$inst/runtime'
 sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 d._instance = __import__('pathlib').Path('$inst')
+cfg = d.load_config()
 p = d.Poller()
-for _ in range(3): p.mark_quiet(True)
-p.mark_quiet(False)
+for _ in range(3): p.mark_quiet(True, cfg)
+p.mark_quiet(False, cfg)
 print(p.state['quiet_ticks'], 'quiet_since' in p.state)")" "0 False"
+
+echo "A quiet run is logged when it ends, so a threshold can come from a distribution"
+rm -f "$inst/runtime/quiet-log.jsonl"
+ok "the run length lands in quiet-log.jsonl"     "$(python3 -c "
+import os, sys, json
+os.environ['DISPATCHER_RUNTIME'] = '$inst/runtime'
+sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+d._instance = __import__('pathlib').Path('$inst')
+cfg = d.load_config()
+p = d.Poller()
+for _ in range(5): p.mark_quiet(True, cfg)
+p.mark_quiet(False, cfg)          # run of 5 ends here
+for _ in range(2): p.mark_quiet(True, cfg)
+p.mark_quiet(False, cfg)          # run of 2 ends here
+p.mark_quiet(False, cfg)          # not a run: logs nothing
+print([json.loads(l)['ticks'] for l in open(d.quiet_log())])")" "[5, 2]"
+ok "  with the seconds it lasted"                "$(python3 -c "
+import json, sys
+r = [json.loads(l) for l in open('$inst/runtime/quiet-log.jsonl')][0]
+print(r['ticks'], r['interval_secs'], r['secs'])")" "5 1 5"
+ok "  and the field order is the format"         "$(python3 -c "
+import json
+print(','.join(json.loads(open('$inst/runtime/quiet-log.jsonl').readline()).keys()))")" "ended_at,started_at,ticks,interval_secs,secs"
+set +e; D status > "$work/out" 2>&1; set -e
+ok "status reports the longest run seen"         "$(says 'longest 5 ticks')" yes
+
+echo "A watcher's plugin version is read from its own script path"
+ok "a 0.5.2 orphan is matched, not missed"       "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+argv = ['/usr/bin/python3', '/Users/x/.claude/plugins/cache/locus/locus/0.5.2/skills/dispatcher/dispatcher.py',
+        '--instance', '/i/tc-portal', 'watch', 'gh-tc-portal-9395']
+print(d.parse_watch_argv(argv)['key'])")" gh-tc-portal-9395
+ok "  and its version is reported"               "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.script_version('/Users/x/.claude/plugins/cache/locus/locus/0.5.2/skills/dispatcher/dispatcher.py'))")" 0.5.2
+ok "  a path with no version reads as unknown"   "$(python3 -c "
+import sys; sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+print(d.script_version('/home/me/src/locus/skills/dispatcher/dispatcher.py'))")" None
 set +e; D status > "$work/out" 2>&1; set -e
 ok "a never-polled instance says so"             "$(says 'never polled')" yes
 python3 - "$inst" <<'PY'
