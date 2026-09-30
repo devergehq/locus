@@ -68,6 +68,9 @@ allele sidebar, and stop.
    If you drive `poll --once` on your own cadence instead of leaving one process running, add
    `--no-backlog` from your second call onwards. The announcement is per process, so every call
    would otherwise re-announce the backlog; `--no-backlog` says "I have already asked about it".
+   **Never on the first call of a session** — that is the one call whose backlog you have not seen,
+   and suppressing it auto-dispatches everything open without asking. `poller_started` still fires
+   either way and carries `"backlog_suppressed": true`, so the mistake is visible rather than silent.
 4. Events marked `"backlog": true` arrive on the first tick:
    - **Linear triggers:** dispatch them. A label is your principal's explicit ask. Respect the cap.
    - **Review requests:** list them (PR, author, `opened`) and ask your principal once which to take. Some may
@@ -193,6 +196,7 @@ Nothing goes to GitHub from you. Ever.
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
 | `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |
 | `session_archived` | Someone discarded it outside you. `D ledger put <KEY> status=discarded`. If the ticket still carries a working label, ask whether to clear it. |
+| `poller_started` | One per poller process, before anything else it finds. `"backlog_suppressed": true` means that run was started with `--no-backlog`, so its review requests read `backlog: false` and will auto-dispatch — if you did not intend that, you are on the wrong side of the flag and should re-run without it. |
 | `source_empty` | **A source returned nothing and the poller refused to believe it.** Do NOT read your inbox as empty, and do NOT treat the absence of `review_cleared` on that tick as an all-clear — the sweep was deliberately skipped. Report it, with the `reason`. `matched N and returned 0` is the search failing outright. `returned 0 after a non-empty tick` is one flaky tick and clears itself on the next. `page one of first: 50 only` means there is more work than the query can see, and clearance detection is off until it drops back under 50. |
 | `error` | A single one is fine. The same error across several ticks, or any auth error: report it. |
 

@@ -376,15 +376,22 @@ def triggers_query(team_key: str | None) -> tuple[str, dict]:
         return TRIGGERS_Q % (", $team: String!", "\n    team: { key: { eq: $team } },"), {"team": team_key}
     return TRIGGERS_Q % ("", ""), {}
 
+# The review query's page size, named because two places must agree about it: the query asks for
+# this many, and `review_requests` treats `issueCount` exceeding a FULL page as truncation. With the
+# number written twice, a change to one would silently turn the truncation check into a check on any
+# count/hit-list disagreement -- which fires outside truncation and, before the union commit below,
+# had a cost.
+REVIEW_PAGE = 50
+
 REVIEWS_Q = """
 query($q: String!) {
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: %d) {
     issueCount
     nodes { ... on PullRequest {
       number title url isDraft headRefOid createdAt author { login } repository { nameWithOwner }
     } }
   }
-}"""
+}""" % REVIEW_PAGE
 
 
 class Poller:
@@ -441,6 +448,12 @@ class Poller:
         # identity supplied by the caller, and the reason none is available today is the second row
         # of the migration table on the pull request.
         self.first_tick = True
+        # Separate from `first_tick`, which `--no-backlog` may switch off. This one records that a
+        # new process ran at all, and nothing may suppress it: raised in review after a session whose
+        # FIRST call carried `--no-backlog` auto-dispatched three requests and emitted no
+        # `poller_started`, leaving nothing downstream aware that a process had run with the policy
+        # off. A policy nobody can observe is barely better than one nobody chose.
+        self.announced = False
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -600,15 +613,20 @@ class Poller:
                 section(cfg, ledger, backlog)
             except Exception as exc:  # one failing source must never kill the poller
                 self.error(section.__name__, exc)
-        if self.first_tick:
-            # `setdefault`, not assignment. `first_tick` is now true once per PROCESS, so an
-            # assignment here would rewrite `started` on every arm and destroy the one thing it is
-            # still for: when this instance's poller first ran. Write-once keeps it honest, and
-            # keeps `tc-portal`'s 2026-09-11 stamp on disk as the evidence for DEV-794.
+        if not self.announced:
+            # Keyed on `announced`, not on `first_tick`, because `--no-backlog` sets `first_tick`
+            # False before the first tick and these three things are not the flag's business.
+            #
+            # `setdefault`, not assignment. `first_tick` is true once per PROCESS, so an assignment
+            # here would rewrite `started` on every arm and destroy the one thing it is still for:
+            # when this instance's poller first ran. Write-once keeps it honest, and keeps
+            # `tc-portal`'s 2026-09-11 stamp on disk as the evidence for DEV-794.
             self.state.setdefault("started", now_iso())
-            self.first_tick = False
+            self.announced = True
             emit("poller_started", working=working_count(), max_workers=cfg["limits"]["max_workers"],
+                 backlog_suppressed=not backlog,
                  ledger_open=sum(1 for e in ledger.values() if e.get("status") in ALIVE))
+        self.first_tick = False
         write_json(poll_state(), self.state)
         heartbeat().write_text(now_iso())
 
@@ -681,7 +699,7 @@ class Poller:
         # count would report that as a failing search.
         matched = search.get("issueCount")
         trusted = self.trust_empty("github", len(nodes), matched)
-        if trusted and matched and matched > len(nodes):
+        if trusted and matched and len(nodes) >= REVIEW_PAGE and matched > len(nodes):
             # TRUNCATION, which is a third shape and not a variant of emptiness. `first: 50` means
             # the surplus is simply absent from `nodes`, and GitHub's search order is not stable
             # between ticks, so which 50 come back shifts with no change in the world. Executed with
@@ -690,8 +708,10 @@ class Poller:
             # DEV-799's opening harm reached through a NON-empty response.
             #
             # The emission loop below still runs — the rows that did come back are real and the
-            # Dispatcher should see them. Only the destructive sweep is skipped, which costs
-            # clearance detection for as long as the truncation lasts: while over 50, a review that
+            # Dispatcher should see them. Only the CLEARED SWEEP is skipped; `prs_present` is still
+            # committed, as the union of what was known and what came back, because freezing it is
+            # what produced the blocker described at that early return. The cost is clearance
+            # detection for as long as the truncation lasts: while over the page size, a review that
             # genuinely stops being requested is not reported. Silence about a real clearance is the
             # better failure than a confident false one, but it is a failure and it is bounded only
             # by somebody paging the query.
@@ -737,9 +757,31 @@ class Poller:
             # Everything below this line commits "nothing is requested" as fact: it prunes the
             # start-up backlog, tells the Dispatcher that live reviews were cleared, and overwrites
             # `prs_present`, which is what makes the NEXT tick read every PR as newly returned.
-            # An unbelieved empty result leaves all three alone, so recovery is a no-op rather than
-            # a burst of false events. The loop above emitted nothing — `nodes` is empty whenever
-            # `trusted` is False — so there is nothing to undo.
+            #
+            # A PARTIAL result needs the middle course, and getting this wrong was a blocker found in
+            # review. The comment here used to say "the loop above emitted nothing — `nodes` is empty
+            # whenever `trusted` is False — so there is nothing to undo". That invariant was true
+            # when only emptiness could clear `trusted`, and the truncation guard above broke it in
+            # the same breath as documenting it: a truncated page is FULL, so the loop does emit, and
+            # returning without committing froze `prs_present` at its pre-truncation snapshot.
+            # `returned` was then measured against that snapshot every tick, and its two ungated
+            # emits — a `skipped` PR re-offered as `rerequested: true`, and a false
+            # `review_rerequested` — fired once per tick for as long as the truncation lasted.
+            # Executed: three truncated ticks, six false events, overriding an explicit human skip
+            # three times. Worse than not guarding truncation at all, inside truncation's own
+            # trigger condition.
+            #
+            # So: commit the UNION. The rows that came back are real and are kept; the rows that did
+            # not come back are kept too, so nothing reads as newly returned next tick. Pruning the
+            # backlog against the union also stops it growing by a page per run. What stays off for
+            # the duration is only clearance detection — a review that genuinely stops being
+            # requested is not reported until the count drops back under the page size.
+            if matched and nodes:
+                self.state["prs_present"] = {**(previous or {}), **present}
+                self.state["review_backlog"] = sorted({
+                    k for k in self.state["review_backlog"]
+                    if (k in present or k in (previous or {}))
+                    and (ledger.get(k) or {}).get("status") in (None, "queued")})
             return
         # Anything claimed, skipped or no longer requested has left the start-up backlog.
         self.state["review_backlog"] = sorted({
@@ -1171,13 +1213,9 @@ def last_error() -> str | None:
         record = json.loads(lines[-1])
     except ValueError:
         return lines[-1][:200]
-    age = ""
-    try:
-        age = f", {int(time.time() - parse_iso(record['at']))}s ago"
-    except Exception:
-        # Same reasoning as `ago`: `at: null` raises `AttributeError`, not `KeyError` or
-        # `ValueError`, and this function's whole purpose is not to hide the rest of the line.
-        pass
+    # `ago` rather than a bare `pass`: an unreadable `at` used to drop the age from the line with no
+    # sign it had been dropped, which is the same conflation `ago` was fixed to avoid.
+    age = f", {ago(record.get('at'))}"
     return f"{record.get('section')}{age}: {record.get('error')} · {len(lines)} in {error_log()}"
 
 

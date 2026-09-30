@@ -256,8 +256,21 @@ elif scenario == "truncated":
     p = m.Poller(); p.tick()
     print(json.dumps({"phase": "settled", "present": len(p.state["prs_present"]),
                       "9400_present": "gh-r-9400" in p.state["prs_present"]}))
-    page.update(nodes=ALL[2:52], count=52)   # same 52 open, page one rotated by two
-    p.tick()
+    # Rotate the page so two keys LEAVE it (9400, 9401) and two ARRIVE (9450, 9451). The arriving
+    # pair is the one that can trip the ungated emits, and an earlier version of this scenario gave
+    # ledger entries only to the leaving pair -- so it stayed green over a live Blocker (#63 S8).
+    page.update(nodes=ALL[2:52], count=52)
+    sizes = []
+    for tick in (2, 3, 4):
+        p.tick()
+        sizes.append(len(p.state["review_backlog"]))
+        print(json.dumps({"phase": "trunc%d" % tick, "present": len(p.state["prs_present"]),
+                          "backlog_len": sizes[-1],
+                          "backlog_unique": len(set(p.state["review_backlog"]))}))
+    # The property, not a count: it used to grow by a page per tick and carry duplicates. The exact
+    # size depends on how many fixture keys the ledger prunes out, so asserting a number would rot.
+    print(json.dumps({"phase": "growth", "stable": len(set(sizes)) == 1,
+                      "no_duplicates": sizes[-1] == len(set(p.state["review_backlog"]))}))
     print(json.dumps({"phase": "rotated", "present": len(p.state["prs_present"]),
                       "9400_still_present": "gh-r-9400" in p.state["prs_present"]}))
 
@@ -267,6 +280,51 @@ elif scenario == "backlog_flag":
         once = True
         backlog = False if sys.argv[2] == "off" else True
     m.cmd_poll(A())
+
+elif scenario == "trunc_runs":
+    # The backlog leak measured in review was across fresh PROCESSES, not ticks: each new process
+    # has a first tick, so each appends a whole page to `review_backlog`, and without the union
+    # commit the prune that would dedupe it never runs. Four runs against one state file.
+    ALL = [{"number": n, "title": "t", "url": "u", "isDraft": False, "headRefOid": "s",
+            "createdAt": "2026-09-24T00:00:00Z", "author": {"login": "x"},
+            "repository": {"nameWithOwner": "o/r"}} for n in range(9400, 9452)]
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({}, set())
+    m.gh = lambda *a: ({"data": {"search": {"issueCount": 52, "nodes": ALL[:50]}}}
+                       if a[:2] == ("api", "graphql") else {"state": "OPEN", "latestReviews": []})
+    sizes = []
+    for run in range(4):
+        p = m.Poller(); p.tick()
+        sizes.append(len(p.state["review_backlog"]))
+    print(json.dumps({"phase": "runs", "sizes": sizes, "stable": len(set(sizes)) == 1}))
+
+elif scenario == "cli":
+    # #63 S7. The flag scenarios set the attribute on a stub and never reach argparse, so flipping
+    # `--backlog`'s default reverted DEV-794 with the suite still green. This drives `main()` with a
+    # real argv, which is the interface an operator actually types.
+    offline()
+    import sys as _s
+    argv = ["dispatcher.py", "--instance", os.environ["INST"], "poll", "--once"] + sys.argv[2:]
+    saved, _s.argv = _s.argv, argv
+    try:
+        m.main()
+    except SystemExit:
+        pass
+    finally:
+        _s.argv = saved
+
+elif scenario == "no_backlog_first_call":
+    # #63 S9. A session whose FIRST call carries --no-backlog: the requests must still be visible as
+    # auto-dispatching, `poller_started` must still fire so something downstream knows a process ran
+    # with the policy off, and `started` must still be written.
+    offline()
+    class A:
+        once = True
+        backlog = False
+    m.cmd_poll(A())
+    st = m.read_json(m.poll_state(), {})
+    print(json.dumps({"started_written": bool(st.get("started")),
+                      "backlog_on_disk": st.get("review_backlog")}))
 
 elif scenario == "no_backlog_keeps_state":
     # `--no-backlog` must suppress the ANNOUNCEMENT without disturbing the persisted set of
@@ -408,23 +466,60 @@ ok "\`status\` reports per-source counts"             "$(says 'sources: github 2
 
 # S1 (#63): truncation is a third shape -- a NON-empty response that still loses keys.
 instance "2026-09-11T13:18:11+00:00"
+# 9400/9401 LEAVE the rotated page; 9450/9451 ARRIVE on it. Only an arriving key can reach the two
+# ungated emits, so the entries go there -- the leaving pair is what made this fixture blind (S8).
 entry gh-r-9400 active s2
-entry gh-r-9401 active s2
+entry gh-r-9450 skipped
+entry gh-r-9451 active s2
 rc=$(run "$disp" truncated)
 ok "52 open behind first:50 is called out"           "$(says 'page one of')"               "yes"
 ok "truncation clears nothing"                       "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
+# B2 (#63): the frozen snapshot used to re-offer a skipped PR once per truncated tick, ungated.
+ok "a skipped PR is re-offered at most once"         "$(grep -c '"rerequested": true' "$work/out" || true)" "1"
+ok "one false review_rerequested at most"            "$(grep -c '"event": "review_rerequested"' "$work/out" || true)" "1"
+ok "prs_present is committed, not frozen"            "$(says '"phase": "trunc2", "present": 52')" "yes"
+ok "and stays stable across truncated ticks"         "$(says '"phase": "trunc4", "present": 52')" "yes"
+ok "review_backlog does not grow per tick"           "$(says '"stable": true')"            "yes"
+ok "and carries no duplicates"                       "$(says '"no_duplicates": true')"     "yes"
 ok "the settled tick committed all 50"               "$(says '"phase": "settled", "present": 50')" "yes"
 ok "the rotated-out key stays in prs_present"        "$(says '"9400_still_present": true')" "yes"
 ok "the truncated tick exits clean"                  "$rc"                                 "0"
 
+# A SEPARATE run, so it goes after every assertion that reads the previous one. `$work/out` is
+# shared and `run` overwrites it, so an invocation inserted mid-block silently retargets the
+# assertions below it -- which is how two of these briefly passed against the wrong output.
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" trunc_runs)
+ok "nor across four truncated processes"             "$(says '"stable": true')"            "yes"
+ok "the four-process run exits clean"                "$rc"                                 "0"
+
 # S5 (#63): the caller can state the policy instead of inheriting it from the host's shape.
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" backlog_flag off)
-ok "\`--no-backlog\` suppresses the announcement"     "$(grep -c '"event": "poller_started"' "$work/out" || true)" "0"
-ok "and flags nothing as backlog"                    "$(flagged true)"                     "0"
+ok "\`--no-backlog\` flags nothing as backlog"         "$(flagged true)"                     "0"
+# It suppresses the POLICY, never the record that a process ran -- see S9. `poller_started` firing
+# regardless is why this assertion is not "0".
+ok "but still emits poller_started"                  "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" backlog_flag on)
 ok "\`--backlog\` announces it"                       "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
+# S7 (#63): the real CLI, not a stub -- a flipped argparse default must fail here.
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" cli)
+ok "a plain \`poll --once\` announces the backlog"    "$(flagged true)"                     "10"
+ok "and emits poller_started"                        "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" cli --no-backlog)
+ok "\`--no-backlog\` via the CLI suppresses it"        "$(flagged true)"                     "0"
+ok "but still reports a process started"             "$(says '"backlog_suppressed": true')" "yes"
+
+# S9 (#63): a first call carrying --no-backlog must not go unrecorded.
+instance ""
+rc=$(run "$disp" no_backlog_first_call)
+ok "a suppressed first call still emits the start"   "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
+ok "it says the policy was suppressed"               "$(says '"backlog_suppressed": true')" "yes"
+ok "and \`started\` is written anyway"                 "$(says '"started_written": true')"    "yes"
+
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" no_backlog_keeps_state)
 ok "\`--no-backlog\` keeps the undecided keys"         "$(says '"preserved": true')"         "yes"
@@ -453,6 +548,22 @@ sed -e 's/^        if not trusted:$/        if False:  # GUARD REVERSED/' \
     "$disp" > "$work/noguard.py"
 ok "the guard reversal changed both call sites"      "$(grep -c 'GUARD REVERSED' "$work/noguard.py" || true)" "2"
 
+# B2's own control: keep the truncation guard but drop the union commit, which is exactly the state
+# that shipped at 0e9e536, and require the repetition to come back.
+sed 's/^            if matched and nodes:$/            if False:  # UNION REVERSED/' \
+    "$disp" > "$work/nounion.py"
+ok "the union reversal changed one line"             "$(grep -c 'UNION REVERSED' "$work/nounion.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9400 active s2
+entry gh-r-9450 skipped
+entry gh-r-9451 active s2
+rc=$(run "$work/nounion.py" truncated)
+ok "no union: the skipped PR is re-offered thrice"   "$(grep -c '"rerequested": true' "$work/out" || true)" "3"
+ok "no union: prs_present stays frozen at 50"        "$(says '"phase": "trunc4", "present": 50')" "yes"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$work/nounion.py" trunc_runs)
+ok "no union: the backlog grows a page per run"      "$(says '"stable": false')"           "yes"
+
 instance "2026-09-11T13:18:11+00:00"
 entry gh-r-9481 skipped
 entry gh-r-9464 active s2
@@ -477,7 +588,9 @@ ok "pre-fix: a persisted \`started\` kills first_tick"  "$(says '"first_tick": f
 
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$work/prefix.py" one_tick)
-ok "pre-fix: no poller_started at all"               "$(grep -c '"event": "poller_started"' "$work/out" || true)" "0"
+# Not "no poller_started": since S9 that event fires per process regardless of the backlog policy,
+# so it is no longer evidence of this contract. The flags below are.
+ok "pre-fix: the start reports backlog suppressed"   "$(says '"backlog_suppressed": true')" "yes"
 ok "pre-fix: all ten arrive flagged backlog false"   "$(flagged false)"                    "10"
 ok "pre-fix: not one is flagged backlog true"        "$(flagged true)"                     "0"
 

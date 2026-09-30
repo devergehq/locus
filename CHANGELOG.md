@@ -36,14 +36,22 @@ refuses to build when they disagree.
   review showed that `issueCount` and `nodes` come from the same query against the same
   eventually-consistent index, so a stale index reports zero for both — the exact shape the guard
   exists to refuse — and an `issueCount: 0` tick reproduced all four harms on the guarded source.
-  Truncation is guarded too: above `first: 50` the surplus is absent from `nodes` and GitHub's search
-  order is not stable between ticks, so 52 open requests produced two false `review_cleared` against
-  PRs under active review; the destructive sweep is now skipped while a page is truncated, at the
-  cost of clearance detection until it drops back under 50. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
+  Truncation is guarded too: above `REVIEW_PAGE` the surplus is absent from `nodes` and GitHub's
+  search order is not stable between ticks, so 52 open requests produced two false `review_cleared`
+  against PRs under active review. On a truncated page the **cleared sweep** is skipped while
+  `prs_present` is still committed, as the union of what was known and what came back — a first
+  version returned without committing it, which froze the snapshot and re-offered a `skipped` PR as
+  `rerequested: true` once per tick, ungated, for as long as the truncation lasted. That was worse
+  than not guarding truncation at all, inside truncation's own trigger condition, and review caught
+  it. The cost of the guard is clearance detection alone: a review that genuinely stops being
+  requested is not reported until the count drops back under a full page. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
   is what would have shown the 30 Sep incident, where `poller heartbeat: 31s ago` was true
   throughout, and `SKILL.md` gains the `source_empty` handler and the `sources:` line. `poll` gains
   `--backlog`/`--no-backlog` so a host can state the start-up policy instead of inheriting it from
-  its own shape; the default is unchanged. `status` no longer raises on a `sources` bucket or an
+  its own shape; the default is unchanged. `poller_started` now fires once per process regardless of
+  that flag, carrying `backlog_suppressed`, because a session whose first call carried `--no-backlog`
+  auto-dispatched everything open and emitted nothing at all to say a process had run with the policy
+  off — a policy nobody can observe is barely better than one nobody chose. `status` no longer raises on a `sources` bucket or an
   error record written by another version of this file — `parse_iso(None)` throws `AttributeError`,
   which the original `except (TypeError, ValueError)` did not catch, in a function whose whole job is
   not to hide the rest of the line. The guard is per process: an orphaned poller on an older plugin
