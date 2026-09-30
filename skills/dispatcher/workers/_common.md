@@ -25,6 +25,10 @@ wrong ledger or none at all.
 3. Start your eyes on the ticket — a persistent Monitor, before you do anything else:
    `Monitor(command: "<D> watch <KEY>", persistent: true,
    description: "<KEY> ticket + PR events")`. For a PR review, add `--pr OWNER/REPO#N`.
+   The watcher is **mortal**: it stops when your key's ledger status says nothing more will arrive
+   on it, and in any case after `limits.watch_max_hours`. It says so on the way out — see
+   `watch_stopped` below. It does **not** stop merely because you reported `done`; it keeps
+   watching until the PR closes, which is what lets you answer a review that lands afterwards.
 4. Read the ticket in full with the Linear MCP — the workspace is named in your dispatch block:
    `linear_get_issue` with `include: ["comments", "attachments"]`, plus its parent, sub-issues
    and relations.
@@ -41,6 +45,8 @@ wrong ledger or none at all.
 | `pr_pushed` | Someone else pushed. Pull before you push again. |
 | `pr_state` | Merged or closed — report to the Dispatcher. |
 | `watch_error` | One-off: ignore. Repeating: tell the Dispatcher. |
+| `watch_stopped` | Your eyes have closed, and the `reason` says why. `ledger` means your key's status says nothing more will arrive on it — expected after `discarded`, `failed` or a merged PR, and nothing to do. `ceiling` or `max_ticks` means the process hit its time limit while the work is still open: **re-arm the Monitor with the same command** and tell the Dispatcher it happened. |
+| `watch_unknown_key` | Your key has no ledger entry. Almost always a mistyped key in the watch command — check it against your dispatch block before you rely on anything the watcher reports. |
 
 ## Talking on Linear
 

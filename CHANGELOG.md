@@ -13,6 +13,35 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **A dispatcher watcher now stops.** `dispatcher.py watch` had no exit condition and never read
+  its own key's ledger status, so nine watcher processes were alive on the `tc-portal` instance on
+  30 September 2026 — all nine on keys whose status was `discarded`, the oldest for 6 days 14
+  hours, together making up to ~648 GitHub API calls an hour on work that had finished days
+  earlier. A watcher now reads its key before every tick, including the first, and stops when
+  nothing will speak on that key again (`discarded`, `failed`, `lost`, `skipped`, `deferred`, or
+  `done` once its PR is merged or closed), saying why and removing its own cursor file. Checking
+  before the first tick is what makes the exit safe under the persistent `Monitor` that hosts it:
+  a relaunch onto a dead key costs one local file read, not six API calls.
+
+  `done` alone is deliberately **not** an exit, though DEV-795 listed it: `implement.md` writes
+  `status=done` while the PR is still open and then tells the worker to stay alive for
+  `pr_review`, so exiting there would make it deaf at the moment the review lands. The
+  discriminator is `pr_status`, which the watcher already persists. `--exit-on-done` is the
+  ticket's literal reading, kept but not the default.
+
+  Backstops and visibility, for the case where the ledger is never updated: `--max-hours`
+  (default `limits.watch_max_hours`, 120) and `--max-ticks`; `doctor` lists every `watch` process
+  with its key, age and ledger status and **fails** on an orphan; and a new `reap` subcommand
+  terminates this instance's orphans and removes cursor files for finished keys — 112 of the 127
+  cursors on `tc-portal` were for keys nobody is working. `reap --dry-run` reports without
+  signalling. Process matching is narrow on purpose: a `ps | grep dispatcher.py` on that machine
+  also matched three Claude sessions quoting the docs and a `/bin/zsh -c` wrapper per watcher.
+
+- **`status` reports consecutive quiet ticks.** The poller counts ticks that emitted nothing and
+  `status` prints the run length and when it started, so "nothing is happening" can be read rather
+  than inferred from a heartbeat that advances either way. Counting only: whether an idle
+  dispatcher should stop on its own, ask first, or stop just its poller is an open decision.
+
 - **`review_lint.py` fails a review body's table over four columns.** An index on
   Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over
   140 characters`, correctly, its widest cell being 64 — and was reported rendering as

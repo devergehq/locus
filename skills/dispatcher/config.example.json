@@ -60,6 +60,7 @@
     "max_workers": 15,
     "poll_interval_secs": 300,
     "watch_interval_secs": 90,
+    "watch_max_hours": 120,
     "reemit_after_secs": 900,
     "blocked_alert_after_secs": 120,
     "max_lost_retries": 1

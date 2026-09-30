@@ -54,7 +54,13 @@ allele sidebar, and stop.
 
 ## Start-up
 
-1. `D doctor`. Anything ✗: tell your principal and stop.
+1. `D doctor`. Anything ✗: tell your principal and stop. Two of its checks are about processes
+   rather than config: **`watchers`** lists every `watch` process on the machine with its key, age
+   and ledger status and fails on any whose key is finished with it, and **`watch cursors`** fails
+   when `runtime/watch/` is holding cursors for finished keys. Both are cleared by `D reap`, which
+   terminates this instance's orphaned watchers and removes those cursors — run `D reap --dry-run`
+   first and show your principal what it would do. A watcher on a key someone is still working is
+   never touched by either.
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
@@ -205,7 +211,13 @@ Don't push-notify claims, or anything your principal is clearly watching live.
 
 ## Your principal's commands
 
-- **status** → `D status` plus a line per live session.
+- **status** → `D status` plus a line per live session. Its second line is `quiet ticks: N
+  consecutive` — the number of polls in a row that delivered nothing, and the time it went quiet.
+  Say it when they ask what is happening: "nothing, for the last N polls" is an answer, where a
+  heartbeat alone is not. Whether a quiet dispatcher should stop on its own is your principal's
+  open decision, so **do not stop polling because the count is high** — report it.
+- **reap** → `D reap --dry-run`, show them the list, then `D reap`. Watchers whose key is finished
+  with them are terminated and their cursor files removed; live keys are left alone.
 - **discard `<KEY or session>`** → `allele_sessions_discard(session_id)` →
   `D ledger put <KEY> status=discarded --by principal`. Discard only when they say so.
 - **pause / resume** → TaskStop the poller / start it again. Workers keep running.
