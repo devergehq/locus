@@ -11,6 +11,14 @@ refuses to build when they disagree.
 
 ## [Unreleased]
 
+### Added
+
+- **CI runs the four `scripts/test-*.sh` harnesses.** They covered the Python skill scripts and
+  nothing executed them, so DEV-794's own finding — "nothing caught it, because nothing tested it" —
+  would have stayed true of the suite written to close it. All four are green together (65 + 26 + 79
+  + 36 = 206 assertions) and none needs credentials, the network or a built binary. None had ever run
+  on Linux, so the first red run there is information rather than a regression.
+
 ### Fixed
 
 - **An empty GitHub search is no longer read as an empty inbox.** `review_requests()` and
@@ -20,14 +28,27 @@ refuses to build when they disagree.
   `rerequested: true`, fired a false `review_rerequested`, and dropped a start-up item's backlog flag
   permanently — which silently undoes the backlog fix above, so the two ship together. The Linear
   side deleted every trigger marker, re-emitting each one on recovery with its `backlog` flag lost.
-  `REVIEWS_Q` now requests GitHub's `issueCount`, and new `Poller.trust_empty()` refuses to believe
-  a zero when the search says it matched work and returned none of it, or when it is the first zero
-  after a non-empty tick; `issueCount == 0` is believed at once. An unbelieved zero emits
-  `source_empty` and skips the commit entirely, so recovery is a no-op rather than a burst of false
-  events. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
+  `REVIEWS_Q` now requests GitHub's `issueCount`, and new `Poller.trust_empty()` believes an empty
+  result only on the **second** consecutive zero, refusing it outright when the search says it
+  matched work and returned none of it. An unbelieved zero emits `source_empty` and skips the commit
+  entirely, so recovery is a no-op rather than a burst of false events. A first draft also believed
+  `issueCount == 0` at once, on the reasoning that GitHub had affirmatively said "nothing matched";
+  review showed that `issueCount` and `nodes` come from the same query against the same
+  eventually-consistent index, so a stale index reports zero for both — the exact shape the guard
+  exists to refuse — and an `issueCount: 0` tick reproduced all four harms on the guarded source.
+  Truncation is guarded too: above `first: 50` the surplus is absent from `nodes` and GitHub's search
+  order is not stable between ticks, so 52 open requests produced two false `review_cleared` against
+  PRs under active review; the destructive sweep is now skipped while a page is truncated, at the
+  cost of clearance detection until it drops back under 50. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
   is what would have shown the 30 Sep incident, where `poller heartbeat: 31s ago` was true
-  throughout. The guard is per process: an orphaned poller on an older plugin version still commits
-  an empty result as fact (DEV-799, folded into DEV-794's PR).
+  throughout, and `SKILL.md` gains the `source_empty` handler and the `sources:` line. `poll` gains
+  `--backlog`/`--no-backlog` so a host can state the start-up policy instead of inheriting it from
+  its own shape; the default is unchanged. `status` no longer raises on a `sources` bucket or an
+  error record written by another version of this file — `parse_iso(None)` throws `AttributeError`,
+  which the original `except (TypeError, ValueError)` did not catch, in a function whose whole job is
+  not to hide the rest of the line. The guard is per process: an orphaned poller on an older plugin
+  version still commits an empty result as fact, and can roll the `sources` values back, because
+  `poll_state()` takes no lock across its read-modify-write (DEV-799, folded into DEV-794's PR).
 
 - **The dispatcher's start-up backlog is reachable again.** `Poller.__init__` read `first_tick`
   out of the *persisted* state file — `not self.state.get("started")` — while `tick()` writes

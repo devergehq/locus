@@ -16,7 +16,7 @@ Resolve an instance with --instance <slug>, or $DISPATCHER_INSTANCE, or by havin
 one instance installed. `doctor` prints both roots.
 
   init --instance SLUG                   Create the Agent label group and write config.json.
-  poll [--once]                          Dispatcher's eyes. One JSON line per new event.
+  poll [--once] [--backlog|--no-backlog] Dispatcher's eyes. One JSON line per new event.
   watch KEY [--pr OWNER/REPO#N] [--once] A worker's eyes on its own ticket and PR.
   ledger list [--all] | get KEY | put KEY [k=v ...] [--note TEXT] [--by WHO]
   label ISSUE STATE [--state NAME]       Set the ticket's one Agent-group label ('none' clears).
@@ -513,42 +513,47 @@ class Poller:
         every trigger marker. Nothing threw and nothing was recorded, so the tick committed the
         emptiness as fact and the next tick could not tell.
 
-        Two independent tests, strongest first:
+        **One test decides it: an empty result is believed only on the second consecutive zero.**
+        Everything vanishing in one tick is far more often a flaky index than a real emptying, and
+        the cost of believing it a tick late is one tick of staleness against a false
+        `review_cleared`. A source that has never returned anything is believed at once — a fresh
+        instance with no open reviews must not sit in a suspicious state forever — and that case is
+        carried by `last_nonempty_at` being absent, not by any special-casing of the count.
 
-          matched > 0, count == 0   GitHub's `issueCount` says the search matched work and returned
-                                    none of it. That is not a fact about the world, it is the search
-                                    failing, and it is never believed.
-          a first zero after a      Believed only on the second consecutive zero. Everything
-          non-empty tick            vanishing in one tick is far more often a flaky search index
-                                    than a real emptying, and the cost of believing it a tick late
-                                    is one tick of staleness against a false `review_cleared`.
+        `matched` (GitHub's `issueCount`) then sharpens it in one direction only: `matched > 0` with
+        `count == 0` is the search telling us it matched work and returned none of it, which is not
+        a fact about the world at any streak length and is never believed.
 
-        `matched` is None for Linear, whose query has no equivalent count, so it rests on the second
-        test alone.
+        **An earlier version of this method also believed `matched == 0` at once, and that was a
+        blocker found in review.** The reasoning was that GitHub had affirmatively said "nothing
+        matched", so it was a fact. It is not: `issueCount` and `nodes` are computed from the same
+        query against the same eventually-consistent index, so a stale index returns `0` for both —
+        which is precisely the shape this method exists to catch, and the short-circuit waved it
+        through. Executed against the guarded source, an `issueCount: 0` tick reproduced all four
+        DEV-799 harms verbatim. The stated cost of removing it was also wrong: the claim was that a
+        genuinely-emptied instance would "sit one tick behind forever", when the second zero
+        believes, so the cost is one tick once. **Do not reinstate it without a captured
+        `(issueCount, len(nodes))` pair from a degraded response showing the two disagree.**
 
         **On pagination, measured rather than assumed.** `issueCount` is the TOTAL number of matches,
         not the size of the page: against the live review query on 30 September 2026, `first: 1`
         returned `{"issueCount": 11, "returned": 1}` and `first: 50` returned
-        `{"issueCount": 11, "returned": 11}`. So `matched > count` is the normal state of a truncated
-        page and is NOT treated as a fault here — only `matched > 0` with `count == 0`, which
-        pagination cannot produce, because page one of a non-empty match always carries
-        `min(page, count)` items.
+        `{"issueCount": 11, "returned": 11}`. So `matched > count` on a full page is ordinary
+        truncation rather than a failing search — handled by the caller, which refuses the
+        destructive commit for a different reason (see `review_requests`) — while `matched > 0` with
+        `count == 0` is unreachable by pagination, because page one of a non-empty match always
+        carries `min(page, count)` items.
 
-        That leaves a real trap this method does not close, named here so whoever meets it does not
-        have to rediscover it: `REVIEWS_Q` asks for `first: 50`, so at 51 open review requests the
-        51st is invisible, drops out of `present`, and draws a false `review_cleared` — the same
-        class of bug as DEV-799 one layer along, with a truncated result read as a fact instead of
-        an empty one. `issueCount` now makes it detectable in one comparison (`matched > len(nodes)`
-        means truncated), but detecting it is not the same as paging and no page-two code is here.
-        Eleven requests were open when this was written; the cap is 50. A source that has never returned anything is believed immediately — a fresh
-        instance with no open reviews must not sit in a suspicious state forever.
-
-        **This guard is per process, and that is a real limit rather than a tidy one.** An orphaned
-        poller can outlive the plugin version that started it — one of the processes reaped on
-        30 September 2026 was running locus 0.5.2 against this same instance — and a poller without
-        this method still commits an empty result as fact. The `sources` bucket survives such a
-        poller (it reads the whole state file and writes it back, so unknown keys are preserved),
-        but its ticks are unguarded. Nothing here can fix that; DEV-795 owns the lifecycle.
+        **This guard is per process only in the sense that its code is.** `zero_streak` is persisted
+        in `poll-state.json`, so under a host that runs `poll --once` on a cadence the streak
+        accumulates across runs, which is what makes the second-zero rule work there at all. What
+        does not carry is the guard itself: an orphaned poller can outlive the plugin version that
+        started it — one process reaped on 30 September 2026 was running locus 0.5.2 against this
+        same instance — and a poller without this method commits an empty result as fact. The
+        `sources` bucket's *keys* survive such a poller, because it reads the whole state file and
+        writes it back; its *values* can be rolled back to that poller's read-time snapshot, because
+        `poll_state()` takes no lock across the read-modify-write where `ledger_put` explicitly
+        does. Nothing here can fix that; DEV-795 owns the lifecycle.
         """
         seen = self.state.setdefault("sources", {}).setdefault(source, {})
         if count:
@@ -558,6 +563,7 @@ class Poller:
         streak = seen.get("zero_streak", 0) + 1
         seen.update(last_count=0, last_at=now_iso(), zero_streak=streak)
         if matched:
+            # `matched` is truthy only when the source both reported a count and returned nothing.
             # No rate limit on the decision, only on the telling: the decision must be made every
             # tick or the destructive commit slips through on the quiet ones.
             if self.due(f"{source}|matched_not_returned", 900):
@@ -565,20 +571,12 @@ class Poller:
                      last_nonempty_at=seen.get("last_nonempty_at"),
                      reason=f"{source} matched {matched} and returned 0 — treating as a fault")
             return False
-        if matched == 0:
-            # Affirmatively zero, which is different from no count at all: GitHub has told us the
-            # search matched nothing. That is a fact about the world and is believed at once, or an
-            # instance whose reviews are genuinely all done would sit one tick behind forever.
-            #
-            # `matched == 0` is deliberately NOT `not matched`, and this is the line to leave alone.
-            # `None == 0` is False in Python, so a source that supplies no count at all — Linear,
-            # whose query has no `issueCount` equivalent — falls past this test to the streak test
-            # below, which is the only evidence it has. Rewriting it as `not matched` would make
-            # every Linear tick "affirmatively empty" and believe the first zero, restoring exactly
-            # the DEV-799 behaviour this method exists to stop. There is a test for it
-            # ("a first zero keeps the trigger markers"), but a test name is not an explanation.
-            return True
         if streak == 1 and seen.get("last_nonempty_at"):
+            # Deliberately reached for BOTH `matched == 0` and `matched is None`. The distinction
+            # between them — `None == 0` is False in Python, so a source with no count at all, such
+            # as Linear, has only this test — no longer selects between code paths, and that is the
+            # point: after the blocker above, an affirmative zero and an absent count are treated
+            # identically, because neither is evidence that the world is empty.
             emit("source_empty", source=source, matched=matched, returned=0, believed=False,
                  last_nonempty_at=seen.get("last_nonempty_at"),
                  reason=f"{source} returned 0 after a non-empty tick — waiting for a second")
@@ -656,6 +654,11 @@ class Poller:
                     emit("linear_retrigger", **common)
             elif self.due(f"{key}|trigger|{mode}", every):
                 emit("linear_trigger", backlog=backlog, **common)
+        # Called AFTER the emission loop, where `review_requests` calls it before. Both are correct
+        # for the same reason and only one of them used to say so: the loop is a no-op whenever the
+        # result is empty, which is the only case that can return False, so nothing above has been
+        # emitted and nothing needs undoing. If a later edit gives this loop a side effect that
+        # fires on an empty result, move this call above it.
         if not self.trust_empty("linear", len(data["issues"]["nodes"])):
             # The sweep below is this section's destructive commit. On an unbelieved empty result it
             # would delete every trigger marker, and recovery would then re-emit each one — a fresh
@@ -676,7 +679,31 @@ class Poller:
         # The RAW node count, not `len(present)`. A page of nothing but drafts is a real "nothing
         # is requested" once `skip_drafts` has filtered it, and judging trust on the filtered
         # count would report that as a failing search.
-        trusted = self.trust_empty("github", len(nodes), search.get("issueCount"))
+        matched = search.get("issueCount")
+        trusted = self.trust_empty("github", len(nodes), matched)
+        if trusted and matched and matched > len(nodes):
+            # TRUNCATION, which is a third shape and not a variant of emptiness. `first: 50` means
+            # the surplus is simply absent from `nodes`, and GitHub's search order is not stable
+            # between ticks, so which 50 come back shifts with no change in the world. Executed with
+            # 52 open: page one, then the same 52 rotated by two, produced two `review_cleared`
+            # reading "review request removed" against PRs open and under active review. That is
+            # DEV-799's opening harm reached through a NON-empty response.
+            #
+            # The emission loop below still runs — the rows that did come back are real and the
+            # Dispatcher should see them. Only the destructive sweep is skipped, which costs
+            # clearance detection for as long as the truncation lasts: while over 50, a review that
+            # genuinely stops being requested is not reported. Silence about a real clearance is the
+            # better failure than a confident false one, but it is a failure and it is bounded only
+            # by somebody paging the query.
+            #
+            # `TRIGGERS_Q` carries the same `first: 50` and Linear reports no count at all, so on
+            # that source this is undetectable as well as unguarded.
+            if self.due("github|truncated", 900):
+                emit("source_empty", source="github", matched=matched, returned=len(nodes),
+                     believed=False,
+                     reason=f"github matched {matched} and returned {len(nodes)} — page one of "
+                            f"first: 50 only, so the cleared sweep is skipped")
+            trusted = False
         every = cfg["limits"]["reemit_after_secs"]
         previous = self.state["prs_present"]
         present = {}
@@ -785,6 +812,8 @@ class Poller:
 def cmd_poll(args) -> None:
     runtime().mkdir(parents=True, exist_ok=True)
     poller = Poller()
+    if getattr(args, "backlog", None) is not None:
+        poller.first_tick = args.backlog
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         poller.tick()
@@ -1145,16 +1174,27 @@ def last_error() -> str | None:
     age = ""
     try:
         age = f", {int(time.time() - parse_iso(record['at']))}s ago"
-    except (KeyError, ValueError):
+    except Exception:
+        # Same reasoning as `ago`: `at: null` raises `AttributeError`, not `KeyError` or
+        # `ValueError`, and this function's whole purpose is not to hide the rest of the line.
         pass
     return f"{record.get('section')}{age}: {record.get('error')} · {len(lines)} in {error_log()}"
 
 
 def ago(stamp: str | None) -> str:
+    """A human age for a stored timestamp, distinguishing absent data from unreadable data.
+
+    `except Exception` rather than a tuple, deliberately. `parse_iso(None)` raises `AttributeError`
+    on `None.replace`, which the original tuple did not catch — so a `sources` bucket written by
+    another version of this file, with different key names, took `status` down with it. `status` is
+    SKILL.md start-up step 2, and a diagnostic that raises is worse than one that shrugs.
+    """
+    if stamp is None:
+        return "never"
     try:
         return f"{int(time.time() - parse_iso(stamp))}s ago"
-    except (TypeError, ValueError):
-        return "never"
+    except Exception:
+        return "unreadable"
 
 
 def source_summary() -> str | None:
@@ -1515,6 +1555,16 @@ def main() -> None:
 
     p = sub.add_parser("poll", parents=[common])
     p.add_argument("--once", action="store_true")
+    # The backlog announcement is a property of the PROCESS by default (DEV-794), which is right
+    # for the sanctioned long-lived host and for a per-tick host's first run alike. These let a
+    # caller say so explicitly instead of relying on the host's shape, which is the difference
+    # between a policy and an emergent consequence — raised in review on #63. The default is
+    # unchanged, so neither flag is required.
+    p.add_argument("--backlog", dest="backlog", action="store_true", default=None,
+                   help="announce a start-up backlog on this run's first tick (the default)")
+    p.add_argument("--no-backlog", dest="backlog", action="store_false",
+                   help="suppress it: for a host that drives `poll --once` on a cadence and has "
+                        "already asked its principal about the backlog once")
     p.set_defaults(fn=cmd_poll)
 
     p = sub.add_parser("watch", parents=[common])

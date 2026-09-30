@@ -83,7 +83,6 @@ run () {
 }
 says   () { grep -q -- "$1" "$work/out" && echo yes || echo no; }
 onerr  () { grep -q -- "$1" "$work/err" && echo yes || echo no; }
-events () { grep -c "\"event\":" "$work/out" || true; }
 # flagged <true|false>: how many review_request events carry that backlog value
 flagged () { grep -c "\"event\": \"review_request\".*\"backlog\": $1" "$work/out" || true; }
 
@@ -189,13 +188,15 @@ elif scenario == "empty_guard":
     m.gh = gh_guard
     p = m.Poller()
     p.tick()
-    print(json.dumps({"phase": "after_full", "backlog": sorted(p.state["review_backlog"]),
-                      "present": sorted(p.state["prs_present"])}))
+    # One array per line, keyed by name. Printed together, a grep for a key matched whichever
+    # array happened to carry it -- three assertions passed without testing behaviour (#63 review).
+    print(json.dumps({"phase": "after_full", "backlog": sorted(p.state["review_backlog"])}))
+    print(json.dumps({"phase": "after_full_present", "present": sorted(p.state["prs_present"])}))
     # the empty tick: issueCount still says 3, so this is a fault and must not be believed
     holder["nodes"] = []
     p.tick()
-    print(json.dumps({"phase": "after_empty", "backlog": sorted(p.state["review_backlog"]),
-                      "present": sorted(p.state["prs_present"]),
+    print(json.dumps({"phase": "after_empty", "backlog": sorted(p.state["review_backlog"])}))
+    print(json.dumps({"phase": "after_empty_present", "present": sorted(p.state["prs_present"]),
                       "streak": p.state["sources"]["github"]["zero_streak"]}))
     holder["nodes"] = PRS[:3]
     p.tick()
@@ -216,6 +217,8 @@ elif scenario == "genuine_empty":
     p.tick()
     print(json.dumps({"present": sorted(p.state["prs_present"]),
                       "believed": p.state["prs_present"] == {}}))
+    p.tick()
+    print(json.dumps({"believed_on_second": p.state["prs_present"] == {}}))
 
 elif scenario == "two_zeroes":
     # No issueCount (the Linear shape): the SECOND consecutive zero is believed.
@@ -230,6 +233,54 @@ elif scenario == "two_zeroes":
     holder["nodes"] = []
     p.tick(); print(json.dumps({"phase": "zero_1", "markers": marks()}))
     p.tick(); print(json.dumps({"phase": "zero_2", "markers": marks()}))
+    # A count, so "the second zero sweeps them" cannot be satisfied by the line being absent.
+    print(json.dumps({"phase": "done", "zero_2_marker_count": len(marks())}))
+
+elif scenario == "truncated":
+    # DEV-799 / #63 S1. 52 open, page one of 50, then the same 52 rotated by two: search order is
+    # not stable, so two keys leave `present` with no change in the world.
+    ALL = [{"number": n, "title": "t", "url": "u", "isDraft": False, "headRefOid": "s",
+            "createdAt": "2026-09-24T00:00:00Z", "author": {"login": "x"},
+            "repository": {"nameWithOwner": "o/r"}} for n in range(9400, 9452)]
+    # Tick 1 must NOT be truncated, or there is no committed `prs_present` for tick 2 to protect:
+    # on a truncated tick nothing is committed, so the key keeps whatever it already held -- which
+    # on a first-ever tick is None. 50 open and issueCount 50 first, then 52 with the page rotated.
+    page = {"nodes": ALL[:50], "count": 50}
+    def gh_t(*args):
+        if args[:2] == ("api", "graphql"):
+            return {"data": {"search": {"issueCount": page["count"], "nodes": page["nodes"]}}}
+        return {"state": "OPEN", "latestReviews": []}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({"s2": {"last_known_status": "Idle"}}, set())
+    m.gh = gh_t
+    p = m.Poller(); p.tick()
+    print(json.dumps({"phase": "settled", "present": len(p.state["prs_present"]),
+                      "9400_present": "gh-r-9400" in p.state["prs_present"]}))
+    page.update(nodes=ALL[2:52], count=52)   # same 52 open, page one rotated by two
+    p.tick()
+    print(json.dumps({"phase": "rotated", "present": len(p.state["prs_present"]),
+                      "9400_still_present": "gh-r-9400" in p.state["prs_present"]}))
+
+elif scenario == "backlog_flag":
+    offline()
+    class A:
+        once = True
+        backlog = False if sys.argv[2] == "off" else True
+    m.cmd_poll(A())
+
+elif scenario == "hostile_state":
+    # #63 S4: a `sources` bucket and an error record written by some other version of this file.
+    offline()
+    # Two shapes at once: a bucket whose keys this version does not know (so `last_at` is absent),
+    # and one whose stamp is present but unparseable. The first must read "never", the second
+    # "unreadable" -- they are different facts and `ago` used to raise on the first.
+    m.write_json(m.poll_state(), {"sources": {"github": {"count": 3, "seen_at": "x"},
+                                              "linear": {"last_count": 1, "last_at": "garbage"}}})
+    m.error_log().parent.mkdir(parents=True, exist_ok=True)
+    m.error_log().write_text(json.dumps({"at": None, "section": "s", "error": "e"}) + "\n")
+    class A: all = False
+    m.cmd_status(A())
+    print(json.dumps({"status_survived": True}))
 
 elif scenario == "status_sources":
     m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
@@ -287,7 +338,7 @@ ok "though it is set in memory, as before"           "$(says '"in_memory_errors"
 
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" bounded)
-ok "1200 records of ~470 bytes stay under the cap"     "$(says '"under_cap": true')"         "yes"
+ok "1200 records stay under twice the cap"     "$(says '"under_cap": true')"         "yes"
 ok "the log was actually trimmed"                    "$(says '"trimmed": true')"           "yes"
 ok "every surviving record still parses"             "$(says '"all_parse": true')"         "yes"
 ok "the bound keeps the newest, not the oldest"      "$(says '"newest_kept": true')"       "yes"
@@ -307,9 +358,9 @@ instance "2026-09-11T13:18:11+00:00"
 entry gh-r-9481 skipped
 entry gh-r-9464 active s2
 rc=$(run "$disp" empty_guard)
-ok "a full tick records the backlog"                 "$(sed -n '/after_full/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
-ok "an empty search leaves prs_present alone"        "$(sed -n '/after_empty/p' "$work/out" | grep -c "gh-r-9481" || true)" "1"
-ok "an empty search leaves review_backlog alone"     "$(sed -n '/after_empty/p' "$work/out" | grep -c '"backlog": \[' || true)" "1"
+ok "a full tick records the backlog"                 "$(sed -n '/"phase": "after_full"/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
+ok "an empty search leaves prs_present alone"        "$(sed -n '/after_empty_present/p' "$work/out" | grep -c "gh-r-9481" || true)" "1"
+ok "an empty search keeps the backlog NON-empty"     "$(sed -n '/"phase": "after_empty"/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
 ok "an empty search emits no review_cleared"         "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
 ok "it says so with a source_empty event"            "$(says '"event": "source_empty"')"   "yes"
 ok "the source_empty is not believed"                "$(says '"believed": false')"         "yes"
@@ -320,9 +371,14 @@ ok "no false review_rerequested on recovery"         "$(grep -c '"event": "revie
 ok "the start-up item keeps its backlog flag"        "$(sed -n '/after_recovery/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
 ok "the guarded tick exits clean"                    "$rc"                                 "0"
 
+# B1 (#63): an affirmative `issueCount: 0` used to be believed at once. It must not be --
+# `issueCount` and `nodes` come from the same query against the same eventually-consistent index,
+# so a stale index reports 0 for both, which is the very shape the guard exists to refuse.
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" genuine_empty)
-ok "issueCount 0 is believed at once"                "$(says '"believed": true')"          "yes"
+ok "issueCount 0 is NOT believed on the first zero"  "$(says '"believed": false')"         "yes"
+ok "it is refused as the index-lag shape"            "$(says 'returned 0 after a non-empty tick')" "yes"
+ok "and a second zero does believe it"               "$(says '"believed_on_second": true')" "yes"
 
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" two_zeroes)
@@ -332,6 +388,34 @@ ok "the second zero sweeps them"                     "$(sed -n '/zero_2/p' "$wor
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" status_sources)
 ok "\`status\` reports per-source counts"             "$(says 'sources: github 2 items')"   "yes"
+
+# S1 (#63): truncation is a third shape -- a NON-empty response that still loses keys.
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9400 active s2
+entry gh-r-9401 active s2
+rc=$(run "$disp" truncated)
+ok "52 open behind first:50 is called out"           "$(says 'page one of')"               "yes"
+ok "truncation clears nothing"                       "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
+ok "the settled tick committed all 50"               "$(says '"phase": "settled", "present": 50')" "yes"
+ok "the rotated-out key stays in prs_present"        "$(says '"9400_still_present": true')" "yes"
+ok "the truncated tick exits clean"                  "$rc"                                 "0"
+
+# S5 (#63): the caller can state the policy instead of inheriting it from the host's shape.
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" backlog_flag off)
+ok "\`--no-backlog\` suppresses the announcement"     "$(grep -c '"event": "poller_started"' "$work/out" || true)" "0"
+ok "and flags nothing as backlog"                    "$(flagged true)"                     "0"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" backlog_flag on)
+ok "\`--backlog\` announces it"                       "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
+
+# S4 (#63): `status` must not raise on state written by another version of this file.
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" hostile_state)
+ok "\`status\` survives a foreign sources bucket"     "$(says '"status_survived": true')"   "yes"
+ok "a foreign bucket reads as unknown, not 3"        "$(says 'github ? items never')"      "yes"
+ok "an unparseable stamp reads unreadable"           "$(says 'unreadable')"                "yes"
+ok "and exits clean"                                 "$rc"                                 "0"
 
 # ---- the negative control: reverse the fix, and require these tests to fail ------------------
 #

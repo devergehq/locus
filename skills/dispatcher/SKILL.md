@@ -65,6 +65,9 @@ allele sidebar, and stop.
    `dispatcher.py` lives in the **code** root beside this file and never in
    `~/.locus/data/dispatcher/`, which holds config and runtime only; and the `--instance` flag is
    not optional once a second instance exists, or the poller exits with `several instances`.
+   If you drive `poll --once` on your own cadence instead of leaving one process running, add
+   `--no-backlog` from your second call onwards. The announcement is per process, so every call
+   would otherwise re-announce the backlog; `--no-backlog` says "I have already asked about it".
 4. Events marked `"backlog": true` arrive on the first tick:
    - **Linear triggers:** dispatch them. A label is your principal's explicit ask. Respect the cap.
    - **Review requests:** list them (PR, author, `opened`) and ask your principal once which to take. Some may
@@ -84,6 +87,11 @@ allele sidebar, and stop.
 
 - Working = ledger status `claimed`, `active`, `needs-input` or `blocked`. Cap
   `limits.max_workers` — read it fresh from `D status`, never from memory.
+- `D status` also prints a `sources:` line — what each source last returned and when it last had
+  work (`github 0 items 40s ago (last non-empty 6h ago)`) — and `last poller error:`. **The
+  heartbeat says a process is alive; the `sources:` line says whether it can see anything**, and it
+  is the one that would have caught DEV-794. A source sitting at `0 items` with a `last non-empty`
+  hours ago is the shape to report, whatever the heartbeat says.
 - `D status` prints **two** counts and they measure different things. `ledger working N/<max>`
   is **advisory**: nothing in `dispatcher.py` refuses a dispatch at that number, and it counts
   ledger entries. `allele dispatched N/<max>` is **enforced** — allele returns a capacity error
@@ -185,6 +193,7 @@ Nothing goes to GitHub from you. Ever.
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
 | `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |
 | `session_archived` | Someone discarded it outside you. `D ledger put <KEY> status=discarded`. If the ticket still carries a working label, ask whether to clear it. |
+| `source_empty` | **A source returned nothing and the poller refused to believe it.** Do NOT read your inbox as empty, and do NOT treat the absence of `review_cleared` on that tick as an all-clear — the sweep was deliberately skipped. Report it, with the `reason`. `matched N and returned 0` is the search failing outright. `returned 0 after a non-empty tick` is one flaky tick and clears itself on the next. `page one of first: 50 only` means there is more work than the query can see, and clearance detection is off until it drops back under 50. |
 | `error` | A single one is fine. The same error across several ticks, or any auth error: report it. |
 
 ## Messages from workers
