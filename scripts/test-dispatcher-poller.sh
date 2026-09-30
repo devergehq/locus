@@ -268,6 +268,23 @@ elif scenario == "backlog_flag":
         backlog = False if sys.argv[2] == "off" else True
     m.cmd_poll(A())
 
+elif scenario == "no_backlog_keeps_state":
+    # `--no-backlog` must suppress the ANNOUNCEMENT without disturbing the persisted set of
+    # undecided keys, or a host using it on its second call onwards would lose the backlog it
+    # asked about on its first.
+    offline()
+    class A:
+        once = True
+        backlog = None          # default: announce
+    m.cmd_poll(A())
+    first = sorted(m.read_json(m.poll_state(), {})["review_backlog"])
+    A.backlog = False           # --no-backlog
+    m.cmd_poll(A())
+    after = m.read_json(m.poll_state(), {})
+    print(json.dumps({"first": first, "after": sorted(after["review_backlog"]),
+                      "preserved": first == sorted(after["review_backlog"]),
+                      "started": after.get("started")}))
+
 elif scenario == "hostile_state":
     # #63 S4: a `sources` bucket and an error record written by some other version of this file.
     offline()
@@ -408,6 +425,10 @@ ok "and flags nothing as backlog"                    "$(flagged true)"          
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" backlog_flag on)
 ok "\`--backlog\` announces it"                       "$(grep -c '"event": "poller_started"' "$work/out" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" no_backlog_keeps_state)
+ok "\`--no-backlog\` keeps the undecided keys"         "$(says '"preserved": true')"         "yes"
+ok "and does not rewrite \`started\`"                  "$(says '"started": "2026-09-11T13:18:11+00:00"')" "yes"
 
 # S4 (#63): `status` must not raise on state written by another version of this file.
 instance "2026-09-11T13:18:11+00:00"
