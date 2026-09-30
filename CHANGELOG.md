@@ -27,11 +27,13 @@ refuses to build when they disagree.
   `started`: 11 open requests, 11 flagged `backlog: false` before, 11 flagged `backlog: true` and
   a `poller_started` after. `scripts/test-dispatcher-poller.sh` pins it against a poisoned state
   fixture, and reverses the fix in a copy of the source to prove the suite discriminates. One
-  behaviour change comes with it: because the flag is per process, a host that runs `poll --once`
-  on a cadence — which is what production does as of 30 Sep, the `Monitor`-hosted poller having
-  lost the principal's trust — flags *every* unclaimed review request `backlog: true`, so none
-  auto-dispatches and each needs a human decision. That is what the Dispatcher was already doing
-  by hand (DEV-794).
+  behaviour change comes with it: because the flag is per process, every run of a host that drives
+  `poll --once` on a cadence — which is what production does as of 30 Sep, the `Monitor`-hosted
+  poller having lost the principal's trust — announces a backlog, so any review request it
+  surfaces is flagged `backlog: true`, none auto-dispatches, and each needs a human decision. That
+  is what the Dispatcher was already doing by hand. `due()` still gates emission at
+  `reemit_after_secs`, so a key is announced at most once per that window however often the poller
+  runs; what fires on every run is `poller_started` (DEV-794).
 
 - **A thrown poller section now reports off stdout.** `Poller.error()` reported a failing section
   by calling `emit()`, which writes to stdout — the same channel that may be the thing that is

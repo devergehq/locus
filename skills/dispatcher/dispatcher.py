@@ -413,8 +413,15 @@ class Poller:
         # evidence for this bug.
         #
         # The cost, stated because it is real rather than hidden: a host that re-arms the poller
-        # announces a backlog on each arm, and a host that runs `poll --once` on a cadence
-        # announces one every tick.
+        # announces a backlog on each arm, and so does every run of a host that drives
+        # `poll --once` on a cadence.
+        #
+        # Not on every tick, though, and the difference is worth being exact about because the
+        # first draft of this comment got it wrong. `due()` gates emission at
+        # `reemit_after_secs`, so a given key is announced at most once per that window however
+        # often the poller runs. Measured over three consecutive fresh processes inside one
+        # window: run 1 emitted the `review_request`, runs 2 and 3 emitted none. What fires on
+        # every run is `poller_started`, not the backlog list.
         #
         # That second host is not hypothetical. As of 30 September 2026 it is the PRODUCTION one:
         # the principal stopped hosting the poller under `Monitor` -- the arrangement this ticket
