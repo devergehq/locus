@@ -13,6 +13,22 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **An empty GitHub search is no longer read as an empty inbox.** `review_requests()` and
+  `linear_triggers()` both treated a zero-result tick as a fact about the world and committed the
+  destructive state that follows from it. Executed, the review side cleared a live review with the
+  reason `"review request removed"` for an open PR, re-emitted a PR the principal had **skipped** as
+  `rerequested: true`, fired a false `review_rerequested`, and dropped a start-up item's backlog flag
+  permanently — which silently undoes the backlog fix above, so the two ship together. The Linear
+  side deleted every trigger marker, re-emitting each one on recovery with its `backlog` flag lost.
+  `REVIEWS_Q` now requests GitHub's `issueCount`, and new `Poller.trust_empty()` refuses to believe
+  a zero when the search says it matched work and returned none of it, or when it is the first zero
+  after a non-empty tick; `issueCount == 0` is believed at once. An unbelieved zero emits
+  `source_empty` and skips the commit entirely, so recovery is a no-op rather than a burst of false
+  events. `status` gains a per-source line — `github 0 items 40s ago (last non-empty 6h ago)` — which
+  is what would have shown the 30 Sep incident, where `poller heartbeat: 31s ago` was true
+  throughout. The guard is per process: an orphaned poller on an older plugin version still commits
+  an empty result as fact (DEV-799, folded into DEV-794's PR).
+
 - **The dispatcher's start-up backlog is reachable again.** `Poller.__init__` read `first_tick`
   out of the *persisted* state file — `not self.state.get("started")` — while `tick()` writes
   `started` to disk, so `backlog` was true once per instance **lifetime** rather than once per

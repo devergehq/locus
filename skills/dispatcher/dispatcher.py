@@ -379,6 +379,7 @@ def triggers_query(team_key: str | None) -> tuple[str, dict]:
 REVIEWS_Q = """
 query($q: String!) {
   search(query: $q, type: ISSUE, first: 50) {
+    issueCount
     nodes { ... on PullRequest {
       number title url isDraft headRefOid createdAt author { login } repository { nameWithOwner }
     } }
@@ -499,6 +500,68 @@ class Poller:
             # has already carried it by this point, so the record is degraded, not lost.
             pass
 
+    def trust_empty(self, source: str, count: int, matched: int | None = None) -> bool:
+        """Is an empty result from `source` the truth, or the source failing quietly?
+
+        Returns True when the caller may act on `count` as fact — which for an empty result means
+        committing the destructive state that follows from "nothing is there".
+
+        DEV-799. Both sources used to treat an empty result as an empty world. On the review side
+        that cleared live reviews with the reason "review request removed", re-emitted a PR the
+        principal had **skipped** as `rerequested`, and dropped a start-up item's backlog flag so it
+        would auto-dispatch — which silently undoes DEV-794's fix. On the Linear side it deleted
+        every trigger marker. Nothing threw and nothing was recorded, so the tick committed the
+        emptiness as fact and the next tick could not tell.
+
+        Two independent tests, strongest first:
+
+          matched > 0, count == 0   GitHub's `issueCount` says the search matched work and returned
+                                    none of it. That is not a fact about the world, it is the search
+                                    failing, and it is never believed.
+          a first zero after a      Believed only on the second consecutive zero. Everything
+          non-empty tick            vanishing in one tick is far more often a flaky search index
+                                    than a real emptying, and the cost of believing it a tick late
+                                    is one tick of staleness against a false `review_cleared`.
+
+        `matched` is None for Linear, whose query has no equivalent count, so it rests on the second
+        test alone. A source that has never returned anything is believed immediately — a fresh
+        instance with no open reviews must not sit in a suspicious state forever.
+
+        **This guard is per process, and that is a real limit rather than a tidy one.** An orphaned
+        poller can outlive the plugin version that started it — one of the processes reaped on
+        30 September 2026 was running locus 0.5.2 against this same instance — and a poller without
+        this method still commits an empty result as fact. The `sources` bucket survives such a
+        poller (it reads the whole state file and writes it back, so unknown keys are preserved),
+        but its ticks are unguarded. Nothing here can fix that; DEV-795 owns the lifecycle.
+        """
+        seen = self.state.setdefault("sources", {}).setdefault(source, {})
+        if count:
+            seen.update(last_count=count, last_at=now_iso(), last_nonempty_at=now_iso(),
+                        zero_streak=0)
+            return True
+        streak = seen.get("zero_streak", 0) + 1
+        seen.update(last_count=0, last_at=now_iso(), zero_streak=streak)
+        if matched:
+            # No rate limit on the decision, only on the telling: the decision must be made every
+            # tick or the destructive commit slips through on the quiet ones.
+            if self.due(f"{source}|matched_not_returned", 900):
+                emit("source_empty", source=source, matched=matched, returned=0, believed=False,
+                     last_nonempty_at=seen.get("last_nonempty_at"),
+                     reason=f"{source} matched {matched} and returned 0 — treating as a fault")
+            return False
+        if matched == 0:
+            # Affirmatively zero, which is different from no count at all: GitHub has told us the
+            # search matched nothing. That is a fact about the world and is believed at once, or an
+            # instance whose reviews are genuinely all done would sit one tick behind forever.
+            # `matched == 0` is False for None, which is what keeps Linear on the streak test.
+            return True
+        if streak == 1 and seen.get("last_nonempty_at"):
+            emit("source_empty", source=source, matched=matched, returned=0, believed=False,
+                 last_nonempty_at=seen.get("last_nonempty_at"),
+                 reason=f"{source} returned 0 after a non-empty tick — waiting for a second")
+            return False
+        return True
+
     def error(self, section: str, exc: Exception) -> None:
         self.record_error(section, exc)
         sig = f"{section}:{str(exc)[:80]}"
@@ -570,6 +633,13 @@ class Poller:
                     emit("linear_retrigger", **common)
             elif self.due(f"{key}|trigger|{mode}", every):
                 emit("linear_trigger", backlog=backlog, **common)
+        if not self.trust_empty("linear", len(data["issues"]["nodes"])):
+            # The sweep below is this section's destructive commit. On an unbelieved empty result it
+            # would delete every trigger marker, and recovery would then re-emit each one — a fresh
+            # `linear_trigger` having lost `backlog: true`, and a false `linear_retrigger` for
+            # anything the ledger has working. Narrower than the review side, because only tickets
+            # still carrying a trigger label are in the query at all, but the same shape.
+            return
         # A ticket that left the trigger query and comes back later should fire at once.
         for mark in [m for m in self.state["emitted"] if "|trigger|" in m or "|retrigger|" in m]:
             if mark.split("|")[0] not in seen:
@@ -578,10 +648,16 @@ class Poller:
     def review_requests(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         g = cfg["github"]
         data = gh("api", "graphql", "-f", f"query={REVIEWS_Q}", "-f", f"q={g['review_query']}")
+        search = data["data"]["search"]
+        nodes = search["nodes"]
+        # The RAW node count, not `len(present)`. A page of nothing but drafts is a real "nothing
+        # is requested" once `skip_drafts` has filtered it, and judging trust on the filtered
+        # count would report that as a failing search.
+        trusted = self.trust_empty("github", len(nodes), search.get("issueCount"))
         every = cfg["limits"]["reemit_after_secs"]
         previous = self.state["prs_present"]
         present = {}
-        for pr in data["data"]["search"]["nodes"]:
+        for pr in nodes:
             if not pr or (g.get("skip_drafts") and pr.get("isDraft")):
                 continue
             repo = pr["repository"]["nameWithOwner"]
@@ -607,6 +683,14 @@ class Poller:
                     emit("review_request", backlog=key in self.state["review_backlog"], **common)
             elif returned and status in ALIVE:
                 emit("review_rerequested", **common)
+        if not trusted:
+            # Everything below this line commits "nothing is requested" as fact: it prunes the
+            # start-up backlog, tells the Dispatcher that live reviews were cleared, and overwrites
+            # `prs_present`, which is what makes the NEXT tick read every PR as newly returned.
+            # An unbelieved empty result leaves all three alone, so recovery is a no-op rather than
+            # a burst of false events. The loop above emitted nothing — `nodes` is empty whenever
+            # `trusted` is False — so there is nothing to undo.
+            return
         # Anything claimed, skipped or no longer requested has left the start-up backlog.
         self.state["review_backlog"] = sorted({
             k for k in self.state["review_backlog"]
@@ -1043,6 +1127,35 @@ def last_error() -> str | None:
     return f"{record.get('section')}{age}: {record.get('error')} · {len(lines)} in {error_log()}"
 
 
+def ago(stamp: str | None) -> str:
+    try:
+        return f"{int(time.time() - parse_iso(stamp))}s ago"
+    except (TypeError, ValueError):
+        return "never"
+
+
+def source_summary() -> str | None:
+    """Per-source counts for `status`: what each source last returned, and when it last had work.
+
+    This is the line that would have shown DEV-794 on the day. `poller heartbeat: 31s ago` was true
+    throughout an incident in which the GitHub search was returning nothing over ten open review
+    requests, because a heartbeat measures the process and not what the process could see.
+    """
+    sources = read_json(poll_state(), {}).get("sources") or {}
+    if not sources:
+        return None
+    parts = []
+    for name in sorted(sources):
+        seen = sources[name]
+        part = f"{name} {seen.get('last_count', '?')} items {ago(seen.get('last_at'))}"
+        if not seen.get("last_count") and seen.get("last_nonempty_at"):
+            part += f" (last non-empty {ago(seen['last_nonempty_at'])})"
+        if seen.get("zero_streak"):
+            part += f" [{seen['zero_streak']} empty in a row]"
+        parts.append(part)
+    return " · ".join(parts)
+
+
 def cmd_status(args) -> None:
     cfg = load_config()
     try:
@@ -1065,6 +1178,10 @@ def cmd_status(args) -> None:
     # DEV-794 is three hours of `heartbeat 31s ago` over a poller that surfaced 1 of 10 review
     # requests. Until the event channel is acknowledged rather than hoped at, the most useful
     # second number is whether a section has been throwing -- which stdout may never have carried.
+    # What each source last returned. An empty source is the failure mode the heartbeat cannot
+    # see, and the one that cost six days of unsurfaced review requests (DEV-794, DEV-799).
+    sources = source_summary()
+    print(f"sources: {sources}" if sources else "sources: nothing recorded yet")
     failure = last_error()
     print(f"last poller error: {failure}" if failure else "last poller error: none recorded")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")

@@ -61,6 +61,15 @@ EOF
   fi
 }
 
+# entry <key> <status> [session-id]: a ledger entry, so an assertion about a `skipped` or `active`
+# PR is testing behaviour rather than the absence of a file. Without these, "no skipped PR is
+# resurrected" passes on an instance that has no skipped PR to resurrect.
+entry () {
+  mkdir -p "$work/inst/runtime/ledger"
+  printf '{"key":"%s","mode":"review","status":"%s","session_id":"%s"}\n' "$1" "$2" "${3:-}" \
+    > "$work/inst/runtime/ledger/$1.json"
+}
+
 # run <source> <scenario> [args]: the driver, against the source file named. stdout in
 # $work/out, stderr in $work/err, exit code echoed.
 run () {
@@ -164,6 +173,72 @@ elif scenario == "status":
     class A: all = False
     m.cmd_status(A())
 
+elif scenario == "empty_guard":
+    # DEV-799. Three ticks in ONE process: 3 PRs, an empty result, then recovery. gh-r-1 is
+    # skipped by the principal, gh-r-2 is active, gh-r-3 is a genuine start-up item.
+    matched = [3]
+    holder = {"nodes": PRS[:3]}
+    def gh_guard(*args):
+        if args[:2] == ("api", "graphql"):
+            return {"data": {"search": {"issueCount": matched[0], "nodes": holder["nodes"]}}}
+        if args[0] == "pr" and args[1] == "view":
+            return {"state": "OPEN", "latestReviews": []}
+        raise AssertionError("unexpected gh call %r" % (args,))
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({"s2": {"last_known_status": "Idle"}}, set())
+    m.gh = gh_guard
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "after_full", "backlog": sorted(p.state["review_backlog"]),
+                      "present": sorted(p.state["prs_present"])}))
+    # the empty tick: issueCount still says 3, so this is a fault and must not be believed
+    holder["nodes"] = []
+    p.tick()
+    print(json.dumps({"phase": "after_empty", "backlog": sorted(p.state["review_backlog"]),
+                      "present": sorted(p.state["prs_present"]),
+                      "streak": p.state["sources"]["github"]["zero_streak"]}))
+    holder["nodes"] = PRS[:3]
+    p.tick()
+    print(json.dumps({"phase": "after_recovery", "backlog": sorted(p.state["review_backlog"])}))
+
+elif scenario == "genuine_empty":
+    # issueCount == 0 is GitHub saying it matched nothing. Believed at once.
+    holder = {"nodes": PRS[:2], "count": 2}
+    def gh_g(*args):
+        if args[:2] == ("api", "graphql"):
+            return {"data": {"search": {"issueCount": holder["count"], "nodes": holder["nodes"]}}}
+        return {"state": "OPEN", "latestReviews": []}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({}, set())
+    m.gh = gh_g
+    p = m.Poller(); p.tick()
+    holder.update(nodes=[], count=0)
+    p.tick()
+    print(json.dumps({"present": sorted(p.state["prs_present"]),
+                      "believed": p.state["prs_present"] == {}}))
+
+elif scenario == "two_zeroes":
+    # No issueCount (the Linear shape): the SECOND consecutive zero is believed.
+    holder = {"nodes": [{"identifier": "ZZ-1", "title": "t", "url": "u", "team": {"key": "ZZ"},
+                         "project": {"name": "p"}, "labels": {"nodes": [{"id": "L-todo"}]}}]}
+    m.linear = lambda cfg, q, v=None: {"issues": holder}
+    m.allele_state = lambda cfg: ({}, set())
+    m.gh = lambda *a: {"data": {"search": {"issueCount": 0, "nodes": []}}}
+    p = m.Poller(); p.tick()
+    marks = lambda: sorted(k for k in p.state["emitted"] if "trigger" in k)
+    print(json.dumps({"phase": "full", "markers": marks()}))
+    holder["nodes"] = []
+    p.tick(); print(json.dumps({"phase": "zero_1", "markers": marks()}))
+    p.tick(); print(json.dumps({"phase": "zero_2", "markers": marks()}))
+
+elif scenario == "status_sources":
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({}, set())
+    m.gh = lambda *a: {"data": {"search": {"issueCount": 2, "nodes": PRS[:2]}}}
+    m.Poller().tick()
+    class A: all = False
+    m.cmd_status(A())
+
 else:
     sys.exit("unknown scenario " + scenario)
 EOF
@@ -221,6 +296,43 @@ instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$disp" status)
 ok "\`status\` reports the last poller error"          "$(says 'last poller error: review_requests')" "yes"
 
+# ---- DEV-799: an empty search is not an empty inbox ------------------------------------------
+#
+# Folded into this PR because it can silently undo the fix above: an unbelieved empty tick used to
+# drop a start-up item's backlog flag, so the repair would survive exactly until the next one.
+
+printf '\nDEV-799 -- an empty result is not an empty world\n'
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9481 skipped
+entry gh-r-9464 active s2
+rc=$(run "$disp" empty_guard)
+ok "a full tick records the backlog"                 "$(sed -n '/after_full/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
+ok "an empty search leaves prs_present alone"        "$(sed -n '/after_empty/p' "$work/out" | grep -c "gh-r-9481" || true)" "1"
+ok "an empty search leaves review_backlog alone"     "$(sed -n '/after_empty/p' "$work/out" | grep -c '"backlog": \[' || true)" "1"
+ok "an empty search emits no review_cleared"         "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
+ok "it says so with a source_empty event"            "$(says '"event": "source_empty"')"   "yes"
+ok "the source_empty is not believed"                "$(says '"believed": false')"         "yes"
+ok "the fault names matched vs returned"             "$(says 'matched 3 and returned 0')"  "yes"
+ok "the zero streak is recorded"                     "$(says '"streak": 1')"              "yes"
+ok "no skipped PR is resurrected as rerequested"     "$(grep -c '"rerequested": true' "$work/out" || true)" "0"
+ok "no false review_rerequested on recovery"         "$(grep -c '"event": "review_rerequested"' "$work/out" || true)" "0"
+ok "the start-up item keeps its backlog flag"        "$(sed -n '/after_recovery/p' "$work/out" | grep -c "gh-r-9435" || true)" "1"
+ok "the guarded tick exits clean"                    "$rc"                                 "0"
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" genuine_empty)
+ok "issueCount 0 is believed at once"                "$(says '"believed": true')"          "yes"
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" two_zeroes)
+ok "a first zero keeps the trigger markers"          "$(sed -n '/zero_1/p' "$work/out" | grep -c 'ZZ-1|trigger' || true)" "1"
+ok "the second zero sweeps them"                     "$(sed -n '/zero_2/p' "$work/out" | grep -c 'ZZ-1|trigger' || true)" "0"
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" status_sources)
+ok "\`status\` reports per-source counts"             "$(says 'sources: github 2 items')"   "yes"
+
 # ---- the negative control: reverse the fix, and require these tests to fail ------------------
 #
 # Without this, every assertion above could be passing for a reason unrelated to the bug. The
@@ -228,6 +340,27 @@ ok "\`status\` reports the last poller error"          "$(says 'last poller erro
 # this test into a second copy of the one above.
 
 printf '\nNegative control -- the pre-fix source must fail\n'
+
+# The guard's own control: neutralise the two early returns that skip the destructive commit,
+# leaving `trust_empty` itself intact, and require the DEV-799 assertions to invert.
+sed -e 's/^        if not trusted:$/        if False:  # GUARD REVERSED/' \
+    -e 's/^        if not self\.trust_empty("linear", len(data\["issues"\]\["nodes"\])):$/        if False:  # GUARD REVERSED/' \
+    "$disp" > "$work/noguard.py"
+ok "the guard reversal changed both call sites"      "$(grep -c 'GUARD REVERSED' "$work/noguard.py" || true)" "2"
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9481 skipped
+entry gh-r-9464 active s2
+rc=$(run "$work/noguard.py" empty_guard)
+ok "no guard: an empty search clears a live review"  "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "1"
+ok "no guard: prs_present is wiped"                  "$(sed -n '/after_empty/p' "$work/out" | grep -c 'gh-r-9481' || true)" "0"
+ok "no guard: the skipped PR is resurrected"         "$(grep -c '"rerequested": true' "$work/out" || true)" "1"
+ok "no guard: a false review_rerequested fires"      "$(grep -c '"event": "review_rerequested"' "$work/out" || true)" "1"
+ok "no guard: the start-up item loses its flag"      "$(sed -n '/after_recovery/p' "$work/out" | grep -c 'gh-r-9435' || true)" "0"
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$work/noguard.py" two_zeroes)
+ok "no guard: one zero sweeps the trigger markers"   "$(sed -n '/zero_1/p' "$work/out" | grep -c 'ZZ-1|trigger' || true)" "0"
 
 sed 's/^        self\.first_tick = True$/        self.first_tick = not self.state.get("started")/' \
     "$disp" > "$work/prefix.py"
