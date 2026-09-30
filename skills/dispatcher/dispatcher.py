@@ -1187,6 +1187,12 @@ def parse_watch_argv(argv: list[str]) -> dict | None:
     The third live false positive needs no filter of its own: three `claude` sessions on this box
     carry the words "dispatcher.py" and "watch" in their *prompt text*, one of them the session
     that wrote this function. They fail both tests.
+
+    **Do not simplify this to a content match.** A wrapper's argv text is character-identical to
+    its child's, so no test on the *words* can tell them apart — argv[0] and the index are the only
+    two things that differ, which is why both are checked and why neither is redundant. A version
+    of this function that greps the joined argv would send SIGTERM to thirteen shell wrappers and
+    ten Claude sessions, and would report a tidy list while doing it.
     """
     if not argv:
         return None
