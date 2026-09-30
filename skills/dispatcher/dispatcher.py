@@ -18,6 +18,10 @@ one instance installed. `doctor` prints both roots.
   init --instance SLUG                   Create the Agent label group and write config.json.
   poll [--once] [--backlog|--no-backlog] Dispatcher's eyes. One JSON line per new event.
   watch KEY [--pr OWNER/REPO#N] [--once] A worker's eyes on its own ticket and PR.
+                                         Stops when the key's ledger status says nothing will
+                                         speak on it again, or at --max-hours / --max-ticks.
+  reap [--dry-run]                       Terminate this instance's orphaned watchers and
+                                         remove cursor files for keys that are finished with.
   ledger list [--all] | get KEY | put KEY [k=v ...] [--note TEXT] [--by WHO]
   label ISSUE STATE [--state NAME]       Set the ticket's one Agent-group label ('none' clears).
   comment ISSUE [--key KEY] [--mode M] [--reply-to ID]   Signed Linear comment, body on stdin.
@@ -138,6 +142,10 @@ def heartbeat() -> Path:
     return runtime() / "poller-heartbeat"
 
 
+def quiet_log() -> Path:
+    return runtime() / "quiet-log.jsonl"
+
+
 def error_log() -> Path:
     """Where a thrown poller section is recorded, independently of stdout. See `record_error`."""
     return runtime() / "poller-errors.jsonl"
@@ -169,6 +177,42 @@ REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
 # must never be dispatched again (so not REDISPATCHABLE). They therefore stop appearing as live
 # work with no call-site change. A named TERMINAL set was proposed and declined — nothing would
 # read it, and a constant nothing reads is a second place for this decision to drift.
+
+# Statuses after which nothing will ever speak on the key again, so a `watch` process still
+# running on it is an orphan. Read by `cmd_watch`, `cmd_doctor` and `cmd_reap`.
+#
+# The set above says a named TERMINAL set was declined because nothing would read it. Three
+# things now do, so that argument has expired rather than been overruled — but the reason it was
+# made still governs what goes IN. A status is a member because a call site acts on it, not
+# because it sounds final:
+#
+#   `lost`      the Dispatcher's word for "the session ran and died" (`stack.v2.md` §, and
+#               `SKILL.md`'s `session_lost` row re-queues the work to a *replacement*, which
+#               starts its own watcher). A watcher on a `lost` key is delivering to nobody.
+#   `deferred`  no session should exist and the item is never dispatched again.
+#   `merged`    A member, but read the next sentence before relying on it. Nothing in this repo
+#               writes it — `grep -rn "status=merged"` is empty — because `implement.md` records a
+#               merge as `status=done --note "merged"`, so **the status to reason about after a
+#               merge is `done`, not this.** It is a member anyway because `stack.v2.md` tells a
+#               coordinator at :149 and :1453 that `merged` is terminal, so someone following the
+#               documented vocabulary will eventually write it; membership costs nothing if they
+#               never do, and the alternative is that watcher running the full ceiling.
+#   `stopped`   NOT a member. `_common.md` has a stopped worker write the status and *wait*, and
+#               what it waits for — a re-label, a human comment — reaches it only through this
+#               watcher. Killing it strands the worker. It is bounded by the ceiling instead,
+#               which every watcher gets regardless of status.
+#   `done`      NOT a member, and it is the membership DEV-795 and this file disagree about.
+#               See `watch_stop_reason`.
+WATCH_DEAD = {"discarded", "failed", "lost", "merged", "skipped", "deferred"}
+
+# A PR state that means the review is over. `Watcher.pull_request` already computes and persists
+# `pr_status`, so this is read from the cursor file rather than from GitHub.
+PR_CLOSED = {"merged", "closed"}
+
+# Hours a `watch` process may run before it stops regardless of what the ledger says.
+# `limits.watch_max_hours` overrides it; the code default covers every config.json written
+# before this key existed, which is all of them.
+WATCH_MAX_HOURS = 120.0
 
 LINEAR_KEY = re.compile(r"^[A-Z][A-Z0-9]+-\d+$")
 PR_URL = re.compile(r"github\.com/([^/]+/[^/]+)/pull/(\d+)")
@@ -213,7 +257,16 @@ def write_json(path: Path, data) -> None:
     os.replace(tmp, path)
 
 
+# Every line this program says to its reader goes through `emit`, which makes counting calls the
+# cheapest possible definition of "did anything happen this tick". `Poller.mark_quiet` compares it
+# either side of a tick. A counter and not a flag so that nesting or a second reader cannot reset
+# it halfway through.
+_emitted = 0
+
+
 def emit(event: str, **fields) -> None:
+    global _emitted
+    _emitted += 1
     print(json.dumps({"event": event, **fields}, ensure_ascii=False), flush=True)
 
 
@@ -605,6 +658,7 @@ class Poller:
             emit("error", section=section, message=str(exc)[:400])
 
     def tick(self) -> None:
+        said = _emitted
         cfg = load_config()
         ledger = ledger_all()
         backlog = self.first_tick
@@ -613,6 +667,11 @@ class Poller:
                 section(cfg, ledger, backlog)
             except Exception as exc:  # one failing source must never kill the poller
                 self.error(section.__name__, exc)
+        # Read before `poller_started` can fire, so start-up is not activity: a poller arming
+        # itself is the dispatcher saying hello, not the world saying anything. `announced` is
+        # once per PROCESS, so counting that one emit would make the first tick of every arm look
+        # busy when nothing had happened — which is the whole thing this counter exists to deny.
+        quiet = _emitted == said
         if not self.announced:
             # Keyed on `announced`, not on `first_tick`, because `--no-backlog` sets `first_tick`
             # False before the first tick and these three things are not the flag's business.
@@ -627,6 +686,7 @@ class Poller:
                  backlog_suppressed=not backlog,
                  ledger_open=sum(1 for e in ledger.values() if e.get("status") in ALIVE))
         self.first_tick = False
+        self.mark_quiet(quiet, cfg)
         write_json(poll_state(), self.state)
         heartbeat().write_text(now_iso())
 
@@ -850,6 +910,62 @@ class Poller:
         for sid in [s for s in self.state["blocked"] if s not in tracked]:
             del self.state["blocked"][sid]
 
+    def mark_quiet(self, quiet: bool, cfg: dict) -> None:
+        """Count consecutive ticks that said nothing, so "nothing is happening" can be read.
+
+        Quiet means *no events at all*, not "no work found", and the difference bites: a tick in
+        which every section threw still emits an `error`, so it is not quiet — while the same
+        tick 30 minutes later is, because `error()` rate-limits the same signature to once per
+        1800s. Quiet therefore answers "is there anything to read", which is the question the
+        cost of staying awake turns on. It does not answer "is the poller healthy"; that is what
+        the error trail is for.
+
+        This counts and nothing else. Whether an idle dispatcher should stop on its own, ask
+        first, or stop only its poller is DEV-795's open decision and the principal's to make;
+        a counter is useful under all three and commits to none, which is why it ships alone.
+        """
+        was = self.state.get("quiet_ticks", 0)
+        if quiet:
+            self.state["quiet_ticks"] = was + 1
+            self.state.setdefault("quiet_since", now_iso())
+            return
+        if was:
+            self.log_quiet_run(was, cfg)
+        self.state["quiet_ticks"] = 0
+        self.state.pop("quiet_since", None)
+
+    def log_quiet_run(self, ticks: int, cfg: dict) -> None:
+        """Append one line when a quiet run *ends*, so a threshold can be chosen from a
+        distribution instead of from arithmetic.
+
+        DEV-795 asks whether an idle dispatcher should stop itself, and warns in the same breath
+        that the cost driving the question is the principal's observation rather than a measured
+        figure — so it also warns against picking a threshold by arithmetic on it. This is the
+        cheap measurement that replaces the arithmetic: after a week of real traffic the file
+        answers how long quiet runs actually last overnight versus in the working day, which is
+        the only honest input to an N-quiet-ticks threshold.
+
+        Logged at the END of a run rather than each tick, because a run's length is the quantity
+        of interest and a per-tick log would be 288 lines a day saying nothing.
+
+        **The field order is the format.** Anything plotting this reads positionally or by key,
+        and a dict literal keeps insertion order where a comprehension over a sorted set would
+        not. Add new fields at the end.
+        """
+        record = {
+            "ended_at": now_iso(),
+            "started_at": self.state.get("quiet_since"),
+            "ticks": ticks,
+            "interval_secs": cfg["limits"]["poll_interval_secs"],
+            "secs": ticks * cfg["limits"]["poll_interval_secs"],
+        }
+        try:
+            with quiet_log().open("a") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError as exc:
+            # A measurement that cannot be written must not take the poller down with it.
+            print(f"warning: cannot append to {quiet_log().name}: {exc}", file=sys.stderr)
+
 
 def cmd_poll(args) -> None:
     runtime().mkdir(parents=True, exist_ok=True)
@@ -914,6 +1030,24 @@ class Watcher:
             emit("watching", key=self.key, label=self.state.get("label"), state=self.state.get("state"),
                  pr=self.state.get("pr"))
         write_json(self.path, self.state)
+
+    def forget(self) -> bool:
+        """Delete this reader's cursor. Only ever called when the key is finished with.
+
+        A cursor's whole job is to remember where this reader got to, so that a restart does not
+        re-report what it has already reported — and, more importantly, does not *skip* what
+        arrived while it was down. Deleting one for a live key would do exactly that skipping,
+        which is why this is not called on the ceiling path: a ceiling says the process has run
+        long enough, never that the work is over.
+
+        Nothing else removes them, which is the other half of DEV-795: `runtime/watch/` on the
+        `tc-portal` instance held 123 cursors for 9 live watchers.
+        """
+        try:
+            self.path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
 
     def issue(self, cfg: dict) -> None:
         if not LINEAR_KEY.match(self.key):
@@ -1007,12 +1141,111 @@ class Watcher:
         self.state.update(pr_head=head, pr_status=status, pr_since=now_z(), pr_seen=sorted(seen)[-500:])
 
 
+def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, str] | None:
+    """Why this watcher should stop, from local files only. `None` means carry on.
+
+    One `open()` of a JSON file per tick, and no API call at all, which is what lets this run
+    *before* the first tick as well as between them. That ordering is the difference between a
+    fix and a busier bug: `_common.md` starts a watcher inside a persistent `Monitor`, so an
+    exiting watcher may be relaunched immediately, and a relaunch onto a dead key has to cost one
+    file read rather than the six GitHub calls a tick makes.
+
+    `done` is the status DEV-795 and `implement.md` disagree about, and both are right about
+    different halves of it:
+
+      * The ticket lists `done` as terminal, which is correct once a PR has merged —
+        `implement.md`'s "After you're done" writes `status=done --note "merged"`, leaving the
+        status it already had. Merged keys outnumber discarded ones, so a watcher that holds on
+        through a merge is the same leak under a politer name.
+      * `implement.md` step 8 also writes `status=done` while the PR is still *open*, and then
+        says "stay alive with your watcher running" so the worker can answer `pr_review` and
+        `pr_comment`. Nothing else watches a done key's PR. Exiting there makes the worker deaf
+        at the exact moment the review it is waiting for arrives.
+
+    So `done` alone is not the discriminator and `pr_status` is: `Watcher.pull_request` already
+    computes `("merged" if pr.get("merged") else pr["state"])` and persists it in the cursor, so
+    the distinction costs another local read and no request. A `done` key whose PR is merged or
+    closed stops on the next tick; a `done` key with an open PR stops only at the ceiling.
+
+    **A `done` key with no pull request at all is terminal**, and getting that wrong was the one
+    real leak in the first version of this function. `investigate.md`, `decide.md` and
+    `decompose.md` all write `status=done` and never open a PR, while `_common.md` step 3 arms a
+    watcher for every mode — so gating the whole `done` branch on `pr_status`, a field only
+    `pull_request()` ever sets, left every finished non-PR worker running to the ceiling and
+    reported it as `working` to both `doctor` and `reap`. The review loop is the *only* reason
+    `done` is not terminal, so the exception has to be conditional on there being a review to wait
+    for. `state["pr"]` is that test: `Watcher.__init__` fills it from `--pr` or the ledger's
+    `repo`/`number`, and `issue()` fills it from the ticket's attachments.
+
+    `--exit-on-done` is the ticket's acceptance criterion taken literally, kept because it is the
+    behaviour the principal asked for and the choice is his. It is not the default, and the
+    reason is in the PR.
+
+    The third element of the return is **whether the ledger alone decided it**, which is what tells
+    `cmd_watch` it may delete the cursor. Terminality read from the ledger is reconstructible on the
+    next process; terminality read from a file you are about to delete is not.
+    """
+    status = (ledger_get(key) or {}).get("status")
+    if status in WATCH_DEAD:
+        return status, f"ledger status '{status}' — nothing will speak on this key again", True
+    if status == "done":
+        if exit_on_done:
+            return status, "ledger status 'done' and --exit-on-done was given", True
+        if not state.get("pr"):
+            return status, "ledger status 'done' and no pull request to watch", True
+        pr = state.get("pr_status")
+        if pr in PR_CLOSED:
+            # Cursor kept: `pr_status` lives only in it, so deleting it would make the next
+            # relaunch re-derive the merge over a full tick's API calls, forever.
+            return status, f"ledger status 'done' and its PR is {pr}", False
+    return None
+
+
 def cmd_watch(args) -> None:
+    cfg = load_config()
+    hours = args.max_hours if args.max_hours is not None else float(
+        cfg["limits"].get("watch_max_hours", WATCH_MAX_HOURS))
+    # Wall-clock, and from THIS process's start rather than the key's. Two deliberate choices:
+    #
+    #   * Not ticks. `watch_interval_secs` is 90 in the shipped config and 300 on `tc-portal`, so
+    #     a ceiling counted in ticks is a different amount of time on every instance — and the
+    #     ticket rules out "cheaper ticks forever" for the same reason it has to rule out
+    #     "a ceiling that shortens when you shorten the interval".
+    #   * Not persisted. Storing the deadline in the cursor would carry it across relaunches, so
+    #     one expiry would make the key permanently unwatchable and no operator action short of
+    #     deleting state would bring it back. A process ceiling is recoverable by restarting;
+    #     that is the whole point of a backstop whose primary is the ledger check.
+    expires = time.time() + hours * 3600
     watcher = Watcher(args.key, args.pr, args.as_)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    if ledger_get(args.key) is None:
+        # A key with no ledger entry is a typo or a watcher started before its dispatch. Neither
+        # is fatal — `Watcher` tolerates a missing entry by design — but silence here is how a
+        # mistyped key spends the whole ceiling polling a ticket nobody is working.
+        emit("watch_unknown_key", key=args.key,
+             detail=f"no ledger entry for '{args.key}'; watching anyway until the ceiling")
+    ticks = 0
     while True:
+        stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
+        if stop:
+            status, why, from_ledger = stop
+            emit("watch_stopped", key=args.key, reason="ledger", status=status, ticks=ticks,
+                 cursor_removed=from_ledger and watcher.forget(), detail=why)
+            return
         watcher.tick()
+        ticks += 1
         if args.once:
+            return
+        if args.max_ticks and ticks >= args.max_ticks:
+            emit("watch_stopped", key=args.key, reason="max_ticks", ticks=ticks, cursor_removed=False,
+                 detail=f"--max-ticks {args.max_ticks} reached; the key is not finished, so the "
+                        f"cursor is kept and the same command resumes from it")
+            return
+        if time.time() >= expires:
+            emit("watch_stopped", key=args.key, reason="ceiling", ticks=ticks, cursor_removed=False,
+                 detail=f"ran {hours:g}h without the ledger going quiet (limits.watch_max_hours); "
+                        f"the key is not finished, so the cursor is kept and the same command "
+                        f"resumes from it")
             return
         time.sleep(load_config()["limits"]["watch_interval_secs"])
 
@@ -1197,6 +1430,22 @@ def allele_dispatch_limit(cfg: dict) -> str:
         return "?"
 
 
+def quiet_runs() -> list[int]:
+    """Lengths of the quiet runs recorded so far. Unreadable or absent reads as none, because a
+    diagnostic that fails on its own optional log file is worse than one that says nothing."""
+    try:
+        lines = quiet_log().read_text().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(int(json.loads(line)["ticks"]))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def last_error() -> str | None:
     """The newest record in the poller's error log, for `status`. None when there is none.
 
@@ -1285,6 +1534,22 @@ def cmd_status(args) -> None:
     print(f"sources: {sources}" if sources else "sources: nothing recorded yet")
     failure = last_error()
     print(f"last poller error: {failure}" if failure else "last poller error: none recorded")
+    # "Nothing is happening" was previously only inferable — from a heartbeat that advances whether
+    # or not anything was delivered. This says it. `quiet_since` is the honest half of the pair: a
+    # count of ticks means nothing without the interval that produced them.
+    quiet = read_json(poll_state(), {})
+    # The recorded runs print either way. A poll-state that has never started still sits beside a
+    # quiet-log from a previous install or a restored backup, and a measurement that exists but is
+    # not shown is the same failure as not taking it.
+    runs = quiet_runs()
+    seen = f" · {len(runs)} run(s) recorded, longest {max(runs)} ticks" if runs else ""
+    if not quiet.get("started"):
+        print(f"quiet ticks: — (this instance has never polled){seen}")
+    else:
+        ticks = quiet.get("quiet_ticks", 0)
+        since = f" since {quiet['quiet_since']}" if ticks and quiet.get("quiet_since") else ""
+        print(f"quiet ticks: {ticks} consecutive{since}"
+              f"{' — no events delivered' if ticks else ' — last tick had events'}{seen}")
     print(f"{'KEY':<22} {'MODE':<12} {'LEDGER':<12} {'ALLELE':<14} SESSION")
     for key, entry in ledger_all().items():
         if not args.all and entry.get("status") not in ALIVE | {"queued"}:
@@ -1292,6 +1557,321 @@ def cmd_status(args) -> None:
         sid = entry.get("session_id")
         allele = (live.get(sid) or {}).get("last_known_status") or ("archived" if sid in archived else ("missing" if sid else "-"))
         print(f"{key:<22} {entry.get('mode', ''):<12} {entry.get('status', ''):<12} {allele:<14} {entry.get('session_name') or '-'}")
+
+
+# --------------------------------------------------------------------------- watchers on the box
+
+# Flags of `watch` that consume the next token. Needed because the tokeniser below has to know
+# which bare word is the ledger key: `watch --pr Trilogy-Care/tc-portal#9395 DAR-614` is a real
+# command line off this machine, and a walker that skipped only `--instance`'s value would read
+# the repo#number as the key, look it up, find no entry, and report the wrong thing.
+# `--max-ticks` and `--max-hours` are here because they were added by the same change as this set
+# and were missed: `watch --max-hours 2 DAR-563` parses `2` as the key, which spares a real orphan
+# forever and lists it under a key that does not exist. Any flag added to the `watch` parser that
+# takes a value must be added here too, and a `store_true` flag must not be.
+WATCH_VALUE_FLAGS = {"--instance", "--as", "--pr", "--max-ticks", "--max-hours"}
+
+
+def etime_secs(etime: str) -> int | None:
+    """`ps` elapsed time to seconds. Four widths in the wild: `04:26`, `15:05:54`, `01-20:16:46`
+    and `06-14:12:27`. Display only — nothing in `reap` gates a signal on age, and if anything
+    ever does, this parser stops being cosmetic."""
+    days, _, rest = etime.strip().rpartition("-")
+    try:
+        parts = [int(p) for p in rest.split(":")]
+        offset = int(days or 0) * 86400
+    except ValueError:
+        return None
+    if len(parts) not in (2, 3):
+        return None
+    secs = 0
+    for part in parts:
+        secs = secs * 60 + part
+    return offset + secs
+
+
+def age_words(etime: str) -> str:
+    secs = etime_secs(etime)
+    if secs is None:
+        return etime
+    days, rest = divmod(secs, 86400)
+    hours, rest = divmod(rest, 3600)
+    if days:
+        return f"{days}d{hours}h"
+    return f"{hours}h{rest // 60:02d}m" if hours else f"{rest // 60}m{rest % 60:02d}s"
+
+
+def parse_watch_argv(argv: list[str]) -> dict | None:
+    """Read one `ps` argv as a `watch` invocation, or return None.
+
+    This is the safety-critical function in `reap`, because everything it returns gets a SIGTERM.
+    Two filters, and neither is belt-and-braces — each closes a false positive that is live on
+    the machine this was written on, and each covers the other's gap:
+
+      * **The script must be at argv index 0, 1 or 2.** `ps` flattens argv to a space-joined
+        string with no quoting, so a wrapper's whole command line arrives as tokens
+        indistinguishable from real arguments. Every watcher here is started through
+        `/bin/zsh -c 'source … && eval "python3 …/dispatcher.py --instance … watch DAR-667 …"'`,
+        and that wrapper's flattened tokens contain `…/dispatcher.py`, `--instance`, the path,
+        `watch` and the key — so "some token ends in /dispatcher.py" passes on the wrapper. The
+        index does not: a real invocation has the script at 1 (interpreter first), the wrapper
+        buries it deep inside index 2's `-c` string.
+      * **argv[0] must be a python interpreter, case-folded**, unless it is the script itself.
+        `casefold` is not tidiness: the live watchers' argv[0] is
+        `…/Python.framework/Versions/3.10/Resources/Python.app/Contents/MacOS/Python`, whose
+        basename is `Python`, and `"Python".startswith("python")` is False — a version of this
+        check without it matched **zero of the nine** orphans while reporting a clean run. This
+        filter is what stops `/bin/sh -c "/path/dispatcher.py watch K"`, where the script does
+        land at index 2.
+
+    The third live false positive needs no filter of its own: three `claude` sessions on this box
+    carry the words "dispatcher.py" and "watch" in their *prompt text*, one of them the session
+    that wrote this function. They fail both tests.
+
+    **Do not simplify this to a content match.** A wrapper's argv text is character-identical to
+    its child's, so no test on the *words* can tell them apart — argv[0] and the index are the only
+    two things that differ, which is why both are checked and why neither is redundant. A version
+    of this function that greps the joined argv would send SIGTERM to thirteen shell wrappers and
+    ten Claude sessions, and would report a tidy list while doing it.
+    """
+    if not argv:
+        return None
+    script = next((i for i, a in enumerate(argv[:3]) if os.path.basename(a) == "dispatcher.py"), None)
+    if script is None:
+        return None
+    # `python3 -c '/x/dispatcher.py watch K'` puts the script at index 2 behind a python argv[0], so
+    # it is the one shape both filters above pass together. `-c` means the following token is a
+    # program to read, never a script to run, so its presence before the script settles it.
+    if "-c" in argv[:script]:
+        return None
+    head = os.path.basename(argv[0]).casefold()
+    if script > 0 and not (head.startswith("python") or head == "dispatcher.py"):
+        return None
+    rest, cmd, key, as_, where = argv[script + 1:], None, None, None, None
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token.startswith("-"):
+            name, sep, value = token.partition("=")
+            if not sep and name in WATCH_VALUE_FLAGS:
+                value = rest[i + 1] if i + 1 < len(rest) else None
+                i += 1
+            if name == "--instance":
+                where = value
+            elif name == "--as":
+                as_ = value
+        elif cmd is None:
+            cmd = token
+        elif key is None:
+            key = token
+        i += 1
+    if cmd != "watch" or not key:
+        return None
+    return {"key": key, "as": as_, "instance": where, "script": argv[script]}
+
+
+VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)+$")
+
+
+def script_version(script: str) -> str | None:
+    """The plugin version a watcher is *running*, read out of its own script path.
+
+    Not cosmetic. `gh-tc-portal-9395`'s watcher was executing locus 0.5.2 while every other
+    watcher on the box ran 0.5.4: an orphan outlives the install that started it, because the
+    plugin cache keeps a directory per version and a running process holds the path it was
+    launched with. So `reap` must never key on one `dispatcher.py` location — it matches any argv
+    token whose basename is `dispatcher.py`, which is what makes it version-agnostic — and
+    `doctor` has to *show* the version, or the next person debugging a missed watcher has no way
+    to see that two different programs are involved.
+    """
+    for part in reversed(Path(script).parts):
+        if VERSION_SEGMENT.match(part):
+            return part
+    return None
+
+
+def cursor_path(key: str, as_: str | None) -> Path:
+    return watch_dir() / (f"{key}.{as_}.json" if as_ else f"{key}.json")
+
+
+def attribute_instance(parsed: dict, sole: Path | None) -> Path | None:
+    """Which instance this watcher belongs to, or None when that cannot be established.
+
+    None is not a shrug — it is what keeps `reap` from signalling a process it cannot prove is
+    ours. Everything `reap` terminates comes through here.
+
+    An argv that names `--instance` answers it outright. An argv that does not needs `sole` AND a
+    cursor of ours for that key: see the comment at the `sole` assignment for why the sole instance
+    alone is not enough, and why a cursor is the only evidence available to a process that cannot
+    read another process's environment.
+    """
+    if parsed["instance"]:
+        try:
+            return instance_path(parsed["instance"]).resolve()
+        except SystemExit:
+            return None
+    if sole and cursor_path(parsed["key"], parsed["as"]).exists():
+        return sole
+    return None
+
+
+def live_watchers() -> list[dict]:
+    """Every `watch` process on this machine, with the ones belonging to this instance resolved.
+
+    `ps` rather than a pidfile, and that is the whole reason this is not the simpler design: the
+    nine orphans DEV-795 is about were started before any version of this code could have written
+    a pidfile. A mechanism that cannot see the population it was built for is a mechanism that
+    reports a clean machine.
+
+    Status is filled in **only** for watchers attributable to this instance. Reading our ledger
+    for another instance's key would not be a missing answer, it would be a confident wrong one —
+    two instances can hold the same key with different statuses.
+    """
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,etime=,args="], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot run ps: {exc}") from None
+    here = instance().resolve()
+    # A watcher resolved from $DISPATCHER_INSTANCE, or by being the only instance installed, carries
+    # no `--instance` in its argv — `resolve_instance` documents both paths.
+    #
+    # An earlier version of this comment claimed attributing such a watcher to the sole installed
+    # instance is safe because "any other resolution would have had to name it". **That is false**,
+    # and a review caught it: `instance_path` accepts an absolute path anywhere on the filesystem,
+    # so `$DISPATCHER_INSTANCE=/opt/elsewhere/inst` is a legal launch whose argv names no instance
+    # and whose instance is not the one under DISPATCHER_HOME. On a single-instance box that
+    # assumption would have made another instance's *live* watcher reapable — a wrong SIGTERM,
+    # which is the one failure this whole function exists to avoid.
+    #
+    # Another process's environment cannot be read from `ps`, so the gap cannot be closed by
+    # inspecting the process. It is closed with evidence from our own filesystem instead: a watcher
+    # belonging to this instance writes its cursor into *our* `runtime/watch/` at the end of every
+    # tick, so the cursor existing is corroboration that the process is ours. Both ways this fails
+    # are the safe way — a cursor already pruned, or a watcher that has not finished its first tick,
+    # leaves the process unattributed and therefore never signalled.
+    installed = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
+    sole = installed[0].resolve() if len(installed) == 1 else None
+    found = []
+    for line in out.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) != 3 or not parts[0].isdigit():
+            continue
+        pid, etime, argv = int(parts[0]), parts[1], parts[2].split()
+        if pid == os.getpid():
+            continue
+        parsed = parse_watch_argv(argv)
+        if not parsed:
+            continue
+        where = attribute_instance(parsed, sole)
+        mine = where is not None and where == here
+        row = {"pid": pid, "etime": etime, "age": age_words(etime), "key": parsed["key"],
+               "as": parsed["as"], "instance": where, "mine": mine, "status": None, "stop": None,
+               "script": parsed["script"], "version": script_version(parsed["script"])}
+        if mine:
+            row["status"] = (ledger_get(parsed["key"]) or {}).get("status")
+            row["stop"] = watch_stop_reason(parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False)
+        found.append(row)
+    return sorted(found, key=lambda r: -(etime_secs(r["etime"]) or 0))
+
+
+def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
+    """Cursor files this instance no longer needs, and the ones it cannot account for.
+
+    A cursor is prunable exactly when a watcher reading it would stop, which is `watch_stop_reason`
+    again rather than a second rule that could disagree with the first.
+
+    Filename is `<key>.json` or `<key>.<reader>.json`, and a ledger key may itself contain dots
+    (`ledger_path` allows them), so the split is resolved against the ledger — longest key that
+    the stem equals, or begins with followed by a dot — not by counting dots. A stem that matches
+    no entry is returned separately and is not deleted by default: `ledger` has no `rm`, so an
+    unmatchable cursor is a hand-edited runtime or a key from another era, and neither is
+    something to clean up silently.
+    """
+    if not watch_dir().exists():
+        return [], []
+    entries = ledger_all()
+    prunable, unknown = [], []
+    for path in sorted(watch_dir().glob("*.json")):
+        stem = path.stem
+        key = max((k for k in entries if stem == k or stem.startswith(k + ".")), key=len, default=None)
+        if key is None:
+            unknown.append(path)
+            continue
+        stop = watch_stop_reason(key, read_json(path, {}), False)
+        if stop:
+            prunable.append((path, key, stop[0]))
+    return prunable, unknown
+
+
+def still_watching(pid: int, key: str) -> bool:
+    """Re-read this one pid immediately before signalling it.
+
+    Between the `ps` that found a process and the `kill` that ends it, that process can exit and
+    its pid be reissued. The window is short and the consequence is not: SIGTERM to a stranger.
+
+    Agreement on the parsed argv and the key is enough, and a start-time comparison was dropped
+    rather than left out: for this check to pass wrongly, the reissued pid would have to be
+    *another* `dispatcher.py watch` process on the *same* ledger key — in which case it is an
+    orphan on a dead key too, and terminating it is the correct outcome rather than an accident.
+    """
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "args="], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    parsed = parse_watch_argv(out.stdout.strip().split())
+    return bool(parsed and parsed["key"] == key)
+
+
+def cmd_reap(args) -> None:
+    watchers = live_watchers()
+    dead = [w for w in watchers if w["mine"] and w["stop"]]
+    live = [w for w in watchers if w["mine"] and not w["stop"]]
+    foreign = [w for w in watchers if not w["mine"]]
+    killed, missed = [], []
+    for w in dead:
+        if args.dry_run:
+            print(f"  would kill  pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  {w['status']}")
+            continue
+        if not still_watching(w["pid"], w["key"]):
+            missed.append(w)
+            print(f"  vanished    pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  gone before the signal")
+            continue
+        try:
+            os.kill(w["pid"], signal.SIGTERM)
+        except (ProcessLookupError, PermissionError) as exc:
+            missed.append(w)
+            print(f"  failed      pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  {exc}")
+            continue
+        killed.append(w)
+        print(f"  killed      pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  {w['stop'][1]}")
+    for w in live:
+        print(f"  left        pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  status "
+              f"{w['status'] or '(no ledger entry)'} — still being worked")
+    for w in foreign:
+        where = w["instance"] or "unattributable"
+        print(f"  not mine    pid {w['pid']:<7} {w['key']:<22} {w['age']:>8}  {where}")
+    prunable, unknown = prunable_cursors()
+    removed = 0
+    for path, key, status in prunable:
+        if args.dry_run:
+            print(f"  would prune {path.name}  ({key} is {status})")
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            print(f"  cursor kept {path.name}: {exc}")
+    if unknown:
+        # Named, not counted: an unmatchable cursor is the fossil the ticket's 123 files are made
+        # of, and a bare number is what let them accumulate unexamined for a fortnight.
+        print(f"  {len(unknown)} cursor file(s) match no ledger entry, left in place: "
+              f"{', '.join(p.name for p in unknown[:6])}{' …' if len(unknown) > 6 else ''}")
+    verb = "would terminate" if args.dry_run else "terminated"
+    cursors = f"{len(prunable)} cursor file(s) would be removed" if args.dry_run else f"{removed} cursor file(s) removed"
+    print(f"reap: {verb} {len(dead)} orphan(s) of {len(watchers)} watcher process(es) on this "
+          f"machine ({len(live)} live here, {len(foreign)} elsewhere) · {cursors}")
+    if missed:
+        print(f"  {len(missed)} could not be signalled — re-run to confirm")
 
 
 def cmd_doctor(args) -> None:
@@ -1342,6 +1922,47 @@ def cmd_doctor(args) -> None:
             return "none set — `decide` children get no production reader, and data gates are not cheap"
         return name
 
+    # Watchers are reported by `doctor` and not only by `reap` because the nine orphans DEV-795
+    # was filed about were invisible to every command in this file — the only way to see them was
+    # `ps`, which means nobody saw them for six days. A check that FAILS on an orphan, rather than
+    # printing a number, is what makes `doctor`'s exit code carry the information.
+    rows: list[dict] = []
+
+    def watchers():
+        rows.extend(live_watchers())
+        orphans = [w for w in rows if w["stop"]]
+        unattributed = [w for w in rows if w["instance"] is None]
+        if orphans:
+            raise RuntimeError(f"{len(orphans)} orphaned watcher(s) on a finished key — `reap` "
+                               f"terminates them: {', '.join(w['key'] for w in orphans)}")
+        note = f"{len(rows)} live, {sum(1 for w in rows if w['mine'])} on this instance"
+        if unattributed:
+            note += f", {len(unattributed)} unattributable"
+        # More than one plugin version running at once is normal after an upgrade and worth
+        # saying out loud: an orphan keeps executing the install it was launched from, so a
+        # version column is how you notice that the code you are reading is not the code running.
+        versions = sorted({w["version"] for w in rows if w["version"]})
+        if len(versions) > 1:
+            note += f" · running {', '.join(versions)}"
+        return note
+
+    def cursors():
+        # Reports, never fails. `SKILL.md`'s start-up step says "anything ✗: tell your principal and
+        # stop", and there are 112 stale cursors on `tc-portal` — so failing here would stop the
+        # Dispatcher from starting until someone swept a directory of dead files. An orphaned
+        # *process* is worth that hard stop because it is spending API budget; a leftover file is
+        # costing nothing but disk and can wait for the next `reap`.
+        prunable, unknown = prunable_cursors()
+        total = len(list(watch_dir().glob("*.json"))) if watch_dir().exists() else 0
+        note = f"{total} cursor file(s)"
+        if prunable:
+            note += f", {len(prunable)} for finished keys — `reap` removes them"
+        if unknown:
+            note += f", {len(unknown)} matching no ledger entry"
+        return note
+
+    check("watchers", watchers)
+    check("watch cursors", cursors)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))
@@ -1349,6 +1970,16 @@ def cmd_doctor(args) -> None:
     check("worker briefs", lambda: f"{len(list((CODE_DIR / 'workers').glob('*.md')))} briefs in {CODE_DIR / 'workers'}")
     for ok, name, detail in checks:
         print(f"{'✓' if ok else '✗'} {name}: {detail}")
+    if rows:
+        print(f"\n{'PID':<8} {'KEY':<22} {'AGE':>8} {'VER':<7} {'LEDGER':<12} WATCHER")
+        for w in rows:
+            if not w["mine"]:
+                note = f"another instance ({w['instance']})" if w["instance"] else "instance unknown — not reapable"
+            else:
+                note = f"ORPHAN — {w['stop'][1]}" if w["stop"] else "working"
+            reader = f" --as {w['as']}" if w["as"] else ""
+            print(f"{w['pid']:<8} {w['key'] + reader:<22} {w['age']:>8} {w['version'] or '?':<7} "
+                  f"{(w['status'] or '?') if w['mine'] else '?':<12} {note}")
     sys.exit(0 if all(ok for ok, *_ in checks) else 1)
 
 
@@ -1610,7 +2241,21 @@ def main() -> None:
     p.add_argument("--pr", help="OWNER/REPO#N — otherwise discovered from the ticket's attachments")
     p.add_argument("--as", dest="as_", help="reader name; gives this watcher its own comment cursor")
     p.add_argument("--once", action="store_true")
+    p.add_argument("--max-ticks", dest="max_ticks", type=int,
+                   help="stop after this many ticks, whatever the ledger says")
+    p.add_argument("--max-hours", dest="max_hours", type=float,
+                   help=f"stop after this many hours (default: limits.watch_max_hours, "
+                        f"else {WATCH_MAX_HOURS:g})")
+    p.add_argument("--exit-on-done", dest="exit_on_done", action="store_true",
+                   help="also stop the moment the ledger says 'done', without waiting for the PR "
+                        "to close — see watch_stop_reason for why this is not the default")
     p.set_defaults(fn=cmd_watch)
+
+    p = sub.add_parser("reap", parents=[common],
+                       help="terminate this instance's orphaned watchers and remove cursors for finished keys")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="report what would be terminated and removed; signal nothing, delete nothing")
+    p.set_defaults(fn=cmd_reap)
 
     p = sub.add_parser("ledger", parents=[common])
     p.add_argument("action", choices=["list", "get", "put", "children"])
