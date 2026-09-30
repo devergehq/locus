@@ -16,8 +16,10 @@ refuses to build when they disagree.
 - **A dispatcher watcher now stops.** `dispatcher.py watch` had no exit condition and never read
   its own key's ledger status, so nine watcher processes were alive on the `tc-portal` instance on
   30 September 2026 — all nine on keys whose status was `discarded`, the oldest for 6 days 14
-  hours, together making up to ~648 GitHub API calls an hour on work that had finished days
-  earlier. A watcher now reads its key before every tick, including the first, and stops when
+  hours. Fourteen watchers were alive thirteen hours later with the orphan count still nine, so
+  creation outpaces reaping: at `watch_interval_secs` 300 that is 168 ticks an hour and, at the
+  four `gh api` call sites a watch tick reaches, up to ~672 GitHub REST calls an hour — ~13% of
+  the authenticated budget spent largely on work that had finished days earlier. A watcher now reads its key before every tick, including the first, and stops when
   nothing will speak on that key again (`discarded`, `failed`, `lost`, `skipped`, `deferred`, or
   `done` once its PR is merged or closed), saying why and removing its own cursor file. Checking
   before the first tick is what makes the exit safe under the persistent `Monitor` that hosts it:
