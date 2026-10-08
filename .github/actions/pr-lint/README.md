@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: devergehq/locus/.github/actions/pr-lint@PINNED_SHA
+      - uses: devergehq/locus/.github/actions/pr-lint@8b04f65fe6a38e07f3924f7c1a465b4123a1631a
 ```
 
 That is the whole snippet. There is **no `actions/checkout` step**, and it is not an omission:
@@ -47,7 +47,7 @@ is a path.
 **Pin a commit SHA, not a branch and not a tag.** A composite action runs arbitrary steps with
 your workflow's token; a tag can be moved and `master` changes under you. A release tag
 (`v0.5.6` or later — the first release that carries this action) is acceptable if your
-organisation prefers tags, and `git tag --contains PINNED_SHA` in this repository names it.
+organisation prefers tags, and `git tag --contains 8b04f65fe6a38e07f3924f7c1a465b4123a1631a` in this repository names it.
 Never `@master`.
 
 `devergehq/locus` is public, so this works from a private repository.
@@ -61,7 +61,7 @@ Never `@master`.
 | `github-token` | `${{ github.token }}` | The token `gh` reads the pull request with. Override it to read a pull request in another repository. |
 
 ```yaml
-      - uses: devergehq/locus/.github/actions/pr-lint@PINNED_SHA
+      - uses: devergehq/locus/.github/actions/pr-lint@8b04f65fe6a38e07f3924f7c1a465b4123a1631a
         with:
           template: .github/PULL_REQUEST_TEMPLATE.md
           exempt-sections: |
