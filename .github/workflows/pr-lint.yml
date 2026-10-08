@@ -1,0 +1,88 @@
+name: PR lint
+
+# The description check. Separate from ci.yml because it asks a different question of a
+# different thing: ci.yml tests the code in the diff, this reads the prose around it, and the
+# two have no triggers, permissions or runtime in common.
+#
+# WHY THESE THREE TRIGGERS. The failure this check exists to catch moves without a commit.
+# A description is edited in the web UI, and the working notes arrive as a comment - by
+# house style they are moved out of the body LATE, so the comment is the newest one on the
+# pull request, days after the push. A `push`-only check reports on a description that no
+# longer exists:
+#
+#   * `pull_request: [opened, reopened, synchronize]` - the pushes.
+#   * `pull_request: [edited]` - the description, with no new commit. Also fires on a title
+#     change, which costs one cheap re-run.
+#   * `issue_comment: [created, edited, deleted]` - the working-notes comment appearing, and
+#     also being edited or removed, which is what turns the body's link back into a dead one.
+#
+# WHAT `issue_comment` COSTS, and it is not nothing. GitHub runs an `issue_comment` workflow
+# from the DEFAULT BRANCH only, and its `GITHUB_SHA` is master's rather than the pull
+# request's head. Two consequences, both deliberate and neither fixable from this file:
+#
+#   1. A change to this workflow or to the action cannot be exercised through the comment
+#      path until it is on `master`. On a pull request, only the `pull_request` triggers fire.
+#   2. The comment-triggered run's result does not attach to the pull request head, so it
+#      does not appear in the pull request's own check list. It is in the job summary and in
+#      the Actions tab, which is where an author goes to read the findings anyway. The status
+#      that branch protection would key on comes from the push and edit triggers.
+#
+# `pull_request`, NOT `pull_request_target`. The lint only ever reads, so the read-only
+# GITHUB_TOKEN a fork's pull request gets is sufficient. `pull_request_target` would hand a
+# WRITE token to a check that needs no writes, which is the documented way to turn a linter
+# into a credential leak.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+  issue_comment:
+    types: [created, edited, deleted]
+
+# Read-only, and all three reads are load-bearing:
+#   contents       - template discovery walks `repos/{repo}/contents/...`. Without it those
+#                    probes 403, the linter cannot tell a 403 from a 404, and template
+#                    checking silently finds nothing while the run still reports pass.
+#   pull-requests  - the description and the diff size.
+#   issues         - `repos/{repo}/issues/{n}/comments`, which is the issues API even for a
+#                    pull request. Granted rather than guessed: the linter hard-exits 2 if
+#                    that call fails, so being wrong here is a red check on every pull request.
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  # Keyed on the PULL REQUEST NUMBER, not `github.ref`. The two event types carry different
+  # refs - `refs/pull/N/merge` for `pull_request`, the default branch for `issue_comment` -
+  # so a group keyed on the ref would never put a push and a comment in the same group, and a
+  # stale run could land after a fresh one.
+  group: pr-lint-${{ github.event.pull_request.number || github.event.issue.number }}
+  # Safe here, unlike in ci.yml: this check reads live state from the API rather than from a
+  # commit, so the newest run is always the authoritative one and a superseded run has
+  # nothing to tell us.
+  cancel-in-progress: true
+
+jobs:
+  description:
+    name: description
+    # `issue_comment` fires for issues as well as pull requests, and a comment on a closed or
+    # merged pull request should not re-lint it for the rest of time.
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.issue.pull_request != null && github.event.issue.state == 'open')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Needed only because the action is referenced by local path. The action itself reads
+      # the pull request over the API and never touches the checked-out tree.
+      #
+      # On a pull request from a fork this checks out the fork's copy of the action and of
+      # the linter, so a fork can make this check pass. That is the same trust model ci.yml
+      # already runs under - `cargo test` on a fork's pull request runs the fork's tests -
+      # and the control is the same one: the replacement is in the diff a human reads. An
+      # external caller pins a SHA instead and does not inherit this; see the action's README.
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Lint the description
+        uses: ./.github/actions/pr-lint
