@@ -1,0 +1,32 @@
+name: PR lint exit-2 probe
+
+# THROWAWAY. This file exists only on the branch of a draft pull request opened to observe
+# the could-not-run path of .github/actions/pr-lint, and is closed and deleted afterwards.
+# It must never reach master.
+#
+# It forces the linter's exit 2 the only way a caller can without changing the linter: by
+# handing it a token `gh` cannot authenticate with. Every other exit-2 cause (no `gh`, no
+# python3, a missing linter) is covered by scripts/test-pr-lint-action.sh against a stub.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  could-not-run:
+    name: could-not-run probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Lint with a token that cannot authenticate
+        uses: ./.github/actions/pr-lint
+        with:
+          github-token: this-is-not-a-valid-token
