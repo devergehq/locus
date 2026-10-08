@@ -655,6 +655,25 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the sho
 
 Response times are side-project pace (days to weeks). If you need faster, please fork.
 
+### The PR description check
+
+Pull requests here are checked against the `review-craft` house style by
+[`.github/actions/pr-lint`](.github/actions/pr-lint/README.md) — the character budget for the
+diff, headings, template debris, words that rot in a commit message, and whether the comment
+the body's working notes link to exists. It runs on a push, on a description edit, and on a new
+comment, because the last two change the thing being checked without producing a commit.
+
+The action is reusable. **Another repository turns the same check on by copying one snippet**,
+pinned to a commit SHA — the snippet, the inputs and the permissions it needs are in
+[the action's README](.github/actions/pr-lint/README.md). It needs no `actions/checkout`: the
+description is read over the API, never from the runner.
+
+To run the same check by hand before opening a pull request:
+
+```bash
+python3 skills/review-craft/pr_lint.py --repo devergehq/locus --pr <n>
+```
+
 ---
 
 ## Future gaps

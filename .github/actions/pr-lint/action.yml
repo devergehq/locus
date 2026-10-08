@@ -1,0 +1,58 @@
+name: PR description lint
+description: >-
+  Check a pull request description against the review-craft house style - its character
+  budget for that diff, headings, template debris, rotting dates, squash noise, and the
+  comment its working notes link to.
+
+# A composite action, not a reusable workflow, so a caller can put it in a job beside their
+# own steps and choose their own triggers.
+#
+# It never checks out, builds or runs the code under review. The description, the diff size
+# and the comments all arrive through `gh api`, which means untrusted code from a fork is
+# never on the runner, and a caller's workflow needs no `actions/checkout` step at all unless
+# it passes `template` as a path.
+
+inputs:
+  template:
+    description: >-
+      The template a description here is expected to take - a markdown file, or a directory
+      of them, relative to the workspace. Passing it is an ASSERTION, so drift from it is an
+      error; a template the linter merely discovers on a conventional path is an inference,
+      and drift is a warning. Requires the repository to be checked out, because it is a
+      path. Leave it unset to let the linter discover templates over the API.
+    required: false
+    default: ""
+  exempt-sections:
+    description: >-
+      Headings whose content the budget does not charge for, one per line or comma-separated.
+      Each becomes a `--exempt-section` flag. These ADD to the linter's defaults (related,
+      reference, link, security impact, security, deployment, rollback) - use it for the
+      sections your template asks for that the defaults do not name.
+    required: false
+    default: ""
+  github-token:
+    description: >-
+      The token `gh` reads the pull request with. Needs `contents: read` (template discovery),
+      `pull-requests: read` and `issues: read` (the description and its comments). The default
+      is the workflow's own token.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Lint the pull request description
+      shell: bash
+      # Every value from the event arrives as an environment variable and is read with "$VAR".
+      # None is interpolated into the script text: a `${{ github.event.* }}` inside `run:`
+      # makes an author-controlled string part of the shell command, on a workflow that runs
+      # on every fork's pull request.
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_LINT_REPO: ${{ github.repository }}
+        # `pull_request` carries the number on the pull request; `issue_comment` carries it on
+        # the issue. One of the two is always empty, and the script fails loudly if both are.
+        PR_LINT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        PR_LINT_TEMPLATE: ${{ inputs.template }}
+        PR_LINT_EXEMPT: ${{ inputs.exempt-sections }}
+      run: "$GITHUB_ACTION_PATH/lint.sh"
