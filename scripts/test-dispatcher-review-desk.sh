@@ -101,8 +101,16 @@ case "$*" in
   *"api graphql"*)
     echo '{"data":{"search":{"issueCount":0,"nodes":[]}}}'; exit 0 ;;
   "pr view "*)
+    # Real `gh pr view` has NO `merged` field -- that one belongs to the REST API -- and it
+    # exits 1 on an unknown one. The first version of this stand-in answered whatever it was
+    # asked, so it confirmed a wrong field list instead of refusing it and a null `pr_state`
+    # shipped. Refuse anything but `--json state`.
+    case "$*" in
+      *"--json state") : ;;
+      *) echo 'Unknown JSON field: "'"${*##*--json }"'"' >&2; exit 1 ;;
+    esac
     n=$3
-    cat "$RDWORK/pr.$n.json" 2>/dev/null || echo '{"state":"OPEN","merged":false}'
+    cat "$RDWORK/pr.$n.json" 2>/dev/null || echo '{"state":"OPEN"}'
     exit 0 ;;
   *--slurp*reviews*)
     cat "$RDWORK/reviews.json" 2>/dev/null || echo '[[]]'
@@ -453,19 +461,20 @@ for state in MERGED CLOSED; do
   instance '{"mode":"auto"}'
   work_doc review_requested 1 acme/portal 412
   if [ "$state" = MERGED ]; then
-    echo '{"state":"MERGED","merged":true}' > "$work/pr.412.json"
+    echo '{"state":"MERGED"}' > "$work/pr.412.json"
   else
-    echo '{"state":"CLOSED","merged":false}' > "$work/pr.412.json"
+    echo '{"state":"CLOSED"}' > "$work/pr.412.json"
   fi
   rc=$(run "$disp" poll 1)
   ok "an item on a $state pull request is skipped"      "$(count review_desk)" 0
 done
 instance '{"mode":"auto"}'
 work_doc review_requested 1 acme/portal 412
-echo '{"state":"OPEN","merged":false}' > "$work/pr.412.json"
+echo '{"state":"OPEN"}' > "$work/pr.412.json"
 rc=$(run "$disp" poll 1)
 ok "an item on an open one is not"                     "$(count '"event": "review_desk_requested"')" 1
 ok "  and the pull request was read once"              "$(grep -c 'pr view' "$work/gh.calls")" 1
+ok "  asking for the one field gh actually has"        "$(grep -c -- 'pr view 412 -R acme/portal --json state$' "$work/gh.calls")" 1
 
 printf '\n  an empty list, a refusal and a break\n'
 instance '{"mode":"auto"}'
@@ -772,6 +781,19 @@ ok "no normalising: CRLF reads as not posted"          "$(says '"posted": false'
 sed 's/^    reviews = gh_pages(gh("api", "--paginate", "--slurp",$/    reviews = gh_pages(gh("api",  # PAGINATE REVERSED/' \
     "$disp" > "$work/nopage.py"
 ok "the paginate reversal changed one line"            "$(grep -c 'PAGINATE REVERSED' "$work/nopage.py")" 1
+
+# The control that did not exist when this field list was wrong, and would have caught it. The
+# first version asked `gh pr view --json state,merged`; `merged` is the REST API's field and not
+# one `gh pr view` has, so every call raised and `pr_state` was null for every item -- a merged
+# pull request was never skipped. Restore the old field list and the skip must break.
+sed 's/"--json", "state")$/"--json", "state,merged")/' "$disp" > "$work/oldfield.py"
+ok "the field-list reversal changed one line"          "$(grep -c '"--json", "state,merged")' "$work/oldfield.py")" 1
+instance '{"mode":"auto"}'
+work_doc review_requested 1 acme/portal 412
+echo '{"state":"MERGED"}' > "$work/pr.412.json"
+rc=$(run "$work/oldfield.py" poll 1)
+ok "old field list: a MERGED pull request is NOT skipped" "$(count '"event": "review_desk_requested"')" 1
+ok "  and it reports a state it could not establish"   "$(says '"pr_state": null')" yes
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

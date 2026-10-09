@@ -1253,8 +1253,16 @@ class Poller:
         if (repo, number) in self.pr_states:
             return self.pr_states[(repo, number)]
         try:
-            info = gh("pr", "view", str(number), "-R", repo, "--json", "state,merged")
-            state = "merged" if info.get("merged") else (info.get("state") or "").lower()
+            # `state` alone, and the field list is the whole of the bug this line replaced.
+            # `gh pr view` has no `merged` field — that is the REST API's, which
+            # `Watcher.pull_request` reads through `gh api` — so `--json state,merged` exits 1
+            # with "Unknown JSON field", every call raised, and `pr_state` was null for every
+            # item. A merged pull request was therefore never skipped against real GitHub.
+            # The harness missed it because the stand-in `gh` answered the shape I had assumed;
+            # the real run is what caught it, and the stand-in now refuses that field list.
+            # `state` already carries it: OPEN, CLOSED or MERGED.
+            info = gh("pr", "view", str(number), "-R", repo, "--json", "state")
+            state = (info.get("state") or "").lower() or None
         except Exception:
             state = None
         self.pr_states[(repo, number)] = state
