@@ -26,10 +26,20 @@ one instance installed. `doctor` prints both roots.
   label ISSUE STATE [--state NAME]       Set the ticket's one Agent-group label ('none' clears).
   comment ISSUE [--key KEY] [--mode M] [--reply-to ID]   Signed Linear comment, body on stdin.
   brief KEY                              Print the dispatch prompt for the ledger entry KEY.
+  review-posted KEY --approved-at N --body-file P
+                                         Read-only: is the principal's approved review already
+                                         on that pull request? What makes posting once safe.
   status                                 Ledger vs allele, as a table.
   doctor                                 Check env, auth, labels, paths.
 
 Nothing here posts to GitHub. Linear writes happen only through `label` and `comment`.
+
+Review Desk, when it is installed, is a third source and a third set of a worker's eyes: the
+poller asks it what needs an agent, the watcher relays the developer's two sign-offs to the
+session waiting for them, and `review-posted` asks GitHub whether an approved draft is already
+up. Absent is silent, broken is loud, and neither ever blocks a review. Nothing here can sign
+off: Review Desk's command line has no command for it, and this file makes exactly one HTTP
+call to the dashboard, for `doctor`'s health line.
 """
 
 from __future__ import annotations
@@ -319,6 +329,209 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
     return live, archived
 
 
+# --------------------------------------------------------------------------- review desk
+
+# Review Desk (devergehq/review-desk) keeps the record of a review: the brief, the options, the
+# findings and the draft. It is optional, and the three rules its own brief states govern every
+# line below: one way in (the command line), one direction of dependency (Locus calls it; it
+# never calls Locus), and **absent is silent, broken is loud**.
+#
+# Nothing here may block. A review must be preparable with Review Desk missing, too old,
+# refusing or hanging, and the fallback is always the behaviour this file had before it existed.
+REVIEW_DESK_DEFAULTS = {"mode": "auto", "command": "review-desk",
+                        "url": "http://127.0.0.1:7777", "brief_gate": "never"}
+
+REVIEW_DESK_MODES = ("auto", "on", "off")
+REVIEW_DESK_GATES = ("never", "always")
+
+# The four kinds `work list` answers with. A fifth one from a newer Review Desk is ignored rather
+# than guessed at: this file would have no idea what an agent is supposed to do about it, and
+# inventing a dispatch for a kind it has never heard of is worse than leaving it listed.
+REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved")
+
+# The three a WATCHER relays to the session already working the review. `review_requested` is
+# deliberately absent: a session reading its own review does not need telling to start.
+REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved")
+
+# How long a Review Desk call may take before it is called broken. Generous against a cold
+# SQLite file on a laptop, and short enough that a hung binary cannot stall a poll tick.
+REVIEW_DESK_TIMEOUT = 30
+
+
+def review_desk_cfg(cfg: dict) -> dict:
+    """The `review_desk` block with every key defaulted.
+
+    **An instance whose config.json has never heard of Review Desk needs no edit.** The defaults
+    live here rather than in `config.example.json` alone, so a missing block is exactly `auto`
+    and an existing instance picks this version up by upgrading the plugin and nothing else.
+    `init` writes the block as well, so it is there to edit, but it is never required.
+
+    An unknown `mode` is left verbatim and read as `auto` at every decision site, which is the
+    silent and non-blocking direction — a typo must not stop reviews. `doctor` is where it is
+    named, because `doctor` is the command whose job is to fail.
+    """
+    block = dict(REVIEW_DESK_DEFAULTS)
+    block.update({k: v for k, v in (cfg.get("review_desk") or {}).items() if v is not None})
+    return block
+
+
+def review_desk_off(rd: dict) -> bool:
+    return rd.get("mode") == "off"
+
+
+def review_desk_loud_when_absent(rd: dict) -> bool:
+    """Only `on` is loud about an absent Review Desk. Every mode is loud about a broken one."""
+    return rd.get("mode") == "on"
+
+
+def review_desk_link(rd: dict, review_id, draft: bool = False) -> str | None:
+    """The dashboard address of one review, or of its draft — the two pages a developer acts on.
+
+    Taken from `web/app/pages` in the Review Desk checkout: `/reviews/<id>` is where a brief is
+    confirmed and `/reviews/<id>/draft` is where a draft is approved. `url` is for putting in a
+    message and for `doctor`'s reachability line; **nothing in this file drives the dashboard's
+    API**, and a session that tried would be reaching for the one surface only the developer may
+    use.
+    """
+    base = (rd.get("url") or "").rstrip("/")
+    if not base or review_id is None:
+        return None
+    return f"{base}/reviews/{review_id}/draft" if draft else f"{base}/reviews/{review_id}"
+
+
+def review_desk_detail(text: str) -> str:
+    """The `message` out of a `--json` refusal, so a loud line says something a person can use."""
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    error = (payload or {}).get("error") or {}
+    code, message = error.get("code"), error.get("message")
+    return f"{code}: {message}" if code and message else (message or "")
+
+
+def review_desk_run(rd: dict, *args: str, json_out: bool = True) -> tuple[str, object, str]:
+    """Run one Review Desk command. Never raises, and never blocks a review.
+
+    Returns `(state, payload, detail)`, where state is one of:
+
+      `ok`       exit 0. `payload` is the parsed document, or the stripped text when
+                 `json_out` is False (`--version` is not JSON, and says so in Review Desk's own
+                 README).
+      `refused`  exit 1 — understood and refused. An unknown review id is the only refusal this
+                 file asks for on purpose.
+      `broken`   exit 2, a timeout, an unreadable answer, or any other exit code. Review Desk's
+                 README pins 2 to "could not run" and remaps clap's own usage exit to 1, which
+                 is what makes this tri-state readable without parsing prose.
+      `absent`   the command does not resolve on this machine.
+
+    `subprocess.run` on an argv LIST, never a shell: `command` is a config value, and a config
+    value reaching a shell is an injection with a straight face.
+    """
+    argv = [rd.get("command") or REVIEW_DESK_DEFAULTS["command"], *args]
+    said = " ".join(args[:2]) or argv[0]
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=REVIEW_DESK_TIMEOUT)
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent", None, f"{argv[0]} is not on PATH"
+    except subprocess.TimeoutExpired:
+        return "broken", None, f"{argv[0]} {said} did not answer in {REVIEW_DESK_TIMEOUT}s"
+    except OSError as exc:
+        # Installed and unusable — not executable, wrong architecture. A broken install, which is
+        # loud in every mode, and emphatically not the silent `absent`.
+        return "broken", None, f"{argv[0]} could not be run: {exc}"
+    text = (done.stdout or "").strip()
+    fallback = (done.stderr or "").strip() or text
+    if done.returncode == 0:
+        if not json_out:
+            return "ok", text, ""
+        try:
+            return "ok", json.loads(text) if text else None, ""
+        except json.JSONDecodeError:
+            return "broken", None, (f"{argv[0]} {said} exited 0 with output that is not JSON — "
+                                    f"too old to use: {text[:160]}")
+    state = "refused" if done.returncode == 1 else "broken"
+    return state, None, (review_desk_detail(text) or fallback[:200]
+                         or f"{argv[0]} {said} exited {done.returncode}")
+
+
+def review_desk_work(rd: dict, *narrow: str) -> tuple[str, list, str]:
+    """`work list`, which is the found test and the answer in the same call.
+
+    **There is no cached "is Review Desk installed" flag anywhere in this file, and that is the
+    design rather than an omission.** The required behaviour is that found-ness survives neither
+    a broken install being fixed nor a working one breaking, and a cache with a time-to-live
+    fails in both directions for as long as the window lasts. The cheap way to get that is not a
+    shorter window: it is to make the probe BE the call the caller was going to make anyway. The
+    poller lists work per repository, the watcher lists its own review, and each of those calls
+    answers "is it there" on the way past, at no extra cost and with no staleness at all. What
+    this file does remember is only whether the loud line has been said lately, which is a fact
+    about the Dispatcher's inbox rather than about the install.
+
+    A `refused` without `--review` is read as **broken**, which is the "too old to use" case the
+    ticket asks for. Review Desk remaps a usage error to 1, so an older binary with no
+    `work list` subcommand refuses exactly here — and there is nothing for it to legitimately
+    refuse when no review id was given. With `--review`, exit 1 means that review is gone, which
+    is a real condition and is handed back as `refused` for the caller to report.
+    """
+    state, payload, detail = review_desk_run(rd, "work", "list", "--json", *narrow)
+    if state == "refused" and "--review" not in narrow:
+        return "broken", [], (detail or "`work list` was refused with no --review to refuse — "
+                                        "this Review Desk is too old to use")
+    if state != "ok":
+        return state, [], detail
+    items = (payload or {}).get("work")
+    if not isinstance(items, list):
+        return "broken", [], ("`work list --json` answered without a `work` array — "
+                              "this Review Desk is too old to use")
+    return "ok", items, ""
+
+
+def review_desk_repos(cfg: dict, ledger: dict) -> list[str]:
+    """The repositories this instance serves, spelled the way Review Desk stores them.
+
+    `allele.repo_project_map` is the config's own statement of which repositories this dispatcher
+    serves, and it is the first source. The template's `OWNER/REPO` placeholder is dropped: an
+    instance that never edited it serves no repository, and asking Review Desk about a literal
+    `OWNER/REPO` is a call that could only ever answer with an empty list.
+
+    Every repository named on a ledger entry is added as well, so a dispatcher that has reviewed
+    a repository keeps hearing about it whether or not the map was ever filled in — which
+    matters most for the case this whole section exists for, a review whose session is gone.
+    The cost is bounded by the number of DISTINCT repositories a person reviews, not by the
+    number of entries, so it is two or three calls a tick rather than one per ledger file.
+
+    Lowercased, because Review Desk stores `repo` canonical — trimmed and lowercased, as its
+    README says — and matches `--repo` against the stored form. `DevergeHQ/Locus` from a config
+    would answer with an empty list and read as nothing waiting.
+    """
+    repos = {r.strip().lower() for r in (cfg.get("allele") or {}).get("repo_project_map") or {}}
+    for entry in ledger.values():
+        repos.add((entry.get("repo") or "").strip().lower())
+    return sorted(r for r in repos if r and r != "owner/repo")
+
+
+def review_desk_live(live: dict, entry: dict) -> bool:
+    """Is a session this instance dispatched still working this key?
+
+    Review Desk refuses to judge this and says so in as many words — "it does not judge whether
+    a session is alive. Allele owns that, and Review Desk is not told." So the judgement is made
+    here, from the two things this instance owns: its own ledger and allele's state file. Both
+    are needed, and the existing `ALIVE` set is exactly the right one rather than a new one:
+
+      * `ALIVE` includes `done`, and that is load-bearing. A review worker writes `done` when
+        its draft is ready and then STAYS UP with its watcher running, which is what lets it
+        hear the approval. Treating a `done` key as dead would dispatch a second session
+        alongside a live one holding the same draft.
+      * A `blocked` entry is in `WORKING` and has no session by design, so it falls out on the
+        `sid in live` test rather than needing a special case.
+      * A working status whose session allele no longer lists is the `session_lost` shape, and
+        calling it alive would leave an approved draft unposted for as long as the ledger lied.
+    """
+    sid = entry.get("session_id")
+    return bool(sid) and entry.get("status") in ALIVE and sid in live
+
+
 # --------------------------------------------------------------------------- ledger
 
 def ledger_path(key: str) -> Path:
@@ -507,6 +720,9 @@ class Poller:
         # `poller_started`, leaving nothing downstream aware that a process had run with the policy
         # off. A policy nobody can observe is barely better than one nobody chose.
         self.announced = False
+        # Reset per tick; here as well so a test that calls one section directly does not have
+        # to know that `tick()` is what creates it.
+        self.pr_states: dict = {}
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -662,7 +878,12 @@ class Poller:
         cfg = load_config()
         ledger = ledger_all()
         backlog = self.first_tick
-        for section in (self.linear_triggers, self.review_requests, self.liveness):
+        # Per TICK, not per process: a pull request merged between two polls must be seen as
+        # merged on the second. One `gh pr view` per Review Desk item would otherwise be one per
+        # item per tick, and the answer cannot change inside a tick.
+        self.pr_states = {}
+        for section in (self.linear_triggers, self.review_requests, self.review_desk,
+                        self.liveness):
             try:
                 section(cfg, ledger, backlog)
             except Exception as exc:  # one failing source must never kill the poller
@@ -910,6 +1131,143 @@ class Poller:
         for sid in [s for s in self.state["blocked"] if s not in tracked]:
             del self.state["blocked"][sid]
 
+    def review_desk(self, cfg: dict, ledger: dict, backlog: bool) -> None:
+        """The third source: what Review Desk says needs an agent, per repository served.
+
+        Linear says what the principal has asked for and GitHub says who has asked for a review.
+        Neither can say that a brief was confirmed or a draft approved, because those happen in
+        the dashboard — so before this section a draft the developer approved reached nobody once
+        its session was gone, and that is the hole DEV-865 was filed about.
+
+        Three things this section deliberately does NOT do:
+
+          * **It does not claim.** The ledger entry is the claim, written by the Dispatcher
+            before it creates a session, exactly as for a Linear trigger or a review request.
+            Review Desk's own README is explicit that `work list` has no lease and that two
+            callers polling one database both see the same item.
+          * **It does not commit anything.** `linear_triggers` and `review_requests` each end in
+            a destructive commit — a marker sweep, a `prs_present` overwrite — which is what
+            `trust_empty` exists to guard. This section only emits, so an empty answer costs
+            nothing to believe and the second-zero rule would be noise here. More than noise: an
+            empty list is Review Desk's NORMAL answer, because it lists only work the developer
+            has already acted on, so a `zero_streak` on this source would read as a fault on
+            every quiet day. The bucket therefore records a count and a time and nothing else.
+          * **It does not decide whether a session is alive from Review Desk.** See
+            `review_desk_live`.
+        """
+        rd = review_desk_cfg(cfg)
+        if review_desk_off(rd):
+            return
+        repos = review_desk_repos(cfg, ledger)
+        if not repos:
+            # Nothing to ask about, so nothing is asked and nothing is said. An instance with an
+            # unedited `repo_project_map` and no reviews in its ledger is indistinguishable, from
+            # the outside, from one with Review Desk switched off — which is what keeps a
+            # dispatcher that has never heard of Review Desk silent about it.
+            return
+        every = cfg["limits"]["reemit_after_secs"]
+        try:
+            live, _ = allele_state(cfg)
+        except Exception as exc:
+            # Whether a session is alive decides between "that session's watcher has it" and
+            # "dispatch a replacement", and getting it wrong in the second direction puts two
+            # sessions on one review. Unknown therefore means dispatch NOTHING, which is the
+            # recoverable direction: the next tick tries again.
+            if self.due("review_desk|liveness", every):
+                emit("review_desk_unavailable", state="unknown_liveness", mode=rd["mode"],
+                     detail=f"allele's state file could not be read, so whether a session is "
+                            f"still working a review is unknown and nothing was dispatched: "
+                            f"{str(exc)[:200]}")
+            return
+        counted = 0
+        for repo in repos:
+            state, items, detail = review_desk_work(rd, "--repo", repo)
+            if state == "absent":
+                # One answer for every repository: the binary either resolves or it does not.
+                # Silent under `auto`, which is what "absent is silent" means, and loud under
+                # `on` — where the principal has said they expect it to be there.
+                if review_desk_loud_when_absent(rd) and self.due("review_desk|absent", every):
+                    emit("review_desk_unavailable", state="absent", mode=rd["mode"],
+                         command=rd["command"], detail=detail)
+                return
+            if state != "ok":
+                # Broken is loud in every mode but `off`, and loud is one message rather than one
+                # per tick: the signature carries the detail so a NEW failure still speaks.
+                if self.due(f"review_desk|{state}|{detail[:60]}", every):
+                    emit("review_desk_unavailable", state=state, mode=rd["mode"],
+                         command=rd["command"], repo=repo, detail=detail)
+                continue
+            counted += len(items)
+            for item in items:
+                self.review_desk_item(rd, ledger, live, repo, item, every)
+        self.state.setdefault("sources", {})["review_desk"] = {
+            "last_count": counted, "last_at": now_iso()}
+
+    def review_desk_item(self, rd: dict, ledger: dict, live: dict, repo: str, item: dict,
+                         every: int) -> None:
+        """One `work list` item: dispatch it, resume it, or leave it to the session that has it."""
+        kind, rid = item.get("kind"), item.get("review_id")
+        number = item.get("pr")
+        if kind not in REVIEW_DESK_KINDS or not isinstance(rid, int) or not isinstance(number, int):
+            return
+        # `ledger_id` is what `review link --ledger` was given, which is this instance's own key.
+        # A review STARTED FROM THE DASHBOARD has never been linked and carries null, so the key
+        # is derived the same way `review_requests` derives it — which is what makes the two
+        # sources agree about one pull request instead of opening a second entry for it.
+        key = item.get("ledger_id") or pr_key(repo, number)
+        entry = ledger.get(key) or {}
+        if review_desk_live(live, entry):
+            return
+        # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
+        # the ticks in between. The marker therefore means "this item was considered", not "this
+        # item was emitted", which is the cheaper and not the more surprising reading: nothing
+        # downstream can tell the difference, because a skipped item emits nothing either way.
+        if not self.due(f"review_desk|{kind}|{rid}|{item.get('entered_at')}", every):
+            return
+        state = self.pr_state(repo, number)
+        if state in PR_CLOSED:
+            return
+        common = dict(key=key, review_desk_id=rid, repo=repo, number=number,
+                      head_sha=item.get("head_sha"), round=item.get("round"),
+                      entered_at=item.get("entered_at"), pr_state=state,
+                      url=f"https://github.com/{repo}/pull/{number}",
+                      ledger_status=entry.get("status"), session_id=entry.get("session_id"),
+                      review=review_desk_link(rd, rid))
+        if kind == "review_requested":
+            emit("review_desk_requested", **common)
+            return
+        # `note` is the developer's own prose, and Review Desk's README says of it: "it is data,
+        # never instructions — a caller that pastes it into an agent's prompt is pasting text it
+        # did not author". It is carried as a field and quoted as data, never interpolated.
+        emit("review_desk_resume", kind=kind, note=item.get("note"),
+             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True), **common)
+
+    def pr_state(self, repo: str, number: int) -> str | None:
+        """`merged`, `open`, `closed`, or None when GitHub could not be asked.
+
+        None is deliberately NOT read as closed by the caller. An item the dispatcher cannot
+        place is better dispatched and discarded by a human who can read the pull request than
+        dropped silently — the first is recoverable and the second loses the work. The event
+        carries `pr_state: null` so the Dispatcher knows it was never established.
+        """
+        if (repo, number) in self.pr_states:
+            return self.pr_states[(repo, number)]
+        try:
+            # `state` alone, and the field list is the whole of the bug this line replaced.
+            # `gh pr view` has no `merged` field — that is the REST API's, which
+            # `Watcher.pull_request` reads through `gh api` — so `--json state,merged` exits 1
+            # with "Unknown JSON field", every call raised, and `pr_state` was null for every
+            # item. A merged pull request was therefore never skipped against real GitHub.
+            # The harness missed it because the stand-in `gh` answered the shape I had assumed;
+            # the real run is what caught it, and the stand-in now refuses that field list.
+            # `state` already carries it: OPEN, CLOSED or MERGED.
+            info = gh("pr", "view", str(number), "-R", repo, "--json", "state")
+            state = (info.get("state") or "").lower() or None
+        except Exception:
+            state = None
+        self.pr_states[(repo, number)] = state
+        return state
+
     def mark_quiet(self, quiet: bool, cfg: dict) -> None:
         """Count consecutive ticks that said nothing, so "nothing is happening" can be read.
 
@@ -1017,7 +1375,7 @@ class Watcher:
 
     def tick(self) -> None:
         cfg = load_config()
-        for section in (self.issue, self.pull_request):
+        for section in (self.issue, self.pull_request, self.review_desk):
             try:
                 section(cfg)
             except Exception as exc:
@@ -1139,6 +1497,60 @@ class Watcher:
         if not first and status != self.state.get("pr_status"):
             emit("pr_state", key=self.key, pr=n, previous=self.state.get("pr_status"), current=status)
         self.state.update(pr_head=head, pr_status=status, pr_since=now_z(), pr_seen=sorted(seen)[-500:])
+
+
+    def review_desk(self, cfg: dict) -> None:
+        """The developer's two acts, relayed to the session that is waiting for them.
+
+        Confirming a brief and approving a draft happen in the dashboard and nowhere else. The
+        session that wrote them cannot see the dashboard, so without this it waits forever — the
+        "approval delivery" open question in Review Desk's own brief, which named this watcher as
+        the candidate.
+
+        Gated on the LEDGER carrying `review_desk_id`, which means two things at once: a review
+        this instance never recorded is never polled for, and a session whose entry carries one
+        is by definition working a recorded review. A `work list --review` failure therefore
+        raises, and `tick()` turns it into a `watch_error` like any other section's — loud,
+        once per changed signature, and never fatal.
+
+        **An absent binary raises here where the poller stays silent, and the asymmetry is the
+        point.** The poller's silence under `auto` is about an install that was never there. By
+        the time an entry carries a review id, Review Desk HAS been there and has the record, so
+        its disappearance is a broken install and broken is loud in every mode but `off`.
+
+        It also emits on the FIRST tick, where `issue()` and `pull_request()` deliberately
+        suppress their history. A replacement session arming its watcher over an already-approved
+        draft has to be told at once; that is the whole of the resume path, and suppressing it
+        would make the replacement wait for a state change that has already happened.
+        """
+        rd = review_desk_cfg(cfg)
+        rid = (ledger_get(self.key) or {}).get("review_desk_id")
+        if review_desk_off(rd) or rid is None:
+            return
+        state, items, detail = review_desk_work(rd, "--review", str(rid))
+        if state != "ok":
+            raise RuntimeError(f"review-desk work list --review {rid} ({state}): "
+                               f"{detail or 'no detail'}")
+        # `(kind, review_id, entered_at)` is Review Desk's own identity for an item, and it says
+        # why: a draft sent back, revised and sent back again is `ready` in between, so the
+        # second send-back rewrites the time and is a new item. Keying on `(kind, review_id)`
+        # would silently drop the developer's second instruction.
+        seen = set(self.state.get("rd_seen", []))
+        for item in sorted(items, key=lambda i: i.get("entered_at") or 0):
+            kind = item.get("kind")
+            if kind not in REVIEW_DESK_WATCH_KINDS:
+                continue
+            ident = f"{kind}|{item.get('review_id')}|{item.get('entered_at')}"
+            if ident in seen:
+                continue
+            seen.add(ident)
+            # `note` is the developer's prose and is data, not instructions — Review Desk's
+            # README says so of this exact field. Relayed verbatim in its own key.
+            emit(kind, key=self.key, review_desk_id=rid, round=item.get("round"),
+                 sign_off=item.get("sign_off"), entered_at=item.get("entered_at"),
+                 note=item.get("note"), review=review_desk_link(rd, rid),
+                 draft=review_desk_link(rd, rid, draft=True))
+        self.state["rd_seen"] = sorted(seen)[-200:]
 
 
 def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, str] | None:
@@ -1336,9 +1748,19 @@ def cmd_brief(args) -> None:
     else:
         subject = f"{args.key} — {entry.get('title', '')} — {entry.get('url', '')}"
         task = f"{mode.capitalize()} Linear ticket {args.key}, working autonomously through the brief below."
-    composed = subprocess.run(["locus", "agent", "compose", "--traits", t["traits"], "--role", t["role"], "--task", task],
-                              capture_output=True, text=True)
-    head = composed.stdout.strip() if composed.returncode == 0 else f"You are {t['role']}.\n\nYour task: {task}"
+    # The fallback head below existed for a `locus` that ran and failed, and `subprocess.run`
+    # raises rather than returning for a `locus` that is not there at all — so this command
+    # crashed with a traceback on any machine without the binary, including every CI runner.
+    # Found by the first test ever to drive `brief`, in DEV-865's harness. A brief is how a
+    # worker gets dispatched, so there is no reading of this file on which that is acceptable.
+    plain = f"You are {t['role']}.\n\nYour task: {task}"
+    try:
+        composed = subprocess.run(
+            ["locus", "agent", "compose", "--traits", t["traits"], "--role", t["role"],
+             "--task", task], capture_output=True, text=True)
+        head = composed.stdout.strip() if composed.returncode == 0 else plain
+    except (OSError, subprocess.SubprocessError):
+        head = plain
     # Briefs resolve against CODE_DIR; only the instance flag carries state. Pointing these at
     # the instance directory is the silent failure in this file: every worker would start by
     # failing to read a brief that was never installed there.
@@ -1353,6 +1775,27 @@ def cmd_brief(args) -> None:
         extra.append(f"- Production reads: the `{production_mcp}` MCP, read-only, aggregates and ids only.")
     if mode in ("review", "implement"):
         extra.append("- Review craft: invoke the `review-craft` skill for the house style, the lenses and the linter.")
+    # Review Desk is named in the brief ONLY for a review, and only when it is configured on.
+    # `auto` with nothing installed adds no line at all, which is what keeps a worker on a
+    # machine without it reading exactly the brief it read before this existed.
+    rd = review_desk_cfg(cfg)
+    if mode == "review" and not review_desk_off(rd):
+        extra.append(f"- Review Desk: `{rd['command']}`, mode `{rd['mode']}`, brief gate "
+                     f"`{rd['brief_gate']}`, dashboard {rd.get('url') or '(no url set)'}. "
+                     f"Follow `review.md`'s **With Review Desk** section if `work list` answers; "
+                     f"if the command is not there, mode `auto` means carry on exactly as the "
+                     f"steps above say and say nothing about it.")
+        rid = entry.get("review_desk_id")
+        if rid is not None:
+            # A replacement is TOLD, rather than left to infer it. `_common.md` step 1 already
+            # says an earlier session in the history makes you a replacement, but a review
+            # started from the dashboard has no earlier session of ours at all — the record is
+            # the only thing that carries the history, and this is the line that names it.
+            extra.append(f"- **You are resuming Review Desk review {rid}**, which already holds "
+                         f"the brief, the findings and any draft. Read it with `{rd['command']} "
+                         f"review show --review {rid}` BEFORE anything else, and continue from "
+                         f"what is there rather than starting again. "
+                         f"{review_desk_link(rd, rid) or ''}")
     print(f"""{head}
 
 ## Dispatch
@@ -1366,6 +1809,103 @@ def cmd_brief(args) -> None:
 - The Dispatcher that sent you is reachable at the reply address allele gave you above. Report to it on every status change.
 
 Start now: read the two brief files, then begin.""")
+
+
+# --------------------------------------------------------------- the posting check
+
+def normalise_body(text: str | None) -> str:
+    """Compare two review bodies the way two systems can actually agree on.
+
+    GitHub hands back a body it has stored, and what it stores is not byte-identical to what was
+    sent: line endings come back as CRLF where the poster sent LF, and trailing spaces survive a
+    round trip in one direction and not the other. A byte-exact comparison therefore answers "no
+    matching review" about the very review it is looking at, and the caller posts a second one on
+    somebody's pull request. Normalising is not laxness here; byte-exactness is the bug.
+    """
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(line.rstrip() for line in lines).strip()
+
+
+def gh_pages(payload) -> list:
+    """Flatten `gh api --paginate --slurp`, tolerating a single page that was not wrapped.
+
+    `--slurp` wraps each page in an outer array, so the shape is a list of lists. Both shapes are
+    accepted because the one that matters is cheap to accept and getting it wrong means reading
+    an empty list of reviews — which is the answer that posts a duplicate.
+    """
+    if not isinstance(payload, list):
+        return []
+    if payload and isinstance(payload[0], list):
+        return [item for page in payload for item in (page or [])]
+    return payload
+
+
+def cmd_review_posted(args) -> None:
+    """Has the principal's approved review already been posted on this pull request?
+
+    Read-only, and the one thing standing between `draft_approved` and a duplicate review on
+    somebody's pull request. Review Desk leaves `draft_approved` listed until something reports
+    the draft posted — it has no lease and says so — so a session that posts and then dies is
+    followed by one that would post again. GitHub is the only system that knows, which is why
+    this lives here rather than in a brief: a check only written down in prose is a check that
+    cannot be tested, and this one's failure mode is public.
+
+    **Three tests, and all three must hold**, because each one on its own matches something it
+    should not:
+
+      login  the principal's, so the author's review and a bot's are not mistaken for ours.
+      time   submitted at or after the approval, so the previous round's review is not. A tie on
+             the second resolves to "after": the inclusive side is the one that SKIPS the post,
+             and between a missed duplicate and a caused one there is no contest.
+      body   the approved text, normalised, so the principal's own hand-written review on the
+             same pull request is not read as this draft.
+
+    A `PENDING` review is GitHub's word for one that exists and has not been submitted. It is not
+    posted and must not be counted.
+    """
+    cfg = load_config()
+    entry = ledger_get(args.key)
+    if not entry:
+        raise SystemExit(f"no ledger entry for {args.key}; this check reads its repo and number")
+    repo, number = entry.get("repo"), entry.get("number")
+    if not repo or not number:
+        raise SystemExit(f"{args.key} carries no repo/number in the ledger, and this check needs "
+                         f"both to ask GitHub anything")
+    login = (cfg["github"].get("login") or "").strip().lower()
+    if not login:
+        raise SystemExit("github.login is not set in config.json, so there is no author to match")
+    body = sys.stdin.read() if args.body_file == "-" else Path(args.body_file).read_text()
+    want = normalise_body(body)
+    # Paginated, because a long-lived pull request can hold more than one page of reviews and the
+    # principal's is as likely to be on the second. `per_page=100` alone was the first version of
+    # this line, and it is exactly the shape that posts a duplicate on a busy pull request.
+    reviews = gh_pages(gh("api", "--paginate", "--slurp",
+                          f"repos/{repo}/pulls/{number}/reviews?per_page=100"))
+    hit = None
+    for review in reviews:
+        if (review.get("user") or {}).get("login", "").strip().lower() != login:
+            continue
+        if (review.get("state") or "").upper() == "PENDING":
+            continue
+        at = review.get("submitted_at")
+        if not at or parse_iso(at) < float(args.approved_at):
+            continue
+        if normalise_body(review.get("body")) != want:
+            continue
+        hit = review
+        break
+    if args.json:
+        print(json.dumps({"posted": bool(hit), "review_id": (hit or {}).get("id"),
+                          "submitted_at": (hit or {}).get("submitted_at"),
+                          "state": (hit or {}).get("state"), "repo": repo, "number": number,
+                          "login": login, "reviews_read": len(reviews)}, ensure_ascii=False))
+    elif hit:
+        print(f"posted: review {hit['id']} by {login}, {str(hit.get('state', '')).lower()}, at "
+              f"{hit.get('submitted_at')} — do NOT post again. Record it with "
+              f"`review-desk draft posted --review <id> --github-review {hit['id']}`.")
+    else:
+        print(f"not posted: none of the {len(reviews)} review(s) on {repo}#{number} is by "
+              f"{login}, at or after the approval, with this body. Posting is the next step.")
 
 
 # --------------------------------------------------------------------------- status / doctor
@@ -1874,6 +2414,28 @@ def cmd_reap(args) -> None:
         print(f"  {len(missed)} could not be signalled — re-run to confirm")
 
 
+def review_desk_dashboard(rd: dict) -> str:
+    """Whether the dashboard answers at `url`. One GET, short timeout, never raises.
+
+    `GET /api/v1/health` is the endpoint Review Desk's README uses for exactly this, and it is
+    the ONLY HTTP call anywhere in this file to the dashboard. Everything else a session does
+    goes through the command line, which is Review Desk's "one way in" — and the two endpoints
+    that sign off are reachable over this same API, so a dispatcher that learned to speak it
+    would be one edit away from signing off for the developer.
+    """
+    url = (rd.get("url") or "").rstrip("/")
+    if not url:
+        return "no url set, so no dashboard to check"
+    try:
+        with urllib.request.urlopen(f"{url}/api/v1/health", timeout=3) as response:
+            body = json.load(response)
+        return (f"dashboard answers at {url} (schema {body.get('schema_version', '?')}, "
+                f"front end {'embedded' if body.get('front_end_embedded') else 'not built'})")
+    except Exception as exc:
+        # Not a failure: see the note in `review_desk_check`. The developer starts `serve`.
+        return f"no dashboard at {url} ({type(exc).__name__}) — sign-off needs `review-desk serve`"
+
+
 def cmd_doctor(args) -> None:
     cfg = load_config()
     checks = []
@@ -1961,8 +2523,58 @@ def cmd_doctor(args) -> None:
             note += f", {len(unknown)} matching no ledger entry"
         return note
 
+    def review_desk_check():
+        """What state Review Desk is in, and whether that state is a failure.
+
+        The mode decides which absences fail, and only the mode:
+
+          off   never called. Reported so a reader is not left wondering why a configured
+                dashboard is being ignored, and never a failure.
+          auto  used when found, silent when not. Reported either way — `doctor` is the command
+                whose job is to say what is there — and a failure only when something is BROKEN.
+          on    the principal has said they expect it. An absent one fails here as well.
+
+        **A dashboard that does not answer is reported and never fails.** `SKILL.md`'s start-up
+        step stops the Dispatcher on any cross, and `review-desk serve` is the developer's to
+        start — out of scope for this change, by the ticket's own words. A review can be
+        prepared and recorded with nothing serving; only the two sign-offs need the dashboard,
+        and failing here would stop the Dispatcher over a window the developer has not opened.
+        """
+        rd = review_desk_cfg(cfg)
+        mode = rd.get("mode")
+        said = [f"mode {mode}"]
+        if mode not in REVIEW_DESK_MODES:
+            # Read as `auto` everywhere else, which is the non-blocking direction. Named here,
+            # because a typo that silently disables a configured integration is worth one cross.
+            raise RuntimeError(f"review_desk.mode is {mode!r}, which is not one of "
+                               f"{', '.join(REVIEW_DESK_MODES)} — it is being read as 'auto'")
+        if rd.get("brief_gate") not in REVIEW_DESK_GATES:
+            raise RuntimeError(f"review_desk.brief_gate is {rd.get('brief_gate')!r}, not one of "
+                               f"{', '.join(REVIEW_DESK_GATES)}")
+        if mode == "off":
+            return "off — nothing is recorded in Review Desk and nothing is polled"
+        # The same `work list` the poller runs, so "found" is established by the call rather than
+        # by a flag. `--version` and `db path` are asked only for the report.
+        state, _, detail = review_desk_work(rd)
+        if state == "absent":
+            if review_desk_loud_when_absent(rd):
+                raise RuntimeError(f"mode is 'on' and {rd['command']} is not on PATH — reviews "
+                                   f"still run the way they did before Review Desk existed, and "
+                                   f"nothing is recorded.")
+            return f"{mode} · {rd['command']} is not installed — reviews run as they do today"
+        if state != "ok":
+            raise RuntimeError(f"{rd['command']} is installed and {state}: {detail} — reviews "
+                              f"still run the old way, and nothing is being recorded")
+        ok, version, _ = review_desk_run(rd, "--version", json_out=False)
+        said.append(version if ok == "ok" and version else "version unknown")
+        ok, where, _ = review_desk_run(rd, "db", "path", "--json")
+        said.append(f"db {(where or {}).get('path', '?')}" if ok == "ok" else "db path unknown")
+        said.append(review_desk_dashboard(rd))
+        return " · ".join(said)
+
     check("watchers", watchers)
     check("watch cursors", cursors)
+    check("review desk", review_desk_check)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))
@@ -2153,7 +2765,14 @@ def cmd_init(args) -> None:
                + fill_absent("modes", cfg["linear"]["modes"], template["linear"]["modes"])
                + fill_absent("traits", cfg.setdefault("traits", {}), template["traits"])
                + fill_absent("orchestration", cfg.setdefault("allele", {}).setdefault("orchestration", {}),
-                             template["allele"]["orchestration"]))
+                             template["allele"]["orchestration"])
+               # Five sites now. `review_desk` qualifies for `fill_absent`'s stated rule — every
+               # key in it is vocabulary with a real default, not a placeholder somebody must
+               # edit — so a re-run teaches an older config the block without putting junk in it.
+               # It is a convenience rather than a migration: `review_desk_cfg` defaults the same
+               # four keys in code, so an instance that never re-runs `init` behaves as `auto`.
+               + fill_absent("review_desk", cfg.setdefault("review_desk", {}),
+                             template["review_desk"]))
     if learned:
         print(f"new in this version: {', '.join(learned)}")
 
@@ -2283,6 +2902,17 @@ def main() -> None:
     p = sub.add_parser("brief", parents=[common])
     p.add_argument("key")
     p.set_defaults(fn=cmd_brief)
+
+    p = sub.add_parser("review-posted", parents=[common],
+                       help="has the principal's approved review already been posted? read-only")
+    p.add_argument("key", help="the ledger key, which carries the repo and the pull request")
+    p.add_argument("--approved-at", dest="approved_at", required=True,
+                   help="the approval time, in integer seconds since the epoch, as "
+                        "`review-desk draft show --json` reports it")
+    p.add_argument("--body-file", dest="body_file", required=True,
+                   help="the approved body, or - for standard input")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_review_posted)
 
     p = sub.add_parser("status", parents=[common])
     p.add_argument("--all", action="store_true")
