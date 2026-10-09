@@ -52,6 +52,15 @@
     "review":      { "traits": "implementation,skeptical,thorough",          "role": "PR review preparer" }
   },
 
+  "_comment_review_desk": "Review Desk, if it is installed: https://github.com/devergehq/review-desk. `mode` auto uses it when it is found and is otherwise silent; `on` is the same but fails `doctor` and tells the principal when it is not; `off` never calls it. Everything here is defaulted in code, so an instance whose config has no `review_desk` block behaves exactly as `auto` and needs no edit. `url` is only for the links a session puts in its messages and for `doctor`'s reachability line — nothing is driven over HTTP. `brief_gate` never writes the brief as needing no confirmation, with that reason; always writes it as needing the developer's and waits.",
+
+  "review_desk": {
+    "mode": "auto",
+    "command": "review-desk",
+    "url": "http://127.0.0.1:7777",
+    "brief_gate": "never"
+  },
+
   "tools": {
     "production_mcp": null
   },
