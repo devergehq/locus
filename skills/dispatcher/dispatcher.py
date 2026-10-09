@@ -1740,9 +1740,19 @@ def cmd_brief(args) -> None:
     else:
         subject = f"{args.key} — {entry.get('title', '')} — {entry.get('url', '')}"
         task = f"{mode.capitalize()} Linear ticket {args.key}, working autonomously through the brief below."
-    composed = subprocess.run(["locus", "agent", "compose", "--traits", t["traits"], "--role", t["role"], "--task", task],
-                              capture_output=True, text=True)
-    head = composed.stdout.strip() if composed.returncode == 0 else f"You are {t['role']}.\n\nYour task: {task}"
+    # The fallback head below existed for a `locus` that ran and failed, and `subprocess.run`
+    # raises rather than returning for a `locus` that is not there at all — so this command
+    # crashed with a traceback on any machine without the binary, including every CI runner.
+    # Found by the first test ever to drive `brief`, in DEV-865's harness. A brief is how a
+    # worker gets dispatched, so there is no reading of this file on which that is acceptable.
+    plain = f"You are {t['role']}.\n\nYour task: {task}"
+    try:
+        composed = subprocess.run(
+            ["locus", "agent", "compose", "--traits", t["traits"], "--role", t["role"],
+             "--task", task], capture_output=True, text=True)
+        head = composed.stdout.strip() if composed.returncode == 0 else plain
+    except (OSError, subprocess.SubprocessError):
+        head = plain
     # Briefs resolve against CODE_DIR; only the instance flag carries state. Pointing these at
     # the instance directory is the silent failure in this file: every worker would start by
     # failing to read a brief that was never installed there.

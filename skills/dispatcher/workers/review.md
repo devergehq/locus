@@ -102,7 +102,7 @@ one twice is the same as writing it once, so you can report progress without rea
 | 3 alternatives | the ways it could have been solved, written before you read the diff in depth | `4 options, B built` |
 | 4 solution map | step 5's "is this change the right *shape* for it" | your verdict in a phrase |
 | 5 code review | step 1's read, step 3's blind second lens, step 4's `review-craft` lenses | `6 findings, 2 blockers` |
-| 6 draft | step 6's draft and step 6b's `review_lint` | left to the store: `draft put` settles this layer |
+| 6 draft | step 6's draft and step 6b's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
 | 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — |
 
 Three things that are easy to get wrong here:
@@ -116,10 +116,13 @@ Three things that are easy to get wrong here:
   Both record into layer 5. Give the blind reviewer the ticket and the diff and not your
   findings, merge its findings with yours, and mark where you disagree rather than smoothing it
   over. Run the `review-craft` lenses after, so they do not anchor you.
-- **Layers 2 and 6 are settled by the store, not by you.** Confirming a brief finishes layer 2,
-  writing one that needs no confirmation finishes it too, approving a draft finishes layer 6 and
-  sending one back puts it to `running` with the developer's note. Do not write those states
-  yourself: a trail that disagrees with the record is worse than one that lags.
+- **The store writes three layer rows and you write the rest, and the split is not where it
+  looks.** Confirming a brief finishes layer 2 and writing one that needs no confirmation
+  finishes it too, so **never write layer 2 at all**. Layer 6 is the other way round:
+  `draft put` leaves it exactly as it found it — verified against 0.1.0, where a review with a
+  draft at `ready` still read layer 6 `pending` — and only *approving* finishes it or *sending
+  back* returns it to `running`. So write layer 6 yourself up to `waiting_on_you`, and stop
+  there. Writing `done` on either is how a trail comes to claim a sign-off nobody made.
 
 ### The brief, and whether it needs confirming
 

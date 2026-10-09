@@ -707,6 +707,16 @@ instance '{"mode":"auto"}'
 put EX-1 mode=implement status=claimed title=T url=u --by test
 set +e; D brief EX-1 > "$work/out" 2>&1; set -e
 ok "a non-review brief is untouched"                   "$(count 'Review Desk')" 0
+# `brief` shells out to `locus agent compose`, and `subprocess.run` RAISES for a binary that is
+# not there rather than returning non-zero — so this command used to crash with a traceback on
+# any machine without it, CI included. These are the first tests to drive `brief` at all.
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=claimed repo=acme/portal number=412 --by test
+set +e; PATH="$work/bin:/usr/bin:/bin:/usr/sbin:/sbin" D brief gh-portal-412 > "$work/out" 2>&1
+brc=$?; set -e
+ok "a brief works with no \`locus\` on PATH"             "$brc" 0
+ok "  falling back to the plain role line"             "$(says 'You are R')" yes
+ok "  and still naming Review Desk"                    "$(says 'Review Desk: ')" yes
 
 # =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'
