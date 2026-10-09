@@ -213,13 +213,27 @@ post again, on somebody's pull request, under your principal's name.
    `gh api repos/OWNER/REPO/pulls/<n>/reviews`. It is your principal's review: no agent
    signature unless they asked for one.
 
-   **The body is theirs; the inline threads are yours, and they go up in the same call.** What
-   the developer approved is the review *body*. The house style puts each finding on the line it
-   concerns, and Review Desk's draft holds no thread text — so the threads are yours to write,
-   and they travel in the same `reviews` call's `comments` array rather than as a second review.
+   **The body is theirs; the inline threads are yours, and they go in `comments` on this same
+   call.** What the developer approved is the review *body*. The house style puts each finding on
+   the line it concerns and Review Desk's draft holds no thread text, so the threads are yours to
+   write — and the `comments` array of this one `reviews` call is the only place they may go.
+
+   **Adding a thread afterwards creates a second review, and that is measured rather than
+   feared.** `POST /pulls/<n>/comments` makes a standalone review comment, and GitHub wraps it in
+   an implicit review to hold it. On DEV-865's acceptance run, the review posted with its thread
+   in `comments` left `pulls/19/reviews` at **1**; the one whose thread was added afterwards left
+   `pulls/20/reviews` at **2**, the second being a container with a **0-character body**. Posting
+   once is the rule this section is named after, so the thread goes in the call or it waits for
+   the next round.
+
+   (The `review-posted` check survives that, and it is worth knowing why: it matches on login,
+   time **and body**, so the empty container does not match and the check still answered
+   `posted: true` against the real review. A guard that had counted reviews instead would have
+   been confused by GitHub's own bookkeeping.)
+
    Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
-   posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with
-   nothing it could have linked — so it is spelled out rather than implied.
+   posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with nothing
+   it could have linked — which is why it is spelled out rather than implied.
 4. `review-desk finding link --review <id> --finding <seq> --github-comment <id>` for each
    inline comment, then
    `review-desk draft posted --review <id> --github-review <the review id>`.
