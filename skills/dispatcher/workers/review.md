@@ -88,6 +88,14 @@ your principal's name.
    `You are resuming Review Desk review <id>` line in its own brief — that there is a record to
    continue instead of a review to start again.
 
+**A replacement re-links, and `review link` is the first thing it does.** `review open` hands
+back the same id, so the record is already there — but its `session_id` still names the session
+that died, and Review Desk publishes that field in `work list`. Leaving it stale makes the record
+say a dead session is working the review. Nothing in this dispatcher breaks, because it judges
+liveness from its own ledger and allele rather than from Review Desk's field, but a record that
+is false is enough: run `review link --review <id> --session <your own session id>` before you
+read anything else.
+
 ### Your steps are the seven layers
 
 **What you do does not change; it gets recorded.** `review-desk layer set --review <id>
@@ -204,12 +212,40 @@ post again, on somebody's pull request, under your principal's name.
 3. Post exactly the approved body with the approved event, as **one** review, through
    `gh api repos/OWNER/REPO/pulls/<n>/reviews`. It is your principal's review: no agent
    signature unless they asked for one.
+
+   **The body is theirs; the inline threads are yours, and they go up in the same call.** What
+   the developer approved is the review *body*. The house style puts each finding on the line it
+   concerns, and Review Desk's draft holds no thread text — so the threads are yours to write,
+   and they travel in the same `reviews` call's `comments` array rather than as a second review.
+   Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
+   posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with
+   nothing it could have linked — so it is spelled out rather than implied.
 4. `review-desk finding link --review <id> --finding <seq> --github-comment <id>` for each
    inline comment, then
    `review-desk draft posted --review <id> --github-review <the review id>`.
 5. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
    the ledger. The record will say the draft is approved and unposted while GitHub says
    otherwise, and the check in step 2 is what makes the retry safe rather than duplicative.
+6. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 6b's
+   "fix what it names by editing the review" governs your own text and nothing else. Your threads
+   you may edit freely. **The body you may not touch**, because the developer signed off on those
+   characters and replacing them puts text they never read on the pull request under their name —
+   which is the one thing this whole arrangement exists to prevent. Tell the Dispatcher what the
+   lint named and what would have to change; whether to accept an edit is the developer's call,
+   and the route is a fresh round, not a rewrite.
+
+   This cost nothing to discover and would have cost a great deal to find in the wild: on
+   DEV-865's own acceptance run a replacement session was *instructed* to edit an approved body
+   to satisfy the lint, and refused, for exactly this reason. It was right and the instruction
+   was wrong.
+
+   **The lint cannot save you here**, and that is the honest shape of it: `review_lint.py` reads
+   a *posted* review, so a body's lint failures are already approved by the time anything can
+   see them. So check what you can before `draft put` — the `**Method**` line on **one** physical
+   line (the linter reads the first physical line only, and a wrapped one hides the coverage
+   count after it), the verdict's severity counts against the rows your own tables hold, and each
+   thread under its prose budget — because after approval the only person who can fix the body is
+   the one who approved it.
 
 ## After that
 
