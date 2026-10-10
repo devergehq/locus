@@ -318,6 +318,7 @@ ok "it exits 1, not 2"                            "$(run "$work/old.json")" 1
 ok "and says it is not structured"                "$(says 'not structured')" yes
 ok "once, not once per rule"                      "$(grep -c 'not structured' "$work/out" || true)" 1
 ok "with no rule lines at all"                    "$(grep -c '^\(PASS\|FAIL\)' "$work/out" || true)" 0
+ok "and names the four it would have reported"  "$(says 'not the four it would otherwise report')" yes
 ok "pointing at the file that has the slots"      "$(says 'understand.md')" yes
 ok "a half-written brief is linted, not excused"  "$(mut 'b["flow_after"]=[]; b["problems"]=[]'; case_run)" 1
 ok "and that one does report its rules"           "$(ran picture.before)" yes

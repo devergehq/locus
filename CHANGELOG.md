@@ -27,18 +27,18 @@ refuses to build when they disagree.
   failure names the longest lines to tighten. Detail behind a click is never length-checked and there is no limit
   keyed on the size of the diff. `brief_lint.py <file.json>` needs no `review-desk`; `--review N`
   reads the saved brief through it and a missing binary is loud and exits 2, never 1. A brief
-  written the old way is reported as "not structured" once rather than failing fifteen rules about
-  slots it never had. The limits sit in one table at the top of the file with their provenance
+  written the old way is reported as "not structured" once, rather than as the four failures it
+  would otherwise collect about slots it never had. The limits sit in one table at the top of the file with their provenance
   (`--limits`); `understand.md` owns them, which made two tighter than DEV-884 proposed and
   settled the headline at 20 words. Review Desk's own real-length brief passes all 18.
-  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 138 assertions.
+  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 139 assertions.
 
 - **CI runs the four `scripts/test-*.sh` harnesses.** They covered the Python skill scripts and
   nothing executed them, so DEV-794's own finding — "nothing caught it, because nothing tested it" —
   would have stayed true of the suite written to close it. All four were green together (65 + 26 + 79
   + 36 = 206 assertions) and none needs credentials, the network or a built binary. The step globs
   `scripts/test-*.sh`, so a harness added afterwards is picked up with no registration — eight of
-  them now, 672 assertions. None had ever run
+  them now, 673 assertions. None had ever run
   on Linux, so the first red run there is information rather than a regression.
 
 ### Fixed

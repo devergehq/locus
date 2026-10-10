@@ -120,7 +120,7 @@ Write one JSON object to `<ANSWER PATH>`, then reply with one line saying it is 
 
 {
   "options": [{
-    "title": "under 12 words, plain English",
+    "title": "at most 12 words, plain English",
     "mechanism": "one or two sentences: what would actually be built or changed",
     "fixes": {"1": {"verdict": "yes | partly | no", "why": "one short sentence"}},
     "cost": "one sentence: the main cost or risk",

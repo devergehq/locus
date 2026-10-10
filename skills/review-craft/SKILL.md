@@ -213,11 +213,11 @@ on a box in each flow and carrying both its lines, a top layer with no class nam
 and no sentence of three semicolon-joined clauses, every length limit, and a problem half that
 does not name an option or an after-only box — the half a blind pass may be shown. An option's
 title and the supporting table's row count are checked too, both slots `understand.md` states and
-DEV-884's rule table did not reach. A brief written
-the old way is reported as "not structured" once, rather than failing fifteen rules about slots it
-has never had. `understand.md` owns every per-slot limit, which made two of them tighter than
-DEV-884 proposed — and settled the headline at the 20 words Patrick ruled on, where the file had
-said "under 20" and the ticket 25. The disagreements are named in `--limits`, next to the numbers.
+DEV-884's rule table did not reach. A brief written the old way is reported as "not structured"
+once, rather than as the four failures it would otherwise collect about slots the brief has never
+had. `understand.md` owns every per-slot limit, which made two of them tighter than DEV-884
+proposed — and settled the headline at the 20 words Patrick ruled on, where the file had said
+"under 20" and the ticket 25. The disagreements are named in `--limits`, next to the numbers.
 
 **10 October 2026.** `understand.md` is new, and the three understanding steps now come first:
 `workers/review.md` had them at step 5 of 8, after the tests, the blind second lens and the

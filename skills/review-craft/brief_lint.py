@@ -425,7 +425,9 @@ def structured(brief: dict) -> bool:
 
     A brief written the old way — `problem`, `diagram`, `provenance` and options with a
     paragraph each way — serves every new array empty and every new string null, by Review
-    Desk's contract. That is one fault, said once, not fifteen."""
+    Desk's contract. That is one fault, said once — never the four that `lint()` would otherwise
+    report (no headline, no before flow, no after flow, no numbered problems), each telling the
+    author to fill a slot the document they are holding has never had."""
     return any(brief.get(k) for k in STRUCTURE)
 
 
@@ -602,8 +604,8 @@ def main() -> int:
         print("A brief is structured when it carries a headline, the two flows as rows of "
               "boxes, and the numbered problems the rest of the review refers to. "
               "`understand.md`, under \"Understand\", has the slots; `review-desk brief put "
-              "--help` has the document. Nothing else was checked — there is one fault here, "
-              "not fifteen.")
+              "--help` has the document. Nothing else was checked: there is one fault here, not "
+              "the four it would otherwise report about slots this brief has never had.")
         return 1
 
     problems, before, after = (brief.get("problems") or [], brief.get("flow_before") or [],
