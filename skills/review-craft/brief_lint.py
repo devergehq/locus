@@ -231,6 +231,15 @@ def lint(brief: dict) -> int:
                     f"`flow_{name}` — {low} to {high} rows, one step each. A brief with no "
                     "picture is the prose this linter exists to replace")
             continue
+        blank = [f"row {r} box {c}" for r, c, box in boxes(flow)
+                 if not (box.get("title") or "").strip()]
+        if blank:
+            L.check(False, f"picture.{name}",
+                    f"{len(blank)} box of the {name} flow carries no title ({', '.join(blank[:3])}"
+                    "). A box with nothing in it is a flow that is not drawn, whatever the row "
+                    "count says. Write the step, in a caption of "
+                    f"{LIMIT['box.title.words']} words or fewer")
+            continue
         L.check(low <= len(flow) <= high, f"picture.{name}",
                 f"the {name} flow holds {len(flow)} rows against {low} to {high}. "
                 + (f"Below {low} it is not a flow, it is a sentence in boxes — split the step "
@@ -250,7 +259,7 @@ def lint(brief: dict) -> int:
                "its detail"),
             measure=f"{len(problems)} of {low}-{high}")
     for key, flow, name in (("marked_before", before, "before"), ("marked_after", after, "after")):
-        marked = {b.get("problem") for _, _, b in boxes(flow) if b.get("problem")}
+        marked = {b.get("problem") for _, _, b in boxes(flow) if b.get("problem") is not None}
         missing = [p.get("number") for p in problems if p.get("number") not in marked]
         L.check(not missing, f"problems.{key}",
                 f"problem{'s' if len(missing) > 1 else ''} "
@@ -324,7 +333,13 @@ def lint(brief: dict) -> int:
     # matters is not a name but the answer: an option's title, or a box that only the after flow
     # draws. Both say what was decided, and a session shown either is no longer independent.
     half = problem_half(brief)
-    before_titles = {flat(b.get("title") or "") for _, _, b in boxes(before)}
+    # The two tests here MUST match the same way. "After-only" by exact equality and "appears in
+    # the problem half" by substring is not one rule, it is two that disagree: an after box whose
+    # caption is a shortened form of a before box's — the normal way to draw the same step twice —
+    # counted as after-only, and then found in the problem half inside the very before title it
+    # came from. Both are substring tests now, so a caption the before flow already carries can
+    # never be read as the answer.
+    before_titles = " ".join(flat(b.get("title") or "") for _, _, b in boxes(before))
     leaks = []
     for _, _, box in boxes(after):
         t = flat(box.get("title") or "")
@@ -360,29 +375,74 @@ def structured(brief: dict) -> bool:
 
 
 def shaped(brief: dict) -> None:
-    """Die (2) on a document the checks cannot run over. A malformed brief is not a bad brief."""
+    """Die (2) on a document the checks cannot run over. A malformed brief is not a bad brief.
+
+    Exit 1 means "this brief has a fault" and exit 2 means "nothing was checked". A traceback
+    says the second and exits with the first, which is the one outcome a worker must not be
+    handed — and the file-argument mode exists to be pointed at hand-written JSON, where a
+    string in place of an object is the commonest mistake there is. So every leaf a check
+    reads is typed here, and the message names the field rather than the line of Python.
+    """
+    def whole(value, where: str) -> None:
+        """An integer, and not a bool: `True` is an `int` in Python and is not a problem number."""
+        if value is not None and not (isinstance(value, int) and not isinstance(value, bool)):
+            die(f"`{where}` is {type(value).__name__}, not a whole number. Nothing was checked.")
+
+    def text(value, where: str) -> None:
+        if value is not None and not isinstance(value, str):
+            die(f"`{where}` is {type(value).__name__}, not text. Nothing was checked.")
+
     for key in ("options", "problems", "parts"):
         if brief.get(key) is not None and not isinstance(brief[key], list):
             die(f"`{key}` is {type(brief[key]).__name__}, not a list. This is not a brief "
                 f"Review Desk would store; nothing was checked.")
+    for key in ("headline", "problem", "how_it_works_today", "flow_before_caption",
+                "flow_after_caption"):
+        text(brief.get(key), key)
+
     for key in ("flow_before", "flow_after"):
         flow = brief.get(key)
         if flow is None:
             continue
-        if not isinstance(flow, list) or any(not isinstance(r, list) for r in flow) or any(
-                not isinstance(b, dict) for r in flow if isinstance(r, list) for b in r):
+        if not isinstance(flow, list):
             die(f"`{key}` is not a list of rows of boxes — `[[{{\"title\": \"...\"}}]]`. "
                 "Nothing was checked.")
-    for p in brief.get("problems") or []:
+        for r, row in enumerate(flow, 1):
+            if not isinstance(row, list):
+                die(f"`{key}` row {r} is not a list of boxes. A row holds one to three of them, "
+                    "which is what carries the layout. Nothing was checked.")
+            for c, box in enumerate(row, 1):
+                if not isinstance(box, dict):
+                    die(f"`{key}` row {r} box {c} is {type(box).__name__}, not a box with a "
+                        "`title`. Nothing was checked.")
+                text(box.get("title"), f"{key} row {r} box {c} title")
+                text(box.get("note"), f"{key} row {r} box {c} note")
+                whole(box.get("problem"), f"{key} row {r} box {c} problem")
+
+    for i, p in enumerate(brief.get("problems") or [], 1):
         if not isinstance(p, dict):
-            die("`problems` holds something that is not an object. Nothing was checked.")
+            die(f"`problems[{i}]` is {type(p).__name__}, not an object with a `number` and a "
+                "`was_wrong`. Nothing was checked.")
+        if p.get("number") is None:
+            die(f"`problems[{i}]` carries no `number`. The number is the brief's one internal "
+                "identity — a flow box marks it, an option is judged against it and a part "
+                "fixes it — so there is nothing to check it against. Nothing was checked.")
+        whole(p.get("number"), f"problems[{i}].number")
+        text(p.get("was_wrong"), f"problems[{i}].was_wrong")
+        text(p.get("now_fixed"), f"problems[{i}].now_fixed")
+
+    for i, o in enumerate(brief.get("options") or [], 1):
+        if not isinstance(o, dict):
+            die(f"`options[{i}]` is {type(o).__name__}, not an object with a `title`. An option "
+                "is a row of the Alternatives matrix. Nothing was checked.")
+        text(o.get("title"), f"options[{i}].title")
 
 
 def read_file(path: str) -> dict:
     """A brief from a document on disk or standard input. Needs no `review-desk` at all."""
     try:
         raw = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         die(f"Could not read {path}: {exc}")
     try:
         doc = json.loads(raw)
@@ -486,7 +546,15 @@ def main() -> int:
           f"{'' if len(problems) == 1 else 's'}, {len(before)} before rows, {len(after)} after "
           f"rows, {sum(words(l) for _, l in top_layer(brief))} top-layer words of "
           f"{LIMIT['top.words']})\n")
-    return lint(brief)
+    try:
+        return lint(brief)
+    except Exception as exc:                                   # noqa: BLE001 - see below
+        # A shape `shaped()` did not anticipate. Python exits 1 on an uncaught exception, and 1
+        # is this linter's verdict that the brief has a fault — so a crash would report a fault
+        # in a brief nothing read. It is named rather than swallowed: an exception here is a bug
+        # in a check, and the type and message are what gets it fixed.
+        die(f"{type(exc).__name__} while checking {source}: {exc}. That is a defect in a check, "
+            "not a finding about the brief — nothing was checked.")
 
 
 if __name__ == "__main__":

@@ -150,6 +150,11 @@ ok "seven before rows fail the ceiling of six"    "$(mut 'b["flow_before"]=b["fl
 ok "no after flow fails"                          "$(mut 'b["flow_after"]=[]'; case_run)" 1
 ok "eight after rows fail the ceiling of seven"   "$(mut 'b["flow_after"]=b["flow_after"]+[[{"title":"A step","note":"A note","problem":None}]]*3'; case_run)" 1
 ok "as the after flow, not the before one"        "$(rule picture.after)" yes
+ok "a box with no title fails the picture"         "$(mut 'b["flow_before"][0][0].pop("title")'; case_run)" 1
+ok "naming the row and the box"                    "$(says "row 1 box 1")" yes
+ok "an empty title is the same as none"            "$(mut 'b["flow_after"][0][0]["title"]="   "'; case_run)" 1
+ok "and the after flow has its own"                "$(rule picture.after)" yes
+ok "a box with no note is fine"                    "$(mut 'b["flow_before"][0][0].pop("note")'; case_run)" 0
 ok "a row of three boxes is one row"              "$(mut 'b["flow_before"][0]=[{"title":"One","note":"A note","problem":None},{"title":"Two","note":"A note","problem":None},{"title":"Three","note":"A note","problem":None}]'; case_run)" 0
 
 echo "Problems are tied to the picture"
@@ -248,6 +253,9 @@ b["problem"] = "Links never expire, and clearing them would be one statement nob
 ok "a title is not matched inside a longer word"   "$(mut '
 b["flow_after"][4][0]["title"] = "Other link dropping"
 b["problem"] = "Nothing expires a link, and other link droppings are left behind by every reset."'; case_run)" 0
+ok "a shortened after caption is not after-only"  "$(mut '
+b["flow_before"][2][0]["title"] = "The link is opened a month later"
+b["flow_after"][2][0]["title"] = "The link is opened"'; case_run)" 0
 ok "a was-wrong line leaking an option fails"     "$(mut 'b["problems"][0]["was_wrong"]="Nothing would expire the token and clear the account'"'"'s other links."'; case_run)" 1
 ok "a now line is not the problem half"           "$(mut 'b["problems"][0]["now_fixed"]="A reset expires the token and clears the account'"'"'s other links."'; case_run)" 0
 
@@ -313,6 +321,16 @@ ok "a JSON array is 2"                            "$(printf '[]' > "$work/case.j
 ok "a document that is not a brief is 2"          "$(printf '{"hello": 1}' > "$work/case.json"; case_run)" 2
 ok "a malformed flow is 2, not a bad brief"       "$(mut 'b["flow_before"]="four rows of boxes"'; case_run)" 2
 ok "and names the field that is malformed"        "$(shouts 'flow_before')" yes
+ok "an option that is a string is 2, not 1"       "$(mut 'b["options"]=["Stamp each token with an hour"]'; case_run)" 2
+ok "and names the option"                          "$(shouts 'options\[1\]')" yes
+ok "a box title that is a number is 2"             "$(mut 'b["flow_before"][0][0]["title"]=42'; case_run)" 2
+ok "and names the box"                             "$(shouts 'flow_before row 1 box 1 title')" yes
+ok "a problem mark that is a list is 2"            "$(mut 'b["flow_before"][0][0]["problem"]=[1]'; case_run)" 2
+ok "a problem mark of true is 2, not problem 1"    "$(mut 'b["flow_before"][0][0]["problem"]=True'; case_run)" 2
+ok "a headline that is a list is 2"                "$(mut 'b["headline"]=["one","two"]'; case_run)" 2
+ok "a problem with no number is 2"                 "$(mut 'b["problems"][0].pop("number")'; case_run)" 2
+ok "and says why the number is needed"             "$(shouts "one internal identity")" yes
+ok "a file that is not UTF-8 is 2"                 "$(printf "\377\376{}" > "$work/case.json"; case_run)" 2
 ok "problems as an object is 2"                   "$(mut 'b["problems"]={"1": "was wrong"}'; case_run)" 2
 ok "a file and --review together is 2"            "$(FIX="$work/show.json" PATH="$work/bin:$PATH" run "$work/base.json" --review 7)" 2
 

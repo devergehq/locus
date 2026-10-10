@@ -28,12 +28,14 @@ refuses to build when they disagree.
   written the old way is reported as "not structured" once rather than failing fifteen rules about
   slots it never had. The limits sit in one table at the top of the file with their provenance
   (`--limits`); `understand.md` owns them, which made three tighter than DEV-884 proposed.
-  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 101 assertions.
+  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 119 assertions.
 
 - **CI runs the four `scripts/test-*.sh` harnesses.** They covered the Python skill scripts and
   nothing executed them, so DEV-794's own finding — "nothing caught it, because nothing tested it" —
-  would have stayed true of the suite written to close it. All four are green together (65 + 26 + 79
-  + 36 = 206 assertions) and none needs credentials, the network or a built binary. None had ever run
+  would have stayed true of the suite written to close it. All four were green together (65 + 26 + 79
+  + 36 = 206 assertions) and none needs credentials, the network or a built binary. The step globs
+  `scripts/test-*.sh`, so a harness added afterwards is picked up with no registration — eight of
+  them now, 653 assertions. None had ever run
   on Linux, so the first red run there is information rather than a regression.
 
 ### Fixed

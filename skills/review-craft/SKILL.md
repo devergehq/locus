@@ -141,9 +141,10 @@ with a dead link in its description. Comment first, then edit the body to link i
 `gh pr diff <n> --stat | tail -1`, or `additions + deletions` from the API. A budget checked
 against a guessed denominator reports PASS about nothing.
 
-All three exit **0** on pass (warnings included), **1** on errors, **2** when they could not run,
-and all three check **mechanics only**: a clean run means nothing is broken, not that anything is
-worth reading.
+All three exit **0** on pass, **1** on a fault and **2** when they could not run, and all three
+check **mechanics only**: a clean run means nothing is broken, not that anything is worth reading.
+`pr_lint.py` and `review_lint.py` carry a warning state that still exits 0; `brief_lint.py` has
+none, because every rule it holds is a rule.
 
 **`brief_lint.py` reads a document, and only reaches for `review-desk` if you ask it to.** With a
 file argument — a brief you are about to `review-desk brief put`, or `-` for standard input — it
