@@ -415,21 +415,7 @@ is one copy of them.
 
 ## Revision
 
-**10 October 2026 (second change).** `brief_lint.py` arrived and enforces the limits in the tables
-above. Two of them were proposed looser in DEV-884 — 5 numbered problems and 8 rows in a flow —
-and this file won both, because one fact has one owner and the slots are stated here. The
-headline's slot read "under 20 words" against DEV-884's 25; Patrick ruled on 10 October 2026 that
-it is **at most 20**, which is what it now says and what the linter checks, so Review Desk's
-real-length brief passes on all eighteen rules. The options slot's "under 12 words" is read the
-same way and is checked. The 150-word total and the 20-word line limit both stand, and the
-paragraph above says why the first is tighter than eight of the second. The linter reports what it
-measured either way, so a number that turns out to be wrong is visible rather than argued.
-
-**10 October 2026.** New file. The three understanding steps moved ahead of the tests and the
-lenses in `workers/review.md`, and what each one produces is written down here with a blind
-options pass between the first two.
-
-**10 October 2026, later.** "Where this lands in the posted review" listed `problem`, `diagram`
+**10 October 2026 (third change).** "Where this lands in the posted review" listed `problem`, `diagram`
 and the counts in `provenance`, which was the whole of what a brief could hold before DEV-882.
 Every slot has a field now, and the names live in `workers/review.md` so there is one copy.
 
@@ -444,3 +430,17 @@ given**, the outside-the-diff column on **Parts**, the finding on **Choices** an
 `stays`, `not_assessed` — in the tables, in the worked example and in the blind brief's own JSON,
 which used to say `yes | partly | no`: one vocabulary end to end beats a mapping nobody can see
 being applied.
+
+**10 October 2026 (second change).** `brief_lint.py` arrived and enforces the limits in the tables
+above. Two of them were proposed looser in DEV-884 — 5 numbered problems and 8 rows in a flow —
+and this file won both, because one fact has one owner and the slots are stated here. The
+headline's slot read "under 20 words" against DEV-884's 25; Patrick ruled on 10 October 2026 that
+it is **at most 20**, which is what it now says and what the linter checks, so Review Desk's
+real-length brief passes on all eighteen rules. The options slot's "under 12 words" is read the
+same way and is checked. The 150-word total and the 20-word line limit both stand, and the
+paragraph above says why the first is tighter than eight of the second. The linter reports what it
+measured either way, so a number that turns out to be wrong is visible rather than argued.
+
+**10 October 2026.** New file. The three understanding steps moved ahead of the tests and the
+lenses in `workers/review.md`, and what each one produces is written down here with a blind
+options pass between the first two.
