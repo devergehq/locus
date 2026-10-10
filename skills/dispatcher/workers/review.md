@@ -177,7 +177,13 @@ your understanding, and it **replaces** the brief it finds. You call it twice.
 | | When | What goes in it | `confirmation_required` |
 |---|---|---|---|
 | **Write 1** | after step 2, **before step 3 dispatches** | the five fields `brief problem-statement` serves, and nothing else | `false`, with a reason beginning `problem half only — ` |
-| **Write 2** | after step 5 | all of it, write 1's fields written again | whatever `brief_gate` says, below |
+| **Write 2** | after step 5 | all of it, write 1's fields written again — **except the two gate fields** | whatever `brief_gate` says, below |
+
+**Write 1 comes after "Open it, link it, and write the id down", not before.** A waived brief
+settles layer 2 at once, so `work list` starts reporting this review as `brief_settled` from
+write 1 onward — and the poller sends a replacement for an item whose session it cannot see as
+live. The ledger entry with your `review_desk_id` and your session is what makes it visible, and
+it is three commands, so do them first.
 
 **Why the problem half goes first.** Step 3's session has to be handed the problem *from the
 record* rather than from your typing, which is the only way "it was shown no part of the
@@ -197,10 +203,13 @@ on every review.
 **Four things follow, and three of them are how this stays honest.**
 
 - **Write 1 only when the review holds no brief.** `review show --review <id> --json` first. A
-  resumed session and a later round find the problem half already there: read it, pour it, and
-  **leave `confirmation_required` exactly as you found it**. Writing over a brief the developer
-  has confirmed clears that confirmation, and writing over a real waiver replaces the developer's
-  own record of why with your scaffolding. Neither is yours to do.
+  **resumed** session finds the problem half already there: read it, pour it, and **leave
+  `confirmation_required` exactly as you found it**. Writing over a brief the developer has
+  confirmed clears that confirmation, and writing over a real waiver replaces the developer's own
+  record of why with your scaffolding. Neither is yours to do. A **new head commit is a different
+  review id and holds no brief at all**, so a later round writes its own write 1 and
+  `brief problem-statement` on it exits 1 until it has — do not skip write 1 on the strength of
+  a brief the previous round wrote.
 - **A problem half is recognisable from the record, not from your memory.** Empty `options` and
   `now_fixed` null on every problem: that is a brief between its two writes. A replacement
   session needs that, because the sentence in the reason field is prose and nothing checks it.
@@ -325,7 +334,7 @@ it is the caller's decision, not Review Desk's and not yours:
 | `brief_gate` | What write 2 carries | Then |
 |---|---|---|
 | `never` (the default) | `"confirmation_required": false` with `"confirmation_not_required_because"` saying why — the gate is set to never for this instance, and the changed-line count | layer 2 settles at once and `work list` reports `sign_off: "waived"`. Carry straight on. |
-| `always` | nothing: `confirmation_required` defaults to true | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for the `brief_settled` that follows write 2** before step 7 — the understanding is finished and the code review is what waits. |
+| `always` | **neither gate field**: drop write 1's `confirmation_not_required_because` as well as the flag, because `confirmation_required` defaults to true and a brief that requires confirmation and carries a reason for needing none is refused — exit 1, after step 5, with the whole brief in hand | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for the `brief_settled` that follows write 2** before step 7 — the understanding is finished and the code review is what waits. |
 
 Write 1's reason is not a gate decision and must not read like one. Begin it `problem half only
 — ` and say that the full brief follows at step 5. Somebody will one day ask which reviews

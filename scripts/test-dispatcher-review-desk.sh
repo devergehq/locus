@@ -108,7 +108,8 @@ chmod +x "$work/bin/review-desk"
 # ---- the stand-in's brief and finding ------------------------------------------------------
 # The other commands answer from a recorded document. These two validate instead, because the
 # behaviour under test is whether the document `workers/review.md` tells a worker to write is
-# one Review Desk accepts.
+# one Review Desk accepts. `finding add` validates nothing -- it allocates a sequence number,
+# which is all the brief needs of it: a disagreement has to name a finding that exists.
 #
 # EVERY RULE BELOW WAS READ OFF THE REAL BINARY, by building review-desk's origin/master at
 # 8631335 (DEV-882) and running it against a temporary database. The accepted field list is
@@ -178,7 +179,14 @@ def put(argv, review):
                "this brief was written as requiring the developer's confirmation, and a "
                "confirmation already asked for cannot be withdrawn by rewriting the brief")
 
-    numbers = {p.get("number") for p in doc.get("problems", [])}
+    numbers = set()
+    for problem in doc.get("problems", []):
+        number = problem.get("number")
+        if not isinstance(number, int) or number < 1:
+            refuse("problems[].number holds %r; one or more" % number)
+        if number in numbers:
+            refuse("problems[].number %d appears twice" % number)
+        numbers.add(number)
     for field in ("flow_before", "flow_after"):
         for row in doc.get(field, []):
             for box in row:
@@ -188,9 +196,16 @@ def put(argv, review):
             if not 1 <= len(row) <= 3:
                 refuse("%s has a row of %d boxes; one to three" % (field, len(row)))
 
+    if "option_map" in doc and "options" in doc:
+        refuse("option_map and options are the same fact; giving both is refused")
+
     keys = set()
     for option in doc.get("options", []):
+        if option.get("key") in keys:
+            refuse("options[].key %s appears twice" % option.get("key"))
         keys.add(option.get("key"))
+        if not option.get("argument_for") or not option.get("argument_against"):
+            refuse("options[].argument_for and .argument_against are required")
         for verdict in option.get("verdicts", []):
             if verdict.get("problem") not in numbers:
                 refuse("options[].verdicts[].problem names problem %s, which this brief does "
@@ -219,11 +234,27 @@ def put(argv, review):
             refuse('blind_pass.pick_key holds "%s", which is not a valid blind_pass.pick_key; '
                    "expected one of: the key of one of this brief's own options"
                    % blind["pick_key"])
+    else:
+        # The other direction, and the one the `not_run` row of review.md's state table is
+        # written against: an option attributed to a pass the brief does not record would badge
+        # the Alternatives page "Blind" with no blind column to put it in. Without this the
+        # `not_run` recipe had no control -- a brief that omitted `blind_pass` and left an
+        # option on `blind_pass` read green here and exits 1 against the real store.
+        for option in doc.get("options", []):
+            if option.get("proposed_by") in ("blind_pass", "both"):
+                refuse("options.proposed_by holds option %s: %s; an option from a pass this "
+                       "brief does not record is a pass nothing can show"
+                       % (option.get("key"), option.get("proposed_by")))
 
     counter = work / ("rd.findings.%s" % review)
     highest = int(counter.read_text()) if counter.exists() else 0
-    for row in doc.get("disagreements", []):
-        seq = row.get("finding_seq")
+    pointers = [(row.get("finding_seq"), True) for row in doc.get("disagreements", [])]
+    # An open choice MAY name a finding and is checked the same way when it does -- a choice is
+    # a choice, not a fault, but a pointer that dangles is a pointer that dangles.
+    pointers += [(choice.get("finding_seq"), False) for choice in doc.get("open_choices", [])]
+    for seq, must in pointers:
+        if seq is None and not must:
+            continue
         if seq is None or not 1 <= seq <= highest:
             refuse("brief refers to finding %s/%s, which does not exist" % (review, seq))
 
@@ -1106,11 +1137,12 @@ cat > "$work/pour.py" <<'POUR'
 import json, sys
 d = json.load(open(sys.argv[1]))["problem_statement"]
 out = ["## The system", d["how_it_works_today"] or "", "", "## How it works today"]
-n = 0
-for row in d["flow_before"]:
+# One number per ROW, boxes in a split row sharing it -- which is what review.md says and what
+# the real CLI's own plain rendering does. Numbering per box made a split row renumber every
+# step after it, and the first version of this file did exactly that.
+for index, row in enumerate(d["flow_before"], 1):
     for box in row:
-        n += 1
-        out.append("%d. %s - %s" % (n, box["title"], box.get("note") or ""))
+        out.append("%d. %s - %s" % (index, box["title"], box.get("note") or ""))
 out += ["", "## What is wrong"]
 for problem in d["problems"]:
     out.append("%d. **%s**" % (problem["number"], problem["was_wrong"]))
@@ -1141,6 +1173,7 @@ printf '\n  write 1 is the problem half, and nothing else\n'
 ok "write 1 names exactly what the read serves"     "$(ask "d['write1']")" "$(ask "d['served_expected']")"
 ok "  and only the numbered problems are in both"   "$(ask "d['in_both']")" "['problems']"
 ok "  write 1 is ordered before step 3 dispatches"  "$(grep -c 'before step 3 dispatches' "$brief_md")" 1
+ok "  and after the ledger link, so it is seen live" "$(grep -c 'Write 1 comes after .Open it, link it' "$brief_md")" 1
 ok "  and step 2 says so where a worker reads it"   "$(grep -c 'save the problem half before you go on to step 3' "$brief_md")" 1
 ok "  the brief says why write 1 is the permissive one" "$(grep -c 'Why write 1 is the permissive one' "$brief_md")" 1
 
@@ -1247,8 +1280,8 @@ printf '\n  what the read withholds, with the whole brief on the record\n'
 # The pour is read back AFTER write 2, which is the only way the absences below mean anything:
 # every string asserted absent is one the record now holds.
 quiet brief problem-statement --review 1 --json
-ok "the read serves six fields and no more"         "$(keys "$work/ps" | sed 's/.*/&/')" "['problem_statement']"
-ok "  and those six are the problem half"           "$(python3 -c "
+ok "the read answers with one document"             "$(keys "$work/ps")" "['problem_statement']"
+ok "  holding six fields, which are the problem half" "$(python3 -c "
 import json
 print(sorted(json.load(open('$work/ps'))['problem_statement']))")" "['flow_before', 'flow_before_caption', 'how_it_works_today', 'problem', 'problems', 'review_id']"
 ok "  with no now-fixed line on any problem"        "$(python3 -c "
@@ -1257,7 +1290,9 @@ d = json.load(open('$work/ps'))['problem_statement']
 print(len([p for p in d['problems'] if 'now_fixed' in p]))")" 0
 python3 "$work/pour.py" "$work/ps" "$work/poured.md"
 ok "the poured brief carries the before flow"       "$(grep -c 'the app enqueues a job' "$work/poured.md")" 1
-ok "  and every numbered problem"                   "$(grep -c '^[12]\. \*\*' "$work/poured.md")" 2
+ok "  numbering by row, so a split row shares one"  "$(grep -c '^2\. [^*]' "$work/poured.md")" 2
+ok "  and never numbers past the last row"          "$(grep -c '^3\. ' "$work/poured.md")" 0
+ok "  and carries every numbered problem"           "$(grep -c '^[12]\. \*\*' "$work/poured.md")" 2
 ok "  but not the headline"                         "$(grep -c 'delivered once' "$work/poured.md")" 0
 ok "  nor a box of the after flow"                  "$(grep -c 'posts with a key' "$work/poured.md")" 0
 ok "  nor a now-fixed line"                         "$(grep -c 'named by the same key' "$work/poured.md")" 0
@@ -1282,6 +1317,18 @@ ok "  and reads as ran-and-found-nothing"           "$(cat "$work/rd.state.1")" 
 ok "a pass that did not run is accepted"            "$(rc brief put --review 1 --file "$work/notrun.json")" 0
 ok "  and reads as not-run"                         "$(cat "$work/rd.state.1")" not_run
 ok "  and the brief gives a recipe for each state"  "$(grep -c 'ran_and_found_nothing' "$brief_md")" 1
+# Why that recipe says "every option `ticket`" and not just "no `blind_pass`". Without this the
+# row had no control: dropping the pass and leaving an option attributed to it reads as a clean
+# `not_run` to anything that only checks for the pass, and exits 1 against the store.
+python3 - "$work/notrun.json" "$work/orphan.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+doc["options"][2]["proposed_by"] = "blind_pass"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+PY
+ok "an option left on a pass that is not recorded is refused" "$(rc brief put --review 1 --file "$work/orphan.json")" 1
+ok "  naming the option and what it claims"         "$(grep -c 'options.proposed_by holds option C' "$work/err")" 1
+ok "  which is why the recipe says every option ticket" "$(grep -c 'every option .ticket., and the reason in .provenance.' "$brief_md")" 1
 
 printf '\n  the refusals the brief is written around\n'
 instance '{"mode":"auto"}'
@@ -1305,12 +1352,36 @@ echo '{"lens":"l","severity":"should","claim":"c"}' \
 ok "a brief asking for confirmation is accepted"    "$(rc brief put --review 2 --file "$work/full.json")" 0
 ok "  and cannot then be rewritten as needing none" "$(rc brief put --review 2 --file "$work/needsgate.json")" 1
 ok "  which is why write 1 writes false, not true"  "$(grep -c '.brief_gate: never. would be unreachable' "$brief_md")" 1
+
+# The trap under `brief_gate: always`: write 2 is "write 1's fields written again", and write
+# 1's fields include the REASON. Dropping only the flag leaves a brief that requires
+# confirmation and carries a reason for needing none, which is refused -- after step 5, with
+# the whole brief in hand. Both fields have to go.
+python3 - "$work/full.json" "$work/reasononly.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+doc["confirmation_not_required_because"] = "problem half only — the full brief follows at step 5"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+PY
+ok "write 1's reason carried into write 2 is refused" "$(rc brief put --review 5 --file "$work/reasononly.json")" 1
+ok "  and the brief says to drop both gate fields"  "$(grep -c 'neither gate field' "$brief_md")" 1
+
+# A new head commit is a different review id, so a later round holds no brief and the read it
+# would pour from answers with nothing. The brief used to say a later round finds the problem
+# half already there; it does not.
+ok "the read on a review with no brief exits 1"     "$(rc brief problem-statement --review 9)" 1
+ok "  and the brief says a new head is a new id"    "$(grep -c 'new head commit is a different' "$brief_md")" 1
 ok "a disagreement before its finding is refused"   "$(rc brief put --review 3 --file "$work/full.json")" 1
 ok "  naming the finding that does not exist"       "$(grep -c 'finding 3/1, which does not exist' "$work/err")" 1
 ok "  and the brief says to add the finding first"  "$(grep -c 'so .finding add. it first' "$brief_md")" 1
 echo '{"lens":"l","severity":"should","claim":"c"}' \
   | review-desk finding add --review 3 --file - > /dev/null
 ok "  and is accepted once the finding exists"      "$(rc brief put --review 3 --file "$work/full.json")" 0
+# A SECOND write, which is what the claim is about: review 1 holds the whole brief first, so
+# the refusal is the one a worker meets at step 5 rather than one a first write would give too.
+echo '{"lens":"l","severity":"should","claim":"c"}' \
+  | review-desk finding add --review 1 --file - > /dev/null
+ok "the whole brief lands on review 1 first"        "$(rc brief put --review 1 --file "$work/full.json")" 0
 ok "dropping a problem refuses the second write"    "$(rc brief put --review 1 --file "$work/dropped.json")" 1
 ok "  on the verdict that scored against it"        "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
 ok "  and the brief forbids dropping or renumbering" "$(grep -c 'Never drop a problem, and never renumber one' "$brief_md")" 1
