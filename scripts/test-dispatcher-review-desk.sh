@@ -1084,6 +1084,10 @@ def roots(cell):
     """
     found, current = [], None
     for token in tokens(cell):
+        if token.startswith("-"):
+            # A flag, not a field path. The Counts slot's destination is `layer set --detail`
+            # rather than a brief field, and a field path never begins with a dash.
+            continue
         if token.startswith("."):
             if current:
                 found.append(current)
@@ -1224,6 +1228,19 @@ ok "  and in the blind brief's own JSON"            "$(grep -c '"verdict": "fixe
 ok "  and the template no longer carries the old ones" "$(grep -c '"verdict": "yes | partly | no"' "$understand_md")" 0
 ok "  which survive only as the revision's quotation" "$(grep -c 'used to say .yes | partly | no.' "$understand_md")" 1
 ok "  and the brief says nothing maps anything"     "$(grep -c 'Nothing maps anything' "$brief_md")" 1
+
+printf '\n  the wording DEV-884 brings, adopted early so the rebase cannot lose it\n'
+# #72 edits the same file. Its three wording changes and its linter paragraph were taken verbatim
+# onto this branch, so `git merge-file` leaves only conflicts whose losing side is text this
+# branch supersedes -- measured at 4, each an old slot row or the stale paragraph. Without these
+# assertions a resolver taking "ours" wholesale would revert them and nothing would say so:
+# #72's own harness never reads this file.
+ok "the headline cap is at most, not under"         "$(grep -c 'One sentence, at most 20 words' "$understand_md")" 1
+ok "  and a was-wrong line carries the same cap"    "$(grep -c 'Two lines each, at most 20 words a line' "$understand_md")" 1
+ok "  an option title too"                          "$(grep -c 'a title of at most 12 words' "$understand_md")" 1
+ok "  in the blind brief's JSON as well"            "$(grep -c 'at most 12 words, plain English' "$understand_md")" 1
+ok "the 150-word top-layer budget is stated here"   "$(grep -c 'The whole top layer' "$understand_md")" 1
+ok "  and so is the linter that enforces it"        "$(grep -c 'Check it before you show it' "$understand_md")" 1
 
 printf '\n  write 1 is the problem half, and nothing else\n'
 ok "write 1 names exactly what the read serves"     "$(ask "d['write1']")" "$(ask "d['served_expected']")"
@@ -1467,12 +1484,18 @@ printf '\n  the brief is linted before it is sent, and never before that\n'
 # to run and when; the assertion that the document above actually passes the linter waits for
 # that merge, and is the one thing in this block still owed.
 ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
-ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 3
+ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
 ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
 ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint write 1' "$brief_md")" 1
-ok "  with the count it would fail by"              "$(grep -c '6 of its 16 checks fail' "$brief_md")" 1
+# The number was MEASURED by running DEV-884's linter over the harness's own half.json: 4 of 16,
+# and the four the sentence names. It is a string pin until #72 merges, at which point it becomes
+# a run -- the first version of this assertion pinned 6, which was a count off a malformed
+# fixture and which the sentence's own list contradicted.
+ok "  with the count it would fail by"              "$(grep -c '4 of its 16 checks fail' "$brief_md")" 1
 ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
 ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
+ok "an absent linter is a broken install, said loudly" "$(grep -c 'brief_lint.py. that is not there is a broken install' "$brief_md")" 1
+ok "  and not confused with Review Desk's exit 2"   "$(grep -c 'these are two different absences' "$brief_md")" 1
 
 printf '\n  absent and broken are still what they were\n'
 instance '{"mode":"auto"}'
@@ -1567,7 +1590,7 @@ sed 's/`support_table\.title`/`support_tables.title`/' "$brief_md" > "$work/badr
 ok "the root reversal changed one line"                "$(grep -c 'support_tables.title' "$work/badroot.md")" 1
 ok "a field the store would refuse is NOT reported ok" "$(ask "d['unknown_roots'] == []" "$work/badroot.md")" False
 
-sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given`,/| **What the pass was given** | `blind_pass.handed`,/' \
+sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given` |/| **What the pass was given** | `blind_pass.handed` |/' \
     "$brief_md" > "$work/badfield.md"
 ok "the member reversal changed one line"              "$(grep -c 'blind_pass.handed' "$work/badfield.md")" 1
 ok "  and it is the root check that does NOT catch it" "$(ask "d['unknown_roots']" "$work/badfield.md")" "[]"

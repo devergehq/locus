@@ -30,7 +30,7 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 
 | Slot | What goes in it | Length |
 |---|---|---|
-| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, under 20 words |
+| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, at most 20 words |
 | **The problem** | What the change is solving, in plain words. Not the headline, which says what the change *does*, and not the was-wrong lines, which are one per numbered problem | One or two sentences |
 | **The system** | What this is, who uses it, what it is for — the context a newcomer needs before any of the rest reads. The same sentences fill the blind brief's `## The system` | Two or three sentences |
 | **Supporting table** | One row per question the system answers and who answers it, with a today column and an after column. The column that changes is the point | 3–4 rows |
@@ -43,6 +43,13 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 The numbers are the spine of the whole review. Alternatives scores options against them, Solution
 says which part fixes which, and a finding can say which problem it threatens.
 
+**The whole top layer — the headline plus every was-wrong and now line — is 150 words.** That is a
+*budget*, and the per-line numbers above are *caps*: the budget is deliberately tighter than the
+sum of them, because four problems at the 20-word cap each way plus a 20-word headline would be
+180. A cap stops one line running away; the budget stops the top layer doing it collectively, and
+a brief cannot spend every cap at once. The approved board of 10 October 2026 spent 85 of the 150.
+`brief_lint.py` names the longest lines when the budget is what failed, not the caps.
+
 **The Supporting table is change-half, and "The system" is not.** The table has an after column,
 so the problem-only read a blind pass may be shown leaves it out; "The system" and the Before flow
 are in it. So if a table is what it takes to explain how things work **today**, that belongs in the
@@ -53,14 +60,16 @@ it is the one who will not see it.
 
 | Slot | What goes in it |
 |---|---|
-| **Options** | One row per option: a title under 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — `fixed`, `partly`, `stays`, or `not_assessed` where nobody scored it |
-| **Keys** | One capital letter per option, A onward, in the order the table reads. Everything after this refers to an option by its letter, so assign them before anything does |
+| **Options** | One row per option: a title of at most 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — `fixed`, `partly`, `stays`, or `not_assessed` where nobody scored it |
+| **Keys** | One capital letter per option. **Keep the letters the ticket already used**, and give an option only the blind pass raised the next free one. Assign them before anything refers to an option and never re-letter: re-sorting the table must not change what C means |
 | **For and against** | Per option, the case for it and the case against. **Detail, behind the row, and never length-checked** — depth is allowed here. For an option the blind pass raised, these are its mechanism, its cost, and what it says it assumes |
 | **Built** | Which option the author built, and the one line of why |
 | **Blind pick** | What the blind session would have picked, and its one line of why |
 | **Questions** | What the blind session needed to know and was not told. These are often the best questions in the review |
 | **What the pass was given** | The filled brief you handed the blind session, **verbatim**. Not a description of it |
-| **Provenance** | Where each list came from, how many options each source had, how many overlap, and what the blind session says it looked up |
+| **Looked up** | What the blind session says it read beyond the brief — the word "nothing", or an honest list |
+| **Counts** | How many options each source had, how many are on both, and how many only one side raised |
+| **Provenance** | Where the problem statement came from: the ticket, the description, and the code at the base sha |
 
 ### The blind options pass
 
@@ -305,10 +314,33 @@ line number.
 |---|---|
 | **Built** | **C.** One job per file, staged and published in one step. Agreed on the ticket before work started, and the most work of the four there. |
 | **The blind pass would pick** | **C**, the same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
-| **Given** | The problem half as the record held it, poured: "The system", the Before flow and the three was-wrong lines. Nothing of the change. |
-| **Provenance** | 4 options on the ticket, 6 from the blind pass, 3 on both; 3 not on the ticket and 1 the blind pass never raised. Export of `a1b2c3d`, no history. It reported looking nothing up. |
+| **Given** | The poured problem half, verbatim — the fold below is the whole of it. |
+| **Looked up** | Nothing. |
+| **Counts** | 4 options on the ticket, 6 from the blind pass, 3 on both; 3 not on the ticket and 1 the blind pass never raised. |
+| **Provenance** | The ticket, the description, and the code at `a1b2c3d` — an export with no history in it. |
 
-<details><summary>For and against, per option</summary>
+<details><summary>What the pass was given, verbatim</summary>
+
+```markdown
+## The system
+A shop's admin imports supplier price lists overnight. The buying team sets the prices and the
+shop front reads them the next morning; nobody watches the import run.
+
+## How it works today
+1. Two in the morning: the schedule starts the importer
+2. It takes every file in the inbox, in one transaction
+3. Each row is checked against the catalogue
+4. Accepted prices are written over the live list, row by row
+5. The buying team gets one email: how many prices changed
+
+## What is wrong
+1. **One bad file rolled back the whole night, including the files that were fine.**
+2. **A price we could not match was dropped without a trace.**
+3. **Prices went live while a file was still being read.**
+```
+</details>
+
+<details><summary>For and against — all seven carry them; three are shown</summary>
 
 **C · built.** *For:* a file is the unit the supplier sends, the buyer thinks in and the retry
 needs, so one job per file makes every later question answerable. *Against:* a staging table and
@@ -320,6 +352,9 @@ a publish step are new moving parts, and the night's run is no longer one thing 
 **E.** *For:* nothing is written until the whole file is known to be good. *Against:* a file is
 read twice, and one bad row still costs the file — which may be the right trade, and the ticket
 never says.
+
+*A, B, D, F and G carry theirs too.* The record requires a case each way on **every** option —
+a brief missing one is refused — and three are shown here only to keep the example short.
 </details>
 
 What the blind pass needed and was not told:

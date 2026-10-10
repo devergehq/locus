@@ -235,11 +235,19 @@ only mechanical check on the understanding, it reads a file rather than the stor
 `review-craft`'s rule is that a brief is not finished until it passes. `--review <id>` lints the
 one Review Desk already holds, and `--limits` prints the numbers with where each came from.
 
+**A `brief_lint.py` that is not there is a broken install, and it reads differently from
+everything else here.** Review Desk absent is `mode: auto` working and is silent; the linter
+absent is a sync that did not ship a file this brief depends on. Python exits 2 with
+`can't open file`. Say so **loudly**, once, to the Dispatcher — and then carry on and prepare the
+review, because a missing checker is never a reason not to review. Do not read the exit 2 as
+Review Desk's: that rule is about `review-desk`, and these are two different absences.
+
 **Do not lint write 1.** A problem half is missing the change half *by design*, and the linter
-cannot tell that from a brief that forgot it: on the problem-half document, 6 of its 16 checks fail
-— the absent headline, the absent after flow, the problems marked on no after box, and the problems
-with no `now_fixed`. Every one of those is a slot write 1 is not allowed to carry. The gate belongs
-on write 2, where the whole brief is in hand.
+cannot tell that from a brief that forgot it: on a problem half written exactly as write 1 asks,
+**4 of its 16 checks fail** — the absent headline, the absent after flow, the problems marked on no
+after box, and the problems with no `now_fixed`. (16, not 18: two headline checks are skipped when
+there is no headline to measure.) Every one of those four is a slot write 1 is **not allowed** to
+carry. The gate belongs on write 2, where the whole brief is in hand.
 
 ### Which command saves which step
 
@@ -272,10 +280,12 @@ put --help`, which is complete: read it rather than guessing at a nesting.
 | **Options** — who put it forward | `options[].proposed_by` | 2 |
 | **Options** — the verdict per numbered problem | `options[].verdicts[].problem`, `.verdict`, `.why` | 2 |
 | **For and against** | `options[].argument_for`, `.argument_against` | 2 |
-| **Built** | `options[].chosen` on that one | 2 |
+| **Built** | `options[].chosen` on that one, its one line of why in that option's `.argument_for` | 2 |
 | **Blind pick** | `blind_pass.pick_key`, `.pick_why` | 2 |
 | **Questions** | `blind_pass.questions[]` | 2 |
-| **What the pass was given** | `blind_pass.given`, and `.looked_up` for what it says it read | 2 |
+| **What the pass was given** | `blind_pass.given` | 2 |
+| **Looked up** | `blind_pass.looked_up` | 2 |
+| **Counts** | **no brief field.** They are layer 3's --detail | 2 |
 | **Provenance** | `provenance` | 2 |
 | **Parts** | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
 | **Choices** | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket`, `.finding_seq` | 2 |
