@@ -32,16 +32,19 @@ are written to, the blind pass's brief, and a worked example. Read it before you
    write the problem first and the change second: one headline sentence, how it works today, a
    before flow and an after flow, numbered problems marked on both flows, and one line each of what
    was wrong and what it is now. The top layer is plain — names go one level down.
+   **With Review Desk, save the problem half before you go on to step 3** — "With Review
+   Desk" says which fields and why in that order.
 3. **Blind options pass.** Dispatch one session through **"Independent help"** in `_common.md`,
    with traits different from your own, and give it the numbered problems and an export of the base
    commit and **nothing else**: not the ticket, not this pull request, not the branch. The brief
-   template, the export command and the leak rule are in `understand.md`. **Reclaim it the moment
-   it reports** (`allele_sessions_discard`). If it cannot run — a depth-limit error, or
-   `blind_options_pass` off in your dispatch block — say so **once**, to the Dispatcher and in your
-   provenance, and carry straight on. **A capacity error is not that case**: `_common.md` governs
-   it unchanged, so tell the Dispatcher you are waiting for a slot, keep working on step 2's
-   loose ends, and retry. There is no size threshold anywhere: a ten-line change can have
-   catastrophic consequences.
+   template, the export command and the leak rule are in `understand.md`; with Review Desk the
+   template's problem sections are poured from its problem-only read rather than retyped.
+   **Reclaim it the moment it reports** (`allele_sessions_discard`). If it cannot run — a
+   depth-limit error, or `blind_options_pass` off in your dispatch block — say so **once**, to
+   the Dispatcher and in your provenance, and carry straight on. **A capacity error is not that
+   case**: `_common.md` governs it unchanged, so tell the Dispatcher you are waiting for a slot,
+   keep working on step 2's loose ends, and retry. There is no size threshold anywhere: a
+   ten-line change can have catastrophic consequences.
 4. **Alternatives.** Line the blind session's options up against the author's: one row per option,
    scored against each numbered problem, with who put it forward. Say which one was built, which
    one the blind pass would pick, and what it needed to know and was not told.
@@ -138,7 +141,7 @@ one twice is the same as writing it once, so you can report progress without rea
 | Layer | Which of your steps | `--detail` is |
 |---|---|---|
 | 1 lint | step 8's test, static-analysis and formatter runs, and step 11's `pr_lint` | what they said: `passed`, `3 failures`, `description 2.4x budget` |
-| 2 understand | step 2 | left to the store: writing the brief settles this layer |
+| 2 understand | step 2 | left to the store: **each** of your two brief writes settles or unsettles this layer |
 | 3 alternatives | step 3's blind options pass and step 4's table | `7 options, 4 not on the ticket, C built` |
 | 4 solution map | step 5 | your verdict in a phrase |
 | 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` |
@@ -158,45 +161,182 @@ Three things that are easy to get wrong here:
   run the `review-craft` lenses after your own read so they do not anchor you.
 - **The store writes three layer rows and you write the rest, and the split is not where it
   looks.** Confirming a brief finishes layer 2 and writing one that needs no confirmation
-  finishes it too, so **never write layer 2 at all**. Layer 6 is the other way round:
+  finishes it too, so **never write layer 2 at all** — and because you write the brief twice it
+  moves twice without you, `done` at write 1 and then wherever `brief_gate` leaves it. Layer 6
+  is the other way round:
   `draft put` leaves it exactly as it found it — verified against 0.1.0, where a review with a
   draft at `ready` still read layer 6 `pending` — and only *approving* finishes it or *sending
   back* returns it to `running`. So write layer 6 yourself up to `waiting_on_you`, and stop
   there. Writing `done` on either is how a trail comes to claim a sign-off nobody made.
 
-### The brief, and whether it needs confirming
+### The brief, in two writes
 
-`review-desk brief put --review <id> --file brief.json`, replacing any brief already held.
-**Write it once, after step 5** — every field it has is in hand by then, and the next paragraph is
-why writing it twice is a trap. `problem` is the only required field; `diagram`, `options`,
-`approach_verdict` and `provenance` are the rest. `options` is one card per alternative —
-`{"key": "A", "title": "...", "argument_for": "...", "argument_against": "...",
-"chosen": false}` — with `chosen` true on the one the author built. Do not use `option_map`: it
-is one opaque string, it cannot serve the dashboard's option cards, and giving both is refused.
+`review-desk brief put --review <id> --file brief.json` is the only command that saves any of
+your understanding, and it **replaces** the brief it finds. You call it twice.
 
-**Your slots go into those fields and no others.** `problem` is the headline plus the
-was-and-now lines, 2–3 sentences of it; `diagram` is mermaid that **parses** — a typed text sketch
-is not a diagram; `options` is one card per row of your Alternatives table, the blind pass's rows
-included, with its provenance in `provenance` along with the base sha and the option counts;
-`approach_verdict` is step 5's verdict. Everything else has **no field here** and you do not
-invent one — a field Review Desk does not know is refused. That is the flows, the per-problem
-verdicts, the solution parts, the choices the ticket left open, and the places the description and
-the code disagree. Two of them do have a home: `provenance` is a free string, so the blind pass's
-pick and the questions it needed answered go in there, named as the blind pass's. The rest goes to
-your principal in step 6, and the record keeps what it has fields for.
+| | When | What goes in it | `confirmation_required` |
+|---|---|---|---|
+| **Write 1** | after step 2, **before step 3 dispatches** | the five fields `brief problem-statement` serves, and nothing else | `false`, with a reason beginning `problem half only — ` |
+| **Write 2** | after step 5 | all of it, write 1's fields written again | whatever `brief_gate` says, below |
 
-**`brief_gate` in your dispatch block decides whether the developer is asked**, and it is the
-caller's decision, not Review Desk's and not yours:
+**Why the problem half goes first.** Step 3's session has to be handed the problem *from the
+record* rather than from your typing, which is the only way "it was shown no part of the
+change" is a property of the record instead of a promise in your prose. So the problem half
+has to be stored before you dispatch. `problems[].now_fixed` is nullable for exactly this
+reason — the contract's own words are "null until the change has been described, which is what
+lets the problem half be written on its own".
 
-| `brief_gate` | What you write | Then |
+**Why write 1 is the permissive one.** The flag moves one way only: a brief written as needing
+the developer's confirmation **cannot** be rewritten as needing none (exit 1), while none →
+needed is allowed and moves layer 2 from `done` back to `waiting_on_you`. If write 1 asked for
+confirmation, `brief_gate: never` would be unreachable for the rest of the review — write 2
+would be refused outright — and the developer would meanwhile be shown half a brief to sign.
+`never` is the default, so that is not a setting lost; it is the caller's decision overridden
+on every review.
+
+**Four things follow, and three of them are how this stays honest.**
+
+- **Write 1 only when the review holds no brief.** `review show --review <id> --json` first. A
+  resumed session and a later round find the problem half already there: read it, pour it, and
+  **leave `confirmation_required` exactly as you found it**. Writing over a brief the developer
+  has confirmed clears that confirmation, and writing over a real waiver replaces the developer's
+  own record of why with your scaffolding. Neither is yours to do.
+- **A problem half is recognisable from the record, not from your memory.** Empty `options` and
+  `now_fixed` null on every problem: that is a brief between its two writes. A replacement
+  session needs that, because the sentence in the reason field is prose and nothing checks it.
+- **A `brief_settled` that reaches you before write 2 is about the problem half.** Write 1
+  settles layer 2 at once and your watcher relays it. It is not the gate settling. Under
+  `brief_gate: always`, the one you wait for is the one that arrives after write 2.
+- **Never drop a problem, and never renumber one.** Step 5 is the step most likely to show that
+  step 2's decomposition was wrong, and by then the blind pass has scored its options against
+  those numbers. A problem that turns out not to be one **keeps its row and its number**, with
+  `was_wrong` saying what you thought and `now_fixed` saying it was not: dropping it refuses
+  write 2 on every verdict that scores against it, and dropping those strands
+  `blind_pass.pick_key`. A problem step 5 reveals takes the next free number.
+
+### Which command saves which step
+
+| Step | What saves it |
+|---|---|
+| 2 Understand | `brief put` write 1 for the problem half, write 2 for the rest. Then `brief problem-statement` reads back what step 3 is given |
+| 3 Blind options pass | `brief put` write 2 — `blind_pass`, and `proposed_by` on the options it raised. `layer set --layer 3 --state running` while it runs |
+| 4 Alternatives | `brief put` write 2 — `options[]` with their verdicts. `layer set --layer 3 --state done` with the counts |
+| 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names |
+
+**Your slots go into these fields and no others.** A field Review Desk does not know is refused,
+so do not invent one, and **never write `blind_pass_state`** — it is derived from `blind_pass`
+and the options together, and sending it is refused. The shapes are all in `review-desk brief
+put --help`, which is complete: read it rather than guessing at a nesting.
+
+| `understand.md` slot | Field | Write |
+|---|---|---|
+| The problem itself, in plain words | `problem` | **1** |
+| How it works today, in plain words — the two or three sentences that also fill the blind brief's "The system" | `how_it_works_today` | **1** |
+| Before | `flow_before[][]`, with `flow_before_caption` | **1** |
+| Problems — the numbers and the was-wrong lines | `problems[].number`, `.was_wrong` | **1** |
+| Headline | `headline` | 2 |
+| How it works today, the table of what decides what | `support_table.title`, `.columns[]`, `.rows[][]` | 2 |
+| After | `flow_after[][]`, with `flow_after_caption` | 2 |
+| Problems — the now lines | `problems[].now_fixed` | 2 |
+| Names | `problems[].detail_title`, `.detail_before[]`, `.detail_after[]` | 2 |
+| Options — the row | `options[].key` (one capital letter you assign, A onward), `.title` | 2 |
+| Options — who put it forward | `options[].proposed_by` | 2 |
+| Options — the verdict per numbered problem | `options[].verdicts[].problem`, `.verdict`, `.why` | 2 |
+| Options — the line each way | `options[].argument_for`, `.argument_against` | 2 |
+| Built | `options[].chosen` on that one, its why in that option's `.argument_for` | 2 |
+| Blind pick | `blind_pass.pick_key`, `.pick_why` | 2 |
+| Questions | `blind_pass.questions[]` | 2 |
+| Provenance — what the pass was handed, verbatim, and what it says it read | `blind_pass.given`, `.looked_up` | 2 |
+| Provenance — where the problem statement came from, with the base sha | `provenance` | 2 |
+| Parts | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
+| Choices | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket` | 2 |
+| Disagreements | `disagreements[].description_says`, `.code_does`, `.finding_seq` | 2 |
+| Step 5's verdict | `approach_verdict` | 2 |
+
+Seven things that table does not say on its own:
+
+- **`proposed_by` takes `ticket`, `blind_pass` or `both`**, and defaults to `ticket`, which is
+  the honest answer for an option already on the record rather than a convenience. The next
+  section is what each one means.
+
+- **`problem` is no longer the headline.** It used to carry "the headline plus the was-and-now
+  lines, 2–3 sentences of it", because there was nowhere else for them. There is now: `headline`
+  and `problems[]`. `problem` is the problem, in plain words, and it is the first thing the blind
+  pass reads.
+- **Stop writing `diagram`.** The flows replace it. It held the before and the after at once and
+  nothing can separate them, which is why the problem-only read cannot serve it and why a blind
+  pass could not be given it. Problem fit in the posted review still may carry mermaid; that is
+  GitHub's copy and this is not it.
+- **`provenance` goes back to one sentence.** The blind pass's pick, its questions, what it
+  looked up and the option counts went in there because they had no field. They have fields now.
+  What is left is where the problem statement came from — the ticket, the description, the code at
+  the base sha. The counts belong in layer 3's `--detail`, which already asked for them.
+- **The verdicts are a different word list from your table.** Yours says fixes, partly and stays;
+  the field takes `fixed`, `partly`, `stays` and `not_assessed`. `not_assessed` is a verdict — an
+  option nobody scored against that problem — and it is the one that takes no `why`.
+- **A disagreement has to name a finding, so `finding add` it first.** A write naming a finding
+  that does not exist is refused, which is the same rule the record is read by: a disagreement
+  nothing raises posts a review that never mentions it. An open choice needs no finding; a choice
+  is a choice, not a fault.
+- **A part may claim a file the pull request never touched** — `in_diff: false`, and such a file
+  has no lines added or removed. Without it a finding in a file outside the diff belongs to no
+  part.
+
+### The blind pass's brief, and its three states
+
+**With Review Desk you do not type step 3's problem statement.** After write 1, read it —
+`review-desk brief problem-statement --review <id> --json` — and pour it into `understand.md`'s
+template:
+
+| Template section | Poured from |
+|---|---|
+| `## The system` | `how_it_works_today` |
+| `## How it works today` | `flow_before`, one numbered line per row, each box's title and its note |
+| `## What is wrong`, the bold problem on each line | `problems[].was_wrong`, in number order |
+
+Nothing that read serves is retyped. **Be clear about what that buys and what it does not.** It
+buys the one thing worth having mechanically: the read *cannot* serve the headline, the after
+flow, a `now_fixed` line, the named detail, the options or the parts, so no sentence of the
+change can reach the brief by your hand slipping. It does **not** make the framing innocent — a
+problem described by someone who has read the ticket can still be shaped like the answer, and
+`understand.md`'s leak rule is still the only thing standing between you and that. The sentence
+of mechanism under each problem is not in the read and is still yours to write, under that rule.
+
+Keep the filled template. It is `blind_pass.given`, verbatim. Without Review Desk, fill the
+template by hand as `understand.md` leaves it, and nothing else about step 3 changes.
+
+The state is derived from what you write, so write the inputs and never the state:
+
+| What happened | What you write | It reads as |
+|---|---|---|
+| it ran and put options forward | `blind_pass`, and `proposed_by` of `blind_pass` or `both` on those options | `ran` |
+| it ran and put no option forward | `blind_pass`, every option `ticket` | `ran_and_found_nothing` |
+| it did not run — the setting off, a depth limit, a capacity error that outlived your retries | no `blind_pass` at all, every option `ticket`, and the reason in `provenance` | `not_run` |
+
+An option the pass raised and the ticket did not is `blind_pass`. One **both** of them raised is
+`both`, which is the strongest thing the Alternatives page draws, so do not flatten it to
+`ticket` because the ticket got there first.
+
+### Whether the developer is asked
+
+**`brief_gate` in your dispatch block decides whether the developer is asked about write 2**, and
+it is the caller's decision, not Review Desk's and not yours:
+
+| `brief_gate` | What write 2 carries | Then |
 |---|---|---|
 | `never` (the default) | `"confirmation_required": false` with `"confirmation_not_required_because"` saying why — the gate is set to never for this instance, and the changed-line count | layer 2 settles at once and `work list` reports `sign_off: "waived"`. Carry straight on. |
-| `always` | nothing: `confirmation_required` defaults to true | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for `brief_settled`** before step 7 — the understanding is finished and the code review is what waits. |
+| `always` | nothing: `confirmation_required` defaults to true | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for the `brief_settled` that follows write 2** before step 7 — the understanding is finished and the code review is what waits. |
 
-A brief written as needing the developer's confirmation **cannot** be rewritten as needing none;
-that refusal exits 1 and it is the whole of what makes the flag safe to have. So get the gate
-right the first time, and if you are unsure, ask — the direction that costs the developer a
-click is the recoverable one.
+Write 1's reason is not a gate decision and must not read like one. Begin it `problem half only
+— ` and say that the full brief follows at step 5. Somebody will one day ask which reviews
+skipped the developer's confirmation and why; that phrase is what lets them tell your
+scaffolding from a real waiver.
+
+**A `brief put` refused for an unknown field is a Review Desk older than the structured brief**,
+not a broken one. Write 1 is the first of these commands you call, so you find out before you
+have dispatched anything: say so once to the Dispatcher, write the brief the old way after step 5
+instead — `problem`, `options` with their two arguments, `approach_verdict`, `provenance` — fill
+step 3's template by hand, and carry on.
 
 ### Rules, and every finding
 

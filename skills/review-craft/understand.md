@@ -340,10 +340,12 @@ semicolons, and every length limit in the tables above. It needs no `review-desk
 so it runs before the brief is saved. The limits are this file's; `--limits` prints them with
 their provenance, and **this file is where they are changed**.
 
-**With Review Desk**, the slots go into the fields it already has and no others: `problem` short,
-`diagram` as mermaid that parses, one `options` card per row of the Alternatives table with
-`chosen` true on the built one, `approach_verdict` from Solution, and the counts in `provenance`.
-`workers/review.md` owns when that happens and who is asked to confirm it.
+**With Review Desk**, every slot above has a field of its own: the headline, both flows, the
+numbered problems with their was-and-now lines, the options with a verdict per problem and who
+proposed each, the blind pass, the parts, the choices and the disagreements.
+`workers/review.md`'s "With Review Desk" owns which field, which of its two brief writes each
+slot lands in, and who is asked to confirm it. The field names are there and not here, so there
+is one copy of them.
 
 ## Revision
 
@@ -360,3 +362,7 @@ measured either way, so a number that turns out to be wrong is visible rather th
 **10 October 2026.** New file. The three understanding steps moved ahead of the tests and the
 lenses in `workers/review.md`, and what each one produces is written down here with a blind
 options pass between the first two.
+
+**10 October 2026, later.** "Where this lands in the posted review" listed `problem`, `diagram`
+and the counts in `provenance`, which was the whole of what a brief could hold before DEV-882.
+Every slot has a field now, and the names live in `workers/review.md` so there is one copy.
