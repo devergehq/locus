@@ -325,12 +325,26 @@ else. It **may** carry the before-and-after diagram beneath it: `review_lint.py`
 under Problem fit or under a finding and **warns** on one anywhere else, and a diagram costs
 nothing at all against a review's word budget — mermaid is stripped before the words are counted.
 
+**Check it before you show it.** `brief_lint.py` in this skill reads a brief — the document you
+are about to `review-desk brief put`, or the one it already holds — and fails on the mechanical
+shapes this page argues against: a headline that is a paragraph, a flow that is not drawn, a
+numbered problem no box carries, a class name on the top layer, three clauses joined by
+semicolons, and every length limit in the tables above. It needs no `review-desk` to read a file,
+so it runs before the brief is saved. The limits are this file's; `--limits` prints them with
+their provenance, and **this file is where they are changed**.
+
 **With Review Desk**, the slots go into the fields it already has and no others: `problem` short,
 `diagram` as mermaid that parses, one `options` card per row of the Alternatives table with
 `chosen` true on the built one, `approach_verdict` from Solution, and the counts in `provenance`.
 `workers/review.md` owns when that happens and who is asked to confirm it.
 
 ## Revision
+
+**10 October 2026 (second change).** `brief_lint.py` arrived and enforces the limits in the tables
+above. Three of them were proposed looser in DEV-884 — a 25-word headline, 5 numbered problems,
+8 rows in a flow — and this file won each, because one fact has one owner and the slots are
+stated here. The linter reports what it measured either way, so a number that turns out to be
+wrong is visible rather than argued.
 
 **10 October 2026.** New file. The three understanding steps moved ahead of the tests and the
 lenses in `workers/review.md`, and what each one produces is written down here with a blind
