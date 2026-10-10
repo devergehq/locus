@@ -30,8 +30,10 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 
 | Slot | What goes in it | Length |
 |---|---|---|
-| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, at most 20 words |
-| **How it works today** | One row per question the system answers, and who answers it. The column that changes is the point | 3–4 rows |
+| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, under 20 words |
+| **The problem** | What the change is solving, in plain words. Not the headline, which says what the change *does*, and not the was-wrong lines, which are one per numbered problem | One or two sentences |
+| **The system** | What this is, who uses it, what it is for — the context a newcomer needs before any of the rest reads. The same sentences fill the blind brief's `## The system` | Two or three sentences |
+| **Supporting table** | One row per question the system answers and who answers it, with a today column and an after column. The column that changes is the point | 3–4 rows |
 | **Before** | The flow as it is today, one step per row, each with one line of detail. Numbered problems marked on the rows they sit on | 4–6 rows |
 | **After** | The same flow as the change leaves it, with the fixes marked | 4–7 rows |
 | **Problems** | What is wrong, numbered. The numbers are used by every later step and never renumbered | 2–4, numbered |
@@ -41,21 +43,23 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 The numbers are the spine of the whole review. Alternatives scores options against them, Solution
 says which part fixes which, and a finding can say which problem it threatens.
 
-**The whole top layer — the headline plus every was-wrong and now line — is 150 words.** That is a
-*budget*, and the per-line numbers above are *caps*: the budget is deliberately tighter than the
-sum of them, because four problems at the 20-word cap each way plus a 20-word headline would be
-180. A cap stops one line running away; the budget stops the top layer doing it collectively, and
-a brief cannot spend every cap at once. The approved board of 10 October 2026 spent 85 of the 150.
-`brief_lint.py` names the longest lines when the budget is what failed, not the caps.
+**The Supporting table is change-half, and "The system" is not.** The table has an after column,
+so the problem-only read a blind pass may be shown leaves it out; "The system" and the Before flow
+are in it. So if a table is what it takes to explain how things work **today**, that belongs in the
+Before flow or in "The system" — put it in the Supporting table and the one reader who most needs
+it is the one who will not see it.
 
 ## Alternatives — `review.md` steps 3 and 4
 
 | Slot | What goes in it |
 |---|---|
-| **Options** | One row per option: a title of at most 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — fixes it, partly, or leaves it |
+| **Options** | One row per option: a title under 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — `fixed`, `partly`, `stays`, or `not_assessed` where nobody scored it |
+| **Keys** | One capital letter per option, A onward, in the order the table reads. Everything after this refers to an option by its letter, so assign them before anything does |
+| **For and against** | Per option, the case for it and the case against. **Detail, behind the row, and never length-checked** — depth is allowed here. For an option the blind pass raised, these are its mechanism, its cost, and what it says it assumes |
 | **Built** | Which option the author built, and the one line of why |
 | **Blind pick** | What the blind session would have picked, and its one line of why |
 | **Questions** | What the blind session needed to know and was not told. These are often the best questions in the review |
+| **What the pass was given** | The filled brief you handed the blind session, **verbatim**. Not a description of it |
 | **Provenance** | Where each list came from, how many options each source had, how many overlap, and what the blind session says it looked up |
 
 ### The blind options pass
@@ -122,7 +126,7 @@ Write one JSON object to `<ANSWER PATH>`, then reply with one line saying it is 
   "options": [{
     "title": "at most 12 words, plain English",
     "mechanism": "one or two sentences: what would actually be built or changed",
-    "fixes": {"1": {"verdict": "yes | partly | no", "why": "one short sentence"}},
+    "fixes": {"1": {"verdict": "fixed | partly | stays", "why": "one short sentence"}},
     "cost": "one sentence: the main cost or risk",
     "assumes": "one sentence: what would have to be true that this brief does not tell you"
   }],
@@ -151,9 +155,10 @@ great deal and is worth nothing at all compared to a review that never arrives.
 
 | Slot | What goes in it |
 |---|---|
-| **Parts** | One row per part of the change: what it is, which numbered problems it fixes, its files with lines added and removed |
-| **Choices** | Where the ticket left a choice: what was open, what was chosen, the one line of why, and whether it departs from the ticket |
-| **Disagreements** | Where the description and the code say different things: what the description says, what the code does |
+| **Parts** | One row per part of the change: what it is, which numbered problems it fixes, its files with lines added and removed, and **whether the pull request changed each file at all** — a part may claim a file outside the diff, which is how a finding in such a file belongs to a part |
+| **Choices** | Where the ticket left a choice: what was open, what was chosen, the one line of why, whether it departs from the ticket, and — where one raises it — the finding |
+| **Disagreements** | Where the description and the code say different things: what the description says, what the code does, and **the finding that raises it**. That one is required, so raise the finding first: a disagreement nothing raises posts a review that never mentions it |
+| **Verdict** | Whether this is the right *shape* for the problem, in a phrase |
 
 Read the change here as a **design**. The question is whether this is the right *shape* for the
 problem, not whether it is correct — that is the code review, two steps later. A patch on a
@@ -219,6 +224,14 @@ lists in a shop's admin.
 
 > Each price file is imported on its own and published in one step.
 
+**The problem.** A night's price import is all-or-nothing, and a price we cannot match disappears
+without a trace.
+
+**The system.** A shop's admin imports supplier price lists overnight. The buying team sets the
+prices and the shop front reads them the next morning; nobody watches the import run.
+
+**Supporting table**
+
 | What decides it | Today | After |
 |---|---|---|
 | Which files are imported tonight | The importer, by listing the inbox folder | Unchanged |
@@ -278,21 +291,36 @@ line number.
 
 ### Alternatives
 
-| Option | Seen by | 1 | 2 | 3 |
-|---|---|---|---|---|
-| **One job per file, staged and published in one step** · built | Ticket C · Blind | fixes | fixes | fixes |
-| Keep one run, but commit after each file | Ticket B · Blind | fixes | stays | partly |
-| Validate a whole file before any of it is written | Blind | partly | partly | fixes |
-| Import into a copy of the price list and swap the two | Blind | stays | stays | fixes |
-| Write rejected rows to the run's log file | Ticket D | stays | fixes | stays |
-| Let the supplier's system send us one product at a time | Blind | fixes | fixes | fixes |
-| Keep today's shape and retry a bad night by hand | Ticket A · Blind | stays | stays | stays |
+| | Option | Seen by | 1 | 2 | 3 |
+|---|---|---|---|---|---|
+| **C** | **One job per file, staged and published in one step** · built | Ticket · Blind | fixed | fixed | fixed |
+| **B** | Keep one run, but commit after each file | Ticket · Blind | fixed | stays | partly |
+| **E** | Validate a whole file before any of it is written | Blind | partly | partly | fixed |
+| **F** | Import into a copy of the price list and swap the two | Blind | stays | stays | fixed |
+| **D** | Write rejected rows to the run's log file | Ticket | stays | fixed | stays |
+| **G** | Let the supplier's system send us one product at a time | Blind | fixed | fixed | fixed |
+| **A** | Keep today's shape and retry a bad night by hand | Ticket · Blind | stays | stays | stays |
 
 | | |
 |---|---|
-| **Built** | One job per file, staged and published in one step. Agreed on the ticket before work started, and the most work of the four there. |
-| **The blind pass would pick** | The same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
+| **Built** | **C.** One job per file, staged and published in one step. Agreed on the ticket before work started, and the most work of the four there. |
+| **The blind pass would pick** | **C**, the same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
+| **Given** | The problem half as the record held it, poured: "The system", the Before flow and the three was-wrong lines. Nothing of the change. |
 | **Provenance** | 4 options on the ticket, 6 from the blind pass, 3 on both; 3 not on the ticket and 1 the blind pass never raised. Export of `a1b2c3d`, no history. It reported looking nothing up. |
+
+<details><summary>For and against, per option</summary>
+
+**C · built.** *For:* a file is the unit the supplier sends, the buyer thinks in and the retry
+needs, so one job per file makes every later question answerable. *Against:* a staging table and
+a publish step are new moving parts, and the night's run is no longer one thing to look at.
+
+**B.** *For:* two lines in the existing command, and tonight's good files survive a bad one.
+*Against:* a half-written price list is still visible mid-run, which is problem 3 untouched.
+
+**E.** *For:* nothing is written until the whole file is known to be good. *Against:* a file is
+read twice, and one bad row still costs the file — which may be the right trade, and the ticket
+never says.
+</details>
 
 What the blind pass needed and was not told:
 
@@ -305,6 +333,7 @@ What the blind pass needed and was not told:
 | Part | Fixes | Files |
 |---|---|---|
 | A record of each import run, and each file in it | 1 | 3 · +180 −0 |
+| The supplier onboarding note, which the import contradicts | 2 | 1 · outside the diff |
 | One job per file, with its own retries | 1 | 2 · +96 −40 |
 | Rejected rows, with a reason and a line number | 2 | 3 · +120 −0 |
 | A staging table for accepted prices | 3 | 2 · +64 −0 |
@@ -321,6 +350,8 @@ What the blind pass needed and was not told:
 |---|---|---|
 | F2 | A rejected row is retried the next night | Rejected rows are never read again |
 | F5 | Publishing a file is one transaction | The swap and its audit row are two |
+
+**Verdict.** The right shape: a file is the unit everything downstream already uses.
 
 ---
 
@@ -366,3 +397,15 @@ options pass between the first two.
 **10 October 2026, later.** "Where this lands in the posted review" listed `problem`, `diagram`
 and the counts in `provenance`, which was the whole of what a brief could hold before DEV-882.
 Every slot has a field now, and the names live in `workers/review.md` so there is one copy.
+
+Then the slots were reconciled against that record, so none of them has to be improvised.
+**"How it works today" named two different things** — a paragraph of plain words and a 3–4 row
+table — which are two fields, and the problem-only read carries the first and not the second. They
+are **"The system"** and **"Supporting table"** now, with a line saying why a table about today
+belongs in the Before flow rather than the second one. Seven slots were added for fields the record
+requires and nothing produced: **The problem**, **Keys**, **For and against**, **What the pass was
+given**, the outside-the-diff column on **Parts**, the finding on **Choices** and
+**Disagreements**, and **Verdict**. And the verdict words are the record's — `fixed`, `partly`,
+`stays`, `not_assessed` — in the tables, in the worked example and in the blind brief's own JSON,
+which used to say `yes | partly | no`: one vocabulary end to end beats a mapping nobody can see
+being applied.

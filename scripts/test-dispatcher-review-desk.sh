@@ -1093,6 +1093,34 @@ def roots(cell):
     return found
 
 
+def slot_name(cell):
+    """The slot a Slot cell names: the leading bolded phrase, and nothing after it.
+
+    `**Was wrong / now** - the now line` is the "Was wrong / now" slot. A row that qualifies
+    which half of a two-line slot it means is still that slot.
+    """
+    match = re.match(r"\*\*([^*]+)\*\*", cell)
+    return match.group(1).strip() if match else cell
+
+
+def understand_slots(path):
+    """Every slot `understand.md` defines, from its three slot tables and nowhere else.
+
+    By table header, not by "a row starting bold": the worked example has bolded first cells
+    too, and `**The blind pass would pick**` is prose about the Blind pick slot rather than a
+    slot of its own. Reading those as slots would let review.md name one and still pass.
+    """
+    lines = pathlib.Path(path).read_text().split("\n")
+    found = set()
+    for index, line in enumerate(lines):
+        if line.startswith("| Slot | What goes in it"):
+            for row in lines[index + 2:]:
+                if not row.startswith("|"):
+                    break
+                found.add(slot_name([c.strip() for c in row.strip().strip("|").split("|")][0]))
+    return found
+
+
 lines = pathlib.Path(sys.argv[1]).read_text().split("\n")
 
 slots = rows(lines, "| `understand.md` slot | Field | Write |")
@@ -1108,7 +1136,17 @@ joined = " ".join(all_tokens)
 poured = rows(lines, "| Template section | Poured from |")
 pour_roots = sorted({r for _, source in poured for r in roots(source)})
 
+named = {slot_name(slot) for slot, _, _ in slots}
+defined = understand_slots(sys.argv[2]) if len(sys.argv) > 2 else set()
+
 print(json.dumps({
+    "slots_named": sorted(named),
+    "slots_defined": sorted(defined),
+    # A slot review.md names that `understand.md` does not define is a slot a worker has to
+    # improvise. One `understand.md` defines that review.md does not name is a slot with
+    # nowhere to go, which is the defect DEV-883 exists to close -- so both directions.
+    "slots_improvised": sorted(named - defined) if defined else ["(no understand.md given)"],
+    "slots_unsaved": sorted(defined - named) if defined else ["(no understand.md given)"],
     "roots": sorted(all_roots),
     "unknown_roots": sorted(all_roots - ACCEPTED),
     "missing_contract": [r for r in REQUIRED if r not in joined],
@@ -1150,9 +1188,10 @@ open(sys.argv[2], "w").write("\n".join(out) + "\n")
 POUR
 
 brief_md="$root/skills/dispatcher/workers/review.md"
+understand_md="$root/skills/review-craft/understand.md"
 # `ask <expr> [file]` answers one question about that reading, so an assertion reads as the
 # question it asks.
-ask () { python3 "$work/brieftable.py" "${2:-$brief_md}" | python3 -c "
+ask () { python3 "$work/brieftable.py" "${2:-$brief_md}" "${3:-$understand_md}" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 print($1)"; }
@@ -1168,6 +1207,23 @@ ok "  and every field the three pages draw is named" "$(ask "d['missing_contract
 ok "  the superseded diagram is not among them"     "$(ask "d['roots'].count('diagram')")" 0
 ok "  and the brief says to stop writing it"        "$(grep -c 'Stop writing .diagram.' "$brief_md")" 1
 ok "  the derived state is never written"           "$(grep -c 'never write .blind_pass_state.' "$brief_md")" 1
+
+printf '\n  no slot improvises -- the two files name the same slots\n'
+# review.md's Slot column and understand.md's three slot tables, crossed both ways. One
+# direction catches a field a worker would have to invent a slot for; the other catches a slot
+# with nowhere to go, which is the defect this issue exists to close.
+ok "review.md names no slot understand.md lacks"    "$(ask "d['slots_improvised']")" "[]"
+ok "  and leaves no slot of it unsaved"             "$(ask "d['slots_unsaved']")" "[]"
+ok "  over every slot, not a handful"               "$(ask "len(d['slots_defined']) >= 20")" True
+ok "the colliding slot name is gone"                "$(grep -c '^| \*\*How it works today\*\* |' "$understand_md")" 0
+ok "  replaced by the plain-words slot"             "$(grep -c '^| \*\*The system\*\* |' "$understand_md")" 1
+ok "  and by the table, named as its own slot"      "$(grep -c '^| \*\*Supporting table\*\* |' "$understand_md")" 1
+ok "  with the table called change-half"            "$(grep -c 'Supporting table is change-half' "$understand_md")" 1
+ok "the record's verdict words are in understand.md" "$(grep -c '`fixed`, `partly`, `stays`, or `not_assessed`' "$understand_md")" 1
+ok "  and in the blind brief's own JSON"            "$(grep -c '"verdict": "fixed | partly | stays"' "$understand_md")" 1
+ok "  and the template no longer carries the old ones" "$(grep -c '"verdict": "yes | partly | no"' "$understand_md")" 0
+ok "  which survive only as the revision's quotation" "$(grep -c 'used to say .yes | partly | no.' "$understand_md")" 1
+ok "  and the brief says nothing maps anything"     "$(grep -c 'Nothing maps anything' "$brief_md")" 1
 
 printf '\n  write 1 is the problem half, and nothing else\n'
 ok "write 1 names exactly what the read serves"     "$(ask "d['write1']")" "$(ask "d['served_expected']")"
@@ -1192,7 +1248,10 @@ cat > "$work/half.json" <<'JSON'
   "flow_before_caption": "Today",
   "flow_before": [[{"title": "An order changes", "note": "the app enqueues a job"}],
                   [{"title": "The job posts", "note": "nothing identifies the delivery"},
-                   {"title": "It times out", "problem": 1}]],
+                   {"title": "It times out", "problem": 1}],
+                  [{"title": "The queue retries it", "note": "from the start, as a new post"}],
+                  [{"title": "The receiver stores both", "note": "two orders, one event",
+                    "problem": 2}]],
   "problems": [{"number": 1, "was_wrong": "A retry arrives as a second delivery."},
                {"number": 2, "was_wrong": "Nothing records that it was a retry."}],
   "confirmation_required": false,
@@ -1224,11 +1283,15 @@ doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
 doc.update({
     "headline": "A retry now carries the first delivery's key, so one event is delivered once.",
     "support_table": {"title": "Who decides", "columns": ["Question", "Today", "After"],
-                      "rows": [["Who retries a delivery", "the queue", "the queue"]]},
+                      "rows": [["Who retries a delivery", "the queue", "the queue"],
+                               ["What a repeat costs", "a second order", "nothing"],
+                               ["Who names a delivery", "nobody", "the event"]]},
     "flow_after_caption": "After",
     "flow_after": [[{"title": "An order changes"}],
                    [{"title": "The job posts with a key", "problem": 1},
-                    {"title": "The receiver drops a repeat", "problem": 2}]],
+                    {"title": "The receiver drops a repeat", "problem": 2}],
+                   [{"title": "The queue retries with the same key", "problem": 1}],
+                   [{"title": "The receiver stores one", "problem": 2}]],
     "options": [
         {"key": "A", "title": "Retry inside the request", "argument_for": "no queue at all",
          "argument_against": "it blocks the response", "chosen": False, "proposed_by": "ticket",
@@ -1291,7 +1354,8 @@ print(len([p for p in d['problems'] if 'now_fixed' in p]))")" 0
 python3 "$work/pour.py" "$work/ps" "$work/poured.md"
 ok "the poured brief carries the before flow"       "$(grep -c 'the app enqueues a job' "$work/poured.md")" 1
 ok "  numbering by row, so a split row shares one"  "$(grep -c '^2\. [^*]' "$work/poured.md")" 2
-ok "  and never numbers past the last row"          "$(grep -c '^3\. ' "$work/poured.md")" 0
+ok "  one number per row and no more"               "$(grep -c '^4\. [^*]' "$work/poured.md")" 1
+ok "  and never numbers past the last row"          "$(grep -c '^5\. ' "$work/poured.md")" 0
 ok "  and carries every numbered problem"           "$(grep -c '^[12]\. \*\*' "$work/poured.md")" 2
 ok "  but not the headline"                         "$(grep -c 'delivered once' "$work/poured.md")" 0
 ok "  nor a box of the after flow"                  "$(grep -c 'posts with a key' "$work/poured.md")" 0
@@ -1332,17 +1396,25 @@ ok "  which is why the recipe says every option ticket" "$(grep -c 'every option
 
 printf '\n  the refusals the brief is written around\n'
 instance '{"mode":"auto"}'
-python3 - "$work/full.json" "$work/needsgate.json" "$work/dropped.json" "$work/old.json" <<'PY'
+python3 - "$work/full.json" "$work/needsgate.json" "$work/droppedflow.json" "$work/old.json" \
+         "$work/dropped.json" <<'PY'
 import json, pathlib, sys
 doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
 gated = dict(doc, confirmation_required=False,
              confirmation_not_required_because="brief_gate is never for this instance")
 pathlib.Path(sys.argv[2]).write_text(json.dumps(gated))
-dropped = json.loads(json.dumps(doc))
-dropped["problems"] = [p for p in dropped["problems"] if p["number"] != 2]
-dropped["flow_after"] = [[b for b in row if b.get("problem") != 2]
-                         for row in dropped["flow_after"]]
-pathlib.Path(sys.argv[3]).write_text(json.dumps(dropped))
+# TWO documents, because a dropped problem is refused by everything that referred to it and
+# only the first refusal is reported. This one keeps the flow marks, so a FLOW refuses it.
+flow = json.loads(json.dumps(doc))
+flow["problems"] = [p for p in flow["problems"] if p["number"] != 2]
+pathlib.Path(sys.argv[3]).write_text(json.dumps(flow))
+# And this one unmarks both flows, so what is left to refuse it is the orphaned VERDICT.
+# Rows emptied by the filter go with them: an empty row is refused for its own reason.
+dropped = json.loads(json.dumps(flow))
+for field in ("flow_before", "flow_after"):
+    kept = [[b for b in row if b.get("problem") != 2] for row in dropped[field]]
+    dropped[field] = [row for row in kept if row]
+pathlib.Path(sys.argv[5]).write_text(json.dumps(dropped))
 old = json.loads(pathlib.Path(sys.argv[1]).read_text())
 old["blind_pass_state"] = "ran"
 pathlib.Path(sys.argv[4]).write_text(json.dumps(old))
@@ -1382,11 +1454,25 @@ ok "  and is accepted once the finding exists"      "$(rc brief put --review 3 -
 echo '{"lens":"l","severity":"should","claim":"c"}' \
   | review-desk finding add --review 1 --file - > /dev/null
 ok "the whole brief lands on review 1 first"        "$(rc brief put --review 1 --file "$work/full.json")" 0
-ok "dropping a problem refuses the second write"    "$(rc brief put --review 1 --file "$work/dropped.json")" 1
-ok "  on the verdict that scored against it"        "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
+ok "dropping a problem refuses the second write"    "$(rc brief put --review 1 --file "$work/droppedflow.json")" 1
+ok "  on the flow box that marked it"               "$(grep -c 'flow_before names problem 2' "$work/err")" 1
+ok "and unmarking the flows does not rescue it"     "$(rc brief put --review 1 --file "$work/dropped.json")" 1
+ok "  the verdict that scored against it refuses too" "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
 ok "  and the brief forbids dropping or renumbering" "$(grep -c 'Never drop a problem, and never renumber one' "$brief_md")" 1
 ok "an unknown field is exit 1, not exit 2"         "$(rc brief put --review 4 --file "$work/old.json")" 1
 ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the structured brief' "$brief_md")" 1
+
+printf '\n  the brief is linted before it is sent, and never before that\n'
+# brief_lint.py arrives with DEV-884 (#72). These assert what workers/review.md TELLS a worker
+# to run and when; the assertion that the document above actually passes the linter waits for
+# that merge, and is the one thing in this block still owed.
+ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
+ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 3
+ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
+ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint write 1' "$brief_md")" 1
+ok "  with the count it would fail by"              "$(grep -c '6 of its 16 checks fail' "$brief_md")" 1
+ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
+ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
 
 printf '\n  absent and broken are still what they were\n'
 instance '{"mode":"auto"}'
@@ -1481,20 +1567,26 @@ sed 's/`support_table\.title`/`support_tables.title`/' "$brief_md" > "$work/badr
 ok "the root reversal changed one line"                "$(grep -c 'support_tables.title' "$work/badroot.md")" 1
 ok "a field the store would refuse is NOT reported ok" "$(ask "d['unknown_roots'] == []" "$work/badroot.md")" False
 
-sed 's/`blind_pass\.given`, `\.looked_up`/`blind_pass.handed`, `.looked_up`/' \
+sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given`,/| **What the pass was given** | `blind_pass.handed`,/' \
     "$brief_md" > "$work/badfield.md"
 ok "the member reversal changed one line"              "$(grep -c 'blind_pass.handed' "$work/badfield.md")" 1
 ok "  and it is the root check that does NOT catch it" "$(ask "d['unknown_roots']" "$work/badfield.md")" "[]"
 ok "a renamed member is caught by the page coverage"   "$(ask "d['missing_contract']" "$work/badfield.md")" "['blind_pass.given']"
+
+sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
+    "$brief_md" > "$work/badslot.md"
+ok "the slot-name reversal changed one line"           "$(grep -c 'The sytsem' "$work/badslot.md")" 1
+ok "a slot understand.md does not define is caught"    "$(ask "d['slots_improvised']" "$work/badslot.md")" "['The sytsem']"
+ok "  and the slot it left behind is caught too"       "$(ask "d['slots_unsaved']" "$work/badslot.md")" "['The system']"
 
 sed 's/| `## The system` | `how_it_works_today` |/| `## The system` | `headline` |/' \
     "$brief_md" > "$work/badpour.md"
 ok "the pour reversal changed one line"                "$(grep -c '| `## The system` | `headline` |' "$work/badpour.md")" 1
 ok "pouring from a field the read withholds is caught" "$(ask "d['pour_unserved']" "$work/badpour.md")" "['headline']"
 
-sed 's/| Before | `flow_before\[\]\[\]`, with `flow_before_caption` | \*\*1\*\* |/| Before | `flow_before[][]`, with `flow_before_caption` | 2 |/' \
+sed 's/^| \*\*Before\*\* | `flow_before\[\]\[\]`, with `flow_before_caption` | \*\*1\*\* |/| **Before** | `flow_before[][]`, with `flow_before_caption` | 2 |/' \
     "$brief_md" > "$work/badwrite.md"
-ok "the write-column reversal changed one line"        "$(grep -c '| Before | .flow_before\[\]\[\]., with .flow_before_caption. | 2 |' "$work/badwrite.md")" 1
+ok "the write-column reversal changed one line"        "$(grep -c '^| \*\*Before\*\* | .flow_before\[\]\[\]., with .flow_before_caption. | 2 |' "$work/badwrite.md")" 1
 ok "a problem-half field moved to write 2 is caught"   "$(ask "d['write1'] == d['served_expected']" "$work/badwrite.md")" False
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

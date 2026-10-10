@@ -54,7 +54,11 @@ are written to, the blind pass's brief, and a worked example. Read it before you
    whether it is correct. A patch on a symptom, a schema that will need changing again, or a
    workaround for something fixable upstream is a finding, and it belongs in **Problem fit** at the
    top, not as a nit at the bottom.
-6. **Show your principal, short.** The headline, the flows, the numbered problems with their
+6. **Check it, then show your principal, short.** Write the understanding out as the brief
+   document and run `python3 ~/.locus/skills/review-craft/brief_lint.py brief.json`; it must pass
+   before you show anything. **It needs no Review Desk** — with Review Desk absent, write the
+   document anyway and lint it, because it is the only mechanical check the understanding gets and
+   it costs one file. Then: the headline, the flows, the numbered problems with their
    was-and-now lines, the options and the parts — a message someone new to the domain could follow.
    Say what problem you think this change solves, so they can correct you early if you have it
    wrong. **You are showing, not asking**: you never ask for a confirmation, and you never read a
@@ -219,9 +223,23 @@ on every review.
 - **Never drop a problem, and never renumber one.** Step 5 is the step most likely to show that
   step 2's decomposition was wrong, and by then the blind pass has scored its options against
   those numbers. A problem that turns out not to be one **keeps its row and its number**, with
-  `was_wrong` saying what you thought and `now_fixed` saying it was not: dropping it refuses
-  write 2 on every verdict that scores against it, and dropping those strands
-  `blind_pass.pick_key`. A problem step 5 reveals takes the next free number.
+  `was_wrong` saying what you thought and `now_fixed` saying it was not. **Everything that
+  referred to the number refuses the write** — the flow box that marked it first, then every
+  verdict that scored against it — and unmarking those strands `blind_pass.pick_key` in turn.
+  Only the first refusal is reported, so this is not a thing you fix once. A problem step 5
+  reveals takes the next free number.
+
+**Write 2 is linted before it is sent.** `python3 ~/.locus/skills/review-craft/brief_lint.py
+brief.json` on the document you are about to send, and fix what it names: it is this brief's
+only mechanical check on the understanding, it reads a file rather than the store, and
+`review-craft`'s rule is that a brief is not finished until it passes. `--review <id>` lints the
+one Review Desk already holds, and `--limits` prints the numbers with where each came from.
+
+**Do not lint write 1.** A problem half is missing the change half *by design*, and the linter
+cannot tell that from a brief that forgot it: on the problem-half document, 6 of its 16 checks fail
+— the absent headline, the absent after flow, the problems marked on no after box, and the problems
+with no `now_fixed`. Every one of those is a slot write 1 is not allowed to carry. The gate belongs
+on write 2, where the whole brief is in hand.
 
 ### Which command saves which step
 
@@ -230,7 +248,7 @@ on every review.
 | 2 Understand | `brief put` write 1 for the problem half, write 2 for the rest. Then `brief problem-statement` reads back what step 3 is given |
 | 3 Blind options pass | `brief put` write 2 — `blind_pass`, and `proposed_by` on the options it raised. `layer set --layer 3 --state running` while it runs |
 | 4 Alternatives | `brief put` write 2 — `options[]` with their verdicts. `layer set --layer 3 --state done` with the counts |
-| 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names |
+| 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names, and `brief_lint.py` before the write |
 
 **Your slots go into these fields and no others.** A field Review Desk does not know is refused,
 so do not invent one, and **never write `blind_pass_state`** — it is derived from `blind_pass`
@@ -239,28 +257,30 @@ put --help`, which is complete: read it rather than guessing at a nesting.
 
 | `understand.md` slot | Field | Write |
 |---|---|---|
-| The problem itself, in plain words | `problem` | **1** |
-| How it works today, in plain words — the two or three sentences that also fill the blind brief's "The system" | `how_it_works_today` | **1** |
-| Before | `flow_before[][]`, with `flow_before_caption` | **1** |
-| Problems — the numbers and the was-wrong lines | `problems[].number`, `.was_wrong` | **1** |
-| Headline | `headline` | 2 |
-| How it works today, the table of what decides what | `support_table.title`, `.columns[]`, `.rows[][]` | 2 |
-| After | `flow_after[][]`, with `flow_after_caption` | 2 |
-| Problems — the now lines | `problems[].now_fixed` | 2 |
-| Names | `problems[].detail_title`, `.detail_before[]`, `.detail_after[]` | 2 |
-| Options — the row | `options[].key` (one capital letter you assign, A onward), `.title` | 2 |
-| Options — who put it forward | `options[].proposed_by` | 2 |
-| Options — the verdict per numbered problem | `options[].verdicts[].problem`, `.verdict`, `.why` | 2 |
-| Options — the line each way | `options[].argument_for`, `.argument_against` | 2 |
-| Built | `options[].chosen` on that one, its why in that option's `.argument_for` | 2 |
-| Blind pick | `blind_pass.pick_key`, `.pick_why` | 2 |
-| Questions | `blind_pass.questions[]` | 2 |
-| Provenance — what the pass was handed, verbatim, and what it says it read | `blind_pass.given`, `.looked_up` | 2 |
-| Provenance — where the problem statement came from, with the base sha | `provenance` | 2 |
-| Parts | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
-| Choices | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket` | 2 |
-| Disagreements | `disagreements[].description_says`, `.code_does`, `.finding_seq` | 2 |
-| Step 5's verdict | `approach_verdict` | 2 |
+| **The problem** | `problem` | **1** |
+| **The system** | `how_it_works_today` | **1** |
+| **Before** | `flow_before[][]`, with `flow_before_caption` | **1** |
+| **Problems** | `problems[].number` | **1** |
+| **Was wrong / now** — the was-wrong line | `problems[].was_wrong` | **1** |
+| **Headline** | `headline` | 2 |
+| **Supporting table** | `support_table.title`, `.columns[]`, `.rows[][]` | 2 |
+| **After** | `flow_after[][]`, with `flow_after_caption` | 2 |
+| **Was wrong / now** — the now line | `problems[].now_fixed` | 2 |
+| **Names** | `problems[].detail_title`, `.detail_before[]`, `.detail_after[]` | 2 |
+| **Keys** | `options[].key` | 2 |
+| **Options** — the row | `options[].title` | 2 |
+| **Options** — who put it forward | `options[].proposed_by` | 2 |
+| **Options** — the verdict per numbered problem | `options[].verdicts[].problem`, `.verdict`, `.why` | 2 |
+| **For and against** | `options[].argument_for`, `.argument_against` | 2 |
+| **Built** | `options[].chosen` on that one | 2 |
+| **Blind pick** | `blind_pass.pick_key`, `.pick_why` | 2 |
+| **Questions** | `blind_pass.questions[]` | 2 |
+| **What the pass was given** | `blind_pass.given`, and `.looked_up` for what it says it read | 2 |
+| **Provenance** | `provenance` | 2 |
+| **Parts** | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
+| **Choices** | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket`, `.finding_seq` | 2 |
+| **Disagreements** | `disagreements[].description_says`, `.code_does`, `.finding_seq` | 2 |
+| **Verdict** | `approach_verdict` | 2 |
 
 Seven things that table does not say on its own:
 
@@ -280,9 +300,12 @@ Seven things that table does not say on its own:
   looked up and the option counts went in there because they had no field. They have fields now.
   What is left is where the problem statement came from — the ticket, the description, the code at
   the base sha. The counts belong in layer 3's `--detail`, which already asked for them.
-- **The verdicts are a different word list from your table.** Yours says fixes, partly and stays;
-  the field takes `fixed`, `partly`, `stays` and `not_assessed`. `not_assessed` is a verdict — an
-  option nobody scored against that problem — and it is the one that takes no `why`.
+- **The verdict words are the record's, and there is one set of them.** `fixed`, `partly`,
+  `stays` and `not_assessed`, in `understand.md`'s tables, in its worked example and in the blind
+  brief's own JSON — which said `yes | partly | no` until this landed. Nothing maps anything, which
+  is the point: a mapping is a step that can be skipped silently. `not_assessed` is the one the
+  blind session never sends, because it means **nobody scored this option against this problem**,
+  and it is the one verdict that takes no `why`.
 - **A disagreement has to name a finding, so `finding add` it first.** A write naming a finding
   that does not exist is refused, which is the same rule the record is read by: a disagreement
   nothing raises posts a review that never mentions it. An open choice needs no finding; a choice
