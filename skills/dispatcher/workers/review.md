@@ -529,8 +529,9 @@ that state except writing the draft again.
 ]
 ```
 
-A `prose` block is carried through character for character. A `finding` block gets **one
-composed heading** — `### {Severity} · F{seq} · {title}` — and then its text. The severity in
+Each block's `text` is GitHub-flavoured markdown, and a `prose` block is carried through
+character for character — the document is JSON, the blocks inside it are not. A `finding` block
+gets **one composed heading** — `### {Severity} · F{seq} · {title}` — and then its text. The severity in
 that heading is the finding's **live** severity, read at compose time, which is what makes a
 regrade change the heading instead of leaving a second copy of the severity to argue with it.
 
@@ -549,7 +550,7 @@ composed by Review Desk 0.1.0: **every check in `review_lint.py` passes**, and o
 | each Blocker, Should, Question and **each Nit** you are raising | one `finding`, in severity order | one block is what a decision needs |
 | the folded provenance block, with `Suppressed` | one `prose` | it is the last thing in the body, and nothing decides on it |
 
-Four things that table does not say on its own:
+Five things that table does not say on its own:
 
 - **Write only the title; the heading is not yours.** `### 🟠 Should · S1 · …` would compose to
   `### Should · F1 · ### 🟠 Should · S1 · …`. The glyph is gone from a section heading and the id
@@ -562,6 +563,10 @@ Four things that table does not say on its own:
   a thread: a nit folded into another finding's block has no block of its own, so every decision
   about it is refused. Where the volume is the problem, hold the nit back or suppress it with a
   reason — both are on the record — rather than grouping it out of reach of a decision.
+- **Every posted finding gets a block, past three.** The house style's "at most three findings
+  raised in the body" and "the body is triage" are about a body you write whole; here the body
+  *is* the blocks, and a finding left out of them cannot be cut or regraded. Raise fewer
+  findings if there are too many — do not write fewer blocks than you raised.
 - **One block per finding, and only for a finding that posts.** A second block about one finding
   is refused, and so is a block about a finding that is `held_back`, `suppressed`, or carried
   into this round as `fixed`, `accepted`, `withdrawn` or `ticketed`. What the round found about

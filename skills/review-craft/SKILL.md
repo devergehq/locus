@@ -210,8 +210,8 @@ with no severity glyph and the id `F{seq}`, and its `in diff` tag and dispositio
 line beneath rather than in the heading. Both moved for one reason: where a record holds the
 draft it *composes* that heading from the finding's live severity and number, so a glyph nobody
 needed and a status that changes could not stay in it. `review_lint.py` gains
-`sections.status_line`, which checks that line for both the tag and the chip — nothing was relaxed, and
-the composed body passes the linter's other 23 checks unchanged. Each nit raised gets its own
+`sections.status_line`, which checks that line for both the tag and the chip — nothing was
+relaxed, and the composed body passes every other check in it unchanged. Each nit raised gets its own
 section too: "Nits group" was always a rule about threads, and a nit folded into another
 finding's section cannot be cut, regraded or rewritten. Argued in `house-style.md` under "Fit
 GitHub's column".

@@ -35,6 +35,15 @@ matters most.
 default, and measured tools raise 1.1–3.4 findings per PR. Anything past three goes inline only,
 or into a collapsed "Also found" list. If everything is important, nothing is.
 
+**Both of those rules are about a body an agent writes whole. Where a record composes the body
+from blocks, every posted finding is a section in it, and the cap moves to the findings
+themselves.** It has to: a block is the unit a per-finding decision rewrites, and a finding
+written only as a thread has no block, so cutting or regrading it is refused outright. Hiding the
+fourth finding from the body would hide it from the developer's decision, which is the opposite
+of what the body is for there. So the lever on volume is the **Volume** rule at the bottom of this
+file — raise fewer findings, hold the rest back or suppress them with a reason — and not the
+body's shape. Nothing above is relaxed for a body you write yourself: three is still three.
+
 ## Whose name is on it
 
 - **Self-review on our own PR** — an agent pre-review, like Greptile's. It carries the
@@ -348,8 +357,8 @@ an unbroken token over 40, and budgets each finding section the way it budgets a
 without failing, on a body diagram that is not under a finding or Problem fit.
 
 **A section heading is `### {Severity} · {id} · {title}` and nothing else — no glyph.** The word
-already carries the severity, which this file says four sections down, and the glyph was the only
-thing in that heading a reader did not need. The id is **`F{seq}`**, the finding's number: where
+already carries the severity — "Casing and formatting" below says so outright — and the glyph was
+the only thing in that heading a reader did not need. The id is **`F{seq}`**, the finding's number: where
 Review Desk holds the review that number is its identity across rounds, allocated once for the
 pull request, and the heading is **composed from the record** rather than typed. Where there is
 no Review Desk, keep your own id in the same slot. This heading used to read
@@ -360,13 +369,13 @@ in the example above — not in the heading, which a record composes and which t
 carry a status that changes. On a thread they are on the title line, and that has not moved; the
 two layouts differ here because one heading is written and the other is derived.
 `review_lint.py`'s `sections.status_line` checks that line for **both**, exempting Nits exactly
-as `threads.disposition_top` does. Both halves, because a chip on its own is matched by
-`**What** · `handle` returns …` — the next line of every well-formed finding — so a chip-only
-check passed a body with its whole status line deleted. The tag is prose no other part of the
-shape carries.
+as `threads.disposition_top` does. Both halves, because a chip on its own is matched by the
+`**What** ·` line that follows it in every well-formed finding — so a chip-only check passed a
+body whose whole status line had been deleted. The tag is prose no other part of the shape
+carries.
 
 **Where a record holds the draft, each Nit raised gets its own section**, overriding "Nits group"
-below for this one case. Grouping was always a rule about *threads*, where five collapsed nits
+above for this one case. Grouping was always a rule about *threads*, where five collapsed nits
 save a reader five scrolls. A section is not a thread: it is the unit a per-finding decision
 rewrites, so a nit folded into another finding's section cannot be cut, regraded or rewritten at
 all. Volume is still the right worry — the answer is to hold the nit back or suppress it with a

@@ -225,14 +225,14 @@ run >/dev/null
 ok "a section over a thread's budget fails"     "$(rule sections.budget)" yes
 ok "but not the index word count"               "$(rule index.length)" no
 
-# The status line, which moved out of the heading because a record composes the heading. Three of
-# these four are controls: `sections.status_line` is a new check and its first two drafts were
-# unfalsifiable, so each way of breaking it is pinned beside the pass.
+# The status line, which moved out of the heading because a record composes the heading. Most of
+# what follows is controls rather than tests: `sections.status_line` is a new check and its first
+# two drafts were unfalsifiable, so each way of breaking it is pinned beside the pass.
 printf '\n%s\n' "The status line a composed heading cannot carry"
 fixture "[$(review 9001 principal "$work/sectioned.md")]" '[]'
 ok "the house section carries tag and chip"     "$(run)$(rule sections.status_line)" "0no"
-# A chip alone is matched by `**What** · `handle` ...`, the line below it in every well-formed
-# finding, so deleting the status line outright has to fail. On the first draft it did not.
+# A chip alone is matched by the `**What** ·` line below it in every well-formed finding, so
+# deleting the status line outright has to fail. On the first draft of the check it did not.
 sed '/^\*\*in diff\*\* · `Open — needs a decision`$/d' "$work/sectioned.md" > "$work/nostatus.md"
 ok "the status-line reversal removed one line"  "$(grep -c 'in diff' "$work/nostatus.md")" 0
 fixture "[$(review 9001 principal "$work/nostatus.md")]" '[]'

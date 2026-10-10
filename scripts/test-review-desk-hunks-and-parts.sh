@@ -31,7 +31,10 @@ lint="$root/skills/review-craft/review_lint.py"
 
 work=$(mktemp -d)
 server=
-cleanup () { [ -n "$server" ] && kill "$server" 2>/dev/null; rm -rf "$work"; }
+cleanup () {
+  if [ -n "$server" ]; then kill "$server" 2>/dev/null || true; fi
+  rm -rf "$work"
+}
 trap cleanup EXIT
 mkdir -p "$work/bin"
 
@@ -286,6 +289,12 @@ ok "without Review Desk it is one markdown draft"    "$(grep -c "Without Review 
 ok "the house style carries the section's shape"     "$(grep -c 'A section heading is `### {Severity} · {id} · {title}`' "$style")" 1
 ok "  and where the status line goes"                "$(grep -c 'go on the section.s first line' "$style")" 1
 ok "  and that a nit there is not grouped"           "$(grep -c 'each Nit raised gets its own section' "$style")" 1
+# The other rule the composition overrides, and the one that would have been left contradicting
+# itself: "at most three findings raised in the body" is about a body an agent writes whole, and
+# a finding with no block cannot be decided on at all.
+ok "  and that the three-in-the-body cap moves"      "$(grep -c 'the cap moves to the findings' "$style")" 1
+ok "  with the brief saying so where blocks are written" "$(grep -c 'Every posted finding gets a block, past three' "$brief")" 1
+ok "  and nothing relaxed for a body you write"      "$(grep -c 'three is still three' "$style")" 1
 
 # =============================================================================================
 printf '\nB. the hunk, built from a fixture repository\n'
@@ -451,10 +460,13 @@ APPLY
 mkdir -p "$work/add"
 python3 "$work/apply.py" "$work/spec.json" "$work/findings.json" "$fix" "$base" "$head" \
     "$work/add" > "$work/applied.txt"
+# The rule, as one expression: of the findings git says are in the change, how many are missing
+# a field. Named here so section E's control can run the identical expression over a set that
+# has had its hunks stripped, rather than re-implementing the rule it is meant to reverse.
+incomplete () { grep ' in ' "$1" | grep -vc 'hunk,flagged_line,inline_comment' || true; }
 ok "two of the five findings are in the change"      "$(grep -c ' in ' "$work/applied.txt")" 2
 ok "  and three are not"                             "$(grep -c ' out ' "$work/applied.txt")" 3
-ok "every in-change finding carries all three"       "$(grep ' in ' "$work/applied.txt" \
-    | grep -vc 'hunk,flagged_line,inline_comment')" 0
+ok "every in-change finding carries all three"       "$(incomplete "$work/applied.txt")" 0
 ok "  which is the rule, not the fixture"            "$(grep -c 'hunk,flagged_line,inline_comment' "$work/applied.txt")" 2
 ok "no out-of-change finding carries a hunk"         "$(grep ' out ' "$work/applied.txt" \
     | grep -c hunk)" 0
@@ -571,9 +583,9 @@ import json, pathlib, sys
 doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
 out = pathlib.Path(sys.argv[2])
 (out / "badline.json").write_text(json.dumps(dict(doc, flagged_line=99)))
-removed = json.loads(json.dumps(doc))
-# The line the removal holds: no number names it, which is the point.
-(out / "badremoved.json").write_text(json.dumps(dict(removed, flagged_line=0)))
+# A removal carries no number at all, so there is no value that names one -- which is why the
+# control for it is an out-of-range number rather than "the removal's line": that line has none.
+(out / "badremoved.json").write_text(json.dumps(dict(doc, flagged_line=0)))
 newline = json.loads(json.dumps(doc))
 newline["hunk"]["lines"][0]["text"] = "two\nlines"
 (out / "badnewline.json").write_text(json.dumps(newline))
@@ -587,6 +599,17 @@ BAD
 
   printf '\n  the draft, written in parts\n'
   ok "the sections document is accepted"             "$(rc draft put --review "$rid" --sections "$work/blocks.json")" 0
+  # The one silent failure worth an assertion of its own: a `--sections` write that left the
+  # draft at `drafting` would keep it out of the developer's inbox, and the review would wait
+  # for an approval nobody had been asked for. `--file` marks it ready; so must this.
+  status () { review-desk draft show --review "$1" --json | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['draft']['status'])"; }
+  ok "  and the draft is ready, not drafting"        "$(status "$rid")" ready
+  review-desk draft put --review "$rid" --sections "$work/blocks.json" --drafting > /dev/null
+  ok "  while --drafting keeps it out of the inbox"  "$(status "$rid")" drafting
+  review-desk draft put --review "$rid" --sections "$work/blocks.json" > /dev/null
+  ok "  and a plain write puts it back to ready"     "$(status "$rid")" ready
   review-desk draft show --review "$rid" --json \
     | python3 -c "
 import json, sys
@@ -595,10 +618,18 @@ open('$work/real.md', 'w').write(json.load(sys.stdin)['draft']['body'])"
       && echo same || echo differs)" same
   ok "  which the linter passes on the real body"    "$(linted "$work/real.md")" 0
   ok "  on every one of its checks"                  "$(checks)" all
-  ok "a block about a finding with no block twice is refused" "$(python3 -c "
+  # One finding, two blocks: the heading is composed from the finding, so a second block would
+  # repeat it. The refusal happens before anything is written, so the good blocks above survive
+  # it -- which the decisions below depend on.
+  python3 -c "
 import json
-b = json.load(open('$work/blocks.json'))
-json.dump(b + [b[2]], open('$work/twice.json', 'w'))"; rc draft put --review "$rid" --sections "$work/twice.json")" 1
+blocks = json.load(open('$work/blocks.json'))
+json.dump(blocks + [blocks[2]], open('$work/twice.json', 'w'))"
+  ok "a second block about one finding is refused"   "$(rc draft put --review "$rid" --sections "$work/twice.json")" 1
+  ok "  and the body it refused is still the first"  "$(review-desk draft show --review "$rid" --json \
+      | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['draft']['body'] == open('$work/composed.md').read())")" True
 
   printf '\n  cut, regrade and rewrite, for every posted finding\n'
   review-desk serve --port 0 --json > "$work/serve.out" 2>&1 &
@@ -676,28 +707,28 @@ ok "no context draws four lines, not ten"            "$(python3 -c "
 import json
 print(len(json.load(open('$work/nohunk.json'))['lines']))")" 4
 
-# The rule crossing, and the defect DEV-891 is named after: a session that stored no hunk. Strip
-# the hunk from every document and the in-change rule must say so.
-python3 - "$work/add" <<'STRIP'
-import json, pathlib, sys
-out = pathlib.Path(sys.argv[1])
-for path in sorted(out.glob("f*.json")):
-    doc = json.loads(path.read_text())
-    doc.pop("hunk", None)
-    doc.pop("flagged_line", None)
-    (out.parent / ("stripped-" + path.name)).write_text(json.dumps(doc, sort_keys=True))
-STRIP
-ok "the strip reversal left no hunk anywhere"         "$(grep -l hunk "$work"/stripped-f*.json \
+# The defect DEV-891 is named after: a session that stored no hunk. `apply.py` with its hunk
+# step reversed produces exactly that record, and the SAME expression section B passes has to
+# fail on it.
+sed 's/^        if built.returncode == 0:$/        if False:  # HUNK STEP REVERSED/' \
+    "$work/apply.py" > "$work/nohunk.py"
+ok "the hunk-step reversal changed one line"          "$(grep -c 'HUNK STEP REVERSED' "$work/nohunk.py")" 1
+mkdir -p "$work/stripped"
+python3 "$work/nohunk.py" "$work/spec.json" "$work/findings.json" "$fix" "$base" "$head" \
+    "$work/stripped" > "$work/stripped.txt"
+ok "  and left no finding in the change at all"       "$(grep -c ' in ' "$work/stripped.txt")" 0
+ok "  so no document carries a hunk"                  "$(grep -l '"hunk"' "$work"/stripped/f*.json \
     2>/dev/null | wc -l | tr -d ' ')" 0
-ok "a finding in the change with no hunk is caught"   "$(python3 -c "
-import json, pathlib
-# The same rule section D asserts: in the change, so all three fields are required.
-missing = []
-for n in (1, 2):
-    doc = json.loads(pathlib.Path('$work/stripped-f%d.json' % n).read_text())
-    if not all(doc.get(k) for k in ('hunk', 'flagged_line', 'inline_comment')):
-        missing.append(n)
-print(missing)")" "[1, 2]"
+# With nothing reading as in-change, `incomplete` has nothing to count -- so the control that
+# matters is the one that KEEPS the in-change answer and drops only the fields.
+python3 - "$work/applied.txt" "$work/half.txt" <<'HALF'
+import pathlib, sys
+rows = pathlib.Path(sys.argv[1]).read_text().split("\n")
+pathlib.Path(sys.argv[2]).write_text("\n".join(
+    r.split(" in ")[0] + " in " if " in " in r else r for r in rows))
+HALF
+ok "the field reversal emptied the field list"        "$(grep -c ' in $' "$work/half.txt")" 2
+ok "an in-change finding with no fields is caught"    "$(incomplete "$work/half.txt")" 2
 
 # The composition, reversed: a glyph typed into the title composes twice.
 python3 - "$work/blocks.json" "$work/glyph.json" <<'GLYPH'
