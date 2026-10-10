@@ -109,6 +109,31 @@ def sections(md: str) -> list[tuple[str, str]]:
             for i, m in enumerate(heads) if FINDING_HEAD.fullmatch(m.group(0))]
 
 
+def first_line(section: str) -> str:
+    """The section's first line of content, below its heading."""
+    return next((l for l in section.splitlines()[1:] if l.strip()), "")
+
+
+# The status line a finding section opens with: the in-diff tag, then the disposition as a code
+# span. A section heading may be *composed* rather than written — Review Desk builds
+# `### {Severity} · F{seq} · {title}` from the finding's live severity and number — so a status
+# that changes cannot live in it, and house style gives it the line beneath instead.
+#
+# BOTH halves are required, and the tag is what makes the check mean anything. A chip alone
+# matches `**What** · `handle` returns …`, which is the next line of every well-formed finding:
+# measured on a two-finding body, deleting the whole status line still passed a chip-only check.
+# The tag is prose no other part of the shape carries.
+IN_DIFF = re.compile(r"\b(in diff|pre-existing)\b", re.I)
+CHIP = re.compile(r"·\s*`[^`]+`")
+
+# A heading's severity is NOT read with `SEV`: that pattern requires the word in bold, which is
+# right for a thread's title line and wrong for a heading, where the word stands on its own.
+# Reading section severities with `SEV` returned "" for every one of them, which made every
+# section exempt from the check below and the check itself unfalsifiable. First occurrence, not
+# last: the severity opens the heading and a title may legitimately contain the word again.
+HEAD_SEV = re.compile(r"\b(Blocker|Should|Nit|Question)\b")
+
+
 # GitHub renders a body in a ~760px column. A table wider than that is not scrolled: its cells
 # are squeezed, and long words are broken between letters ("Que stio n"). Two things cause it —
 # a prose cell that claims the width, and a token too long to wrap. Thresholds are set to catch
@@ -388,14 +413,24 @@ def main():
     L.check(not bad_parts, "threads.four_parts", f"{len(bad_parts)} missing What/Why/What I'd do")
     L.check(not no_disp, "threads.disposition_top", f"{len(no_disp)} without a disposition chip")
     L.check(not over, "threads.budget", "; ".join(over[:3]))
-    over_sec = []
+    over_sec, sec_no_disp = [], []
     for head, sec in found:
         held = count_findings([head])
         budget, n = (700 if held == 1 else 250 * held), len(prose(sec))
         if n > budget:
             over_sec.append(f"{prose(head)[:40]} {n}>{budget}")
+        sev = HEAD_SEV.search(head)
+        sev = sev.group(1).lower() if sev else ""
+        line = first_line(sec)
+        # Nits are exempt, exactly as on a thread: the lighter shape is the point of a nit.
+        if ALERT.get(sev) and not (IN_DIFF.search(line) and CHIP.search(line)):
+            sec_no_disp.append(prose(head)[:40])
     if found:
         L.check(not over_sec, "sections.budget", "; ".join(over_sec[:3]))
+        L.check(not sec_no_disp, "sections.status_line",
+                f"{len(sec_no_disp)} section(s) not opening with an in-diff tag and a "
+                "disposition chip — a composed heading cannot carry them; "
+                + "; ".join(sec_no_disp[:2]))
 
     # ---- layout at GitHub's width
     wide, long_tok = [], []
