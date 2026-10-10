@@ -1191,6 +1191,40 @@ for problem in d["problems"]:
 open(sys.argv[2], "w").write("\n".join(out) + "\n")
 POUR
 
+cat > "$work/limitslots.py" <<'LIMITS'
+"""Every slot `brief_lint.py --limits` cites, and whether `understand.md` still defines it.
+
+A provenance line attributes a limit to a quoted slot: `understand.md, Understand:
+'Supporting table ... 3-4 rows'`. The name is the part before the ellipsis. Lines that quote a
+Length cell rather than a slot ('One sentence, at most 20 words') name no slot and are skipped.
+
+This exists because the drift happened: DEV-883 renamed "How it works today" and `--limits`
+went on citing it, so the one place a limit says where it came from pointed at a slot that no
+longer existed. Both halves are in the same repository and nothing crossed them.
+"""
+import re, subprocess, sys
+
+limits = subprocess.run([sys.executable, sys.argv[1], "--limits"],
+                        capture_output=True, text=True, check=True).stdout
+cited = set()
+for quoted in re.findall(r"understand\.md,[^']*'([^']*)'", limits):
+    if " ... " in quoted:
+        cited.add(quoted.split(" ... ")[0].strip())
+
+defined = set()
+lines = open(sys.argv[2]).read().split("\n")
+for index, line in enumerate(lines):
+    if line.startswith("| Slot | What goes in it"):
+        for row in lines[index + 2:]:
+            if not row.startswith("|"):
+                break
+            match = re.match(r"\| \*\*([^*]+)\*\*", row)
+            if match:
+                defined.add(match.group(1).strip())
+
+print(" ".join(sorted(cited - defined)) or "none")
+LIMITS
+
 brief_md="$root/skills/dispatcher/workers/review.md"
 understand_md="$root/skills/review-craft/understand.md"
 # `ask <expr> [file]` answers one question about that reading, so an assertion reads as the
@@ -1480,17 +1514,28 @@ ok "an unknown field is exit 1, not exit 2"         "$(rc brief put --review 4 -
 ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the structured brief' "$brief_md")" 1
 
 printf '\n  the brief is linted before it is sent, and never before that\n'
-# brief_lint.py arrives with DEV-884 (#72). These assert what workers/review.md TELLS a worker
-# to run and when; the assertion that the document above actually passes the linter waits for
-# that merge, and is the one thing in this block still owed.
+# The first two assertions RUN the linter over the two documents this harness built, which is
+# the whole point: review.md tells a worker to write a brief that passes it, and the document
+# the brief's own tables prescribe is the one being measured. The rest assert what review.md
+# tells a worker to run and when.
+lint () { set +e; python3 "$root/skills/review-craft/brief_lint.py" "$@" > "$work/lint" 2>&1
+          echo $?; set -e; }
+ok "the whole brief this harness built passes the linter" "$(lint "$work/full.json")" 0
+ok "  on every one of its rules"                    "$(sed -n 's|^\([0-9]*\)/\1 checks passed$|all|p' "$work/lint")" all
+ok "the problem half does NOT pass it"              "$(lint "$work/half.json")" 1
+# `^FAIL  [a-z]` is the rule rows; the linter's closing verdict line is `FAIL — ...` and
+# counting it made four failures read as five.
+ok "  failing the four the brief names, and no more" "$(grep -c '^FAIL  [a-z]' "$work/lint")" 4
+ok "  which are the change half, every one"         "$(grep '^FAIL  [a-z]' "$work/lint" | awk '{print $2}' | sort | tr '\n' ' ')" "headline.present picture.after problems.marked_after problems.now_line "
+ok "every slot --limits cites is one understand.md defines" "$(python3 "$work/limitslots.py" \
+    "$root/skills/review-craft/brief_lint.py" "$understand_md")" none
 ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
 ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
 ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
 ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint write 1' "$brief_md")" 1
-# The number was MEASURED by running DEV-884's linter over the harness's own half.json: 4 of 16,
-# and the four the sentence names. It is a string pin until #72 merges, at which point it becomes
-# a run -- the first version of this assertion pinned 6, which was a count off a malformed
-# fixture and which the sentence's own list contradicted.
+# The number in the prose, crossed against the run three assertions above. The first version
+# pinned 6, a count off a malformed fixture that the sentence's own list contradicted; it is 4,
+# and now a document that drifts fails the run rather than only the grep.
 ok "  with the count it would fail by"              "$(grep -c '4 of its 16 checks fail' "$brief_md")" 1
 ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
 ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
@@ -1595,6 +1640,15 @@ sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given` |/| **What the p
 ok "the member reversal changed one line"              "$(grep -c 'blind_pass.handed' "$work/badfield.md")" 1
 ok "  and it is the root check that does NOT catch it" "$(ask "d['unknown_roots']" "$work/badfield.md")" "[]"
 ok "a renamed member is caught by the page coverage"   "$(ask "d['missing_contract']" "$work/badfield.md")" "['blind_pass.given']"
+
+# The control for the limits crossing, and the drift it is named after: DEV-883 renamed
+# "How it works today" and `--limits` went on citing it, in the same repository, with nothing
+# crossing the two. Put the old name back and the crossing must say so.
+sed "s/'Supporting table \.\.\. 3-4 rows'/'How it works today ... 3-4 rows'/" \
+    "$root/skills/review-craft/brief_lint.py" > "$work/badlimits.py"
+ok "the citation reversal changed one line"            "$(grep -c "How it works today \.\.\. 3-4 rows" "$work/badlimits.py")" 1
+ok "a limit citing a slot that is gone is caught"      "$(python3 "$work/limitslots.py" \
+    "$work/badlimits.py" "$understand_md")" "How it works today"
 
 sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
     "$brief_md" > "$work/badslot.md"

@@ -59,8 +59,9 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
      "DEV-884's table said 25; Patrick ruled 'at most 20' on 10 Oct 2026. The approved board ran "
      "19, and Review Desk's real-length brief runs 20"),
     ("line.words", 'A problem\'s "was wrong" or "now" line', 20,
-     "DEV-884, measured from the approved board of 10 Oct 2026, where the longest ran 16. "
-     "understand.md states the slot as 'two lines each' and sets no number"),
+     "understand.md, Understand: 'Was wrong / now ... at most 20 words a line'. DEV-884 "
+     "measured it from the approved board of 10 Oct 2026, where the longest ran 16, and the "
+     "slot carries the number now rather than only the two lines"),
     ("box.title.words", "A flow box title", 12,
      "DEV-884, from the approved board of 10 Oct 2026, where the longest ran 10"),
     ("box.note.words", "A flow box note", 14,
@@ -81,12 +82,14 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
      "understand.md, rule 3: parallel things are a table, and the characteristic failure is "
      "one sentence of three clauses joined by semicolons. Two semicolons are three clauses"),
     ("option.title.words", "An option's title", 12,
-     "understand.md, Alternatives: 'a title under 12 words', read as an inclusive cap the way the "
-     "headline is, per Patrick's ruling of 10 Oct 2026. No board measurement for this slot; "
-     "Review Desk's real-length brief runs 11 across eight options"),
+     "understand.md, Alternatives: 'Options ... a title of at most 12 words', an inclusive cap "
+     "the way the headline is, per Patrick's ruling of 10 Oct 2026. No board measurement for "
+     "this slot; Review Desk's real-length brief runs 11 across eight options"),
     ("support.rows", "Rows in the supporting table", (3, 4),
-     "understand.md, Understand: 'How it works today ... 3-4 rows' — the board's three questions, "
-     "each with one owner. Checked only when the brief holds a table: the contract serves null "
+     "understand.md, Understand: 'Supporting table ... 3-4 rows' — the board's three questions, "
+     "each with one owner. It was 'How it works today' until DEV-883 split that slot in two, "
+     "because the name covered both a paragraph of plain words and this table and they are "
+     "different fields. Checked only when the brief holds a table: the contract serves null "
      "when it holds none. The approved board ran 3"),
     ("leak.title.words", "Shortest title checked against the problem half", 3,
      "Not a budget. A title of one or two words — 'Web export' — appears in any honest problem "
