@@ -83,6 +83,13 @@ case "$mode" in
     echo '{"reviews":[]}'; exit 0 ;;
   unexecutable) exit 126 ;;
 esac
+# mode ok. `brief` and `finding` are not answered from a recorded document, because what is
+# under test for those is the SHAPE of what a review worker is told to write rather than what
+# the dispatcher does with an answer. $RDWORK/rd_brief.py stands in for the store's own
+# validation instead.
+case "$1" in
+  brief|finding) exec python3 "$RDWORK/rd_brief.py" "$@" ;;
+esac
 # mode ok: answer from a per-repository document if one exists, else the shared one.
 doc="$RDWORK/rd.work"
 for a in "$@"; do
@@ -97,6 +104,215 @@ sed -i.bak '1a\
 prev=""
 ' "$work/bin/review-desk" && rm -f "$work/bin/review-desk.bak"
 chmod +x "$work/bin/review-desk"
+
+# ---- the stand-in's brief and finding ------------------------------------------------------
+# The other commands answer from a recorded document. These two validate instead, because the
+# behaviour under test is whether the document `workers/review.md` tells a worker to write is
+# one Review Desk accepts. `finding add` validates nothing -- it allocates a sequence number,
+# which is all the brief needs of it: a disagreement has to name a finding that exists.
+#
+# EVERY RULE BELOW WAS READ OFF THE REAL BINARY, by building review-desk's origin/master at
+# 8631335 (DEV-882) and running it against a temporary database. The accepted field list is
+# that binary's own refusal message, verbatim:
+#
+#   unknown field `blind_pass_state`, expected one of `problem`, `diagram`, `option_map`,
+#   `options`, `approach_verdict`, `provenance`, `confirmation_required`,
+#   `confirmation_not_required_because`, `headline`, `how_it_works_today`,
+#   `flow_before_caption`, `flow_after_caption`, `flow_before`, `flow_after`, `problems`,
+#   `support_table`, `blind_pass`, `parts`, `open_choices`, `disagreements`
+#
+# It is pinned here rather than read from `brief put --help` at run time for the reason the
+# whole harness keeps the real binary off PATH: the one most likely to be installed on the
+# machine running this is OLDER than DEV-882 and would pin the list as it was before the
+# fields existed. Nothing here writes outside $RDWORK.
+
+cat > "$work/rd_brief.py" <<'RDBRIEF'
+import json, os, pathlib, sys
+
+ACCEPTED = {
+    "problem", "diagram", "option_map", "options", "approach_verdict", "provenance",
+    "confirmation_required", "confirmation_not_required_because", "headline",
+    "how_it_works_today", "flow_before_caption", "flow_after_caption", "flow_before",
+    "flow_after", "problems", "support_table", "blind_pass", "parts", "open_choices",
+    "disagreements",
+}
+# What `brief problem-statement` serves, and the whole of it. Built by naming what belongs in
+# it, never by subtracting, which is the contract's own argument: a read that subtracts grows
+# a leak every time the brief grows a field.
+SERVED = ("problem", "how_it_works_today", "flow_before_caption", "flow_before", "problems")
+VERDICTS = {"fixed", "partly", "stays", "not_assessed"}
+
+work = pathlib.Path(os.environ["RDWORK"])
+
+
+def refuse(message):
+    sys.stderr.write("review-desk: %s\n" % message)
+    raise SystemExit(1)
+
+
+def opt(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv else default
+
+
+def load(review):
+    path = work / ("rd.brief.%s.json" % review)
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def put(argv, review):
+    source = opt(argv, "--file")
+    raw = sys.stdin.read() if source == "-" else pathlib.Path(source).read_text()
+    doc = json.loads(raw)
+
+    unknown = sorted(set(doc) - ACCEPTED)
+    if unknown:
+        refuse("cannot use the JSON: unknown field `%s`" % unknown[0])
+    if not doc.get("problem"):
+        refuse("problem is required")
+
+    required = doc.get("confirmation_required", True)
+    if required is False and not doc.get("confirmation_not_required_because"):
+        refuse("confirmation_not_required_because is required when confirmation_required is false")
+    held = load(review)
+    if held is not None and held.get("confirmation_required", True) is True and required is False:
+        refuse('confirmation_required holds "false", which is not a valid confirmation_required; '
+               "this brief was written as requiring the developer's confirmation, and a "
+               "confirmation already asked for cannot be withdrawn by rewriting the brief")
+
+    numbers = set()
+    for problem in doc.get("problems", []):
+        number = problem.get("number")
+        if not isinstance(number, int) or number < 1:
+            refuse("problems[].number holds %r; one or more" % number)
+        if number in numbers:
+            refuse("problems[].number %d appears twice" % number)
+        numbers.add(number)
+    for field in ("flow_before", "flow_after"):
+        for row in doc.get(field, []):
+            for box in row:
+                mark = box.get("problem")
+                if mark is not None and mark not in numbers:
+                    refuse("%s names problem %s, which this brief does not carry" % (field, mark))
+            if not 1 <= len(row) <= 3:
+                refuse("%s has a row of %d boxes; one to three" % (field, len(row)))
+
+    if "option_map" in doc and "options" in doc:
+        refuse("option_map and options are the same fact; giving both is refused")
+
+    keys = set()
+    for option in doc.get("options", []):
+        if option.get("key") in keys:
+            refuse("options[].key %s appears twice" % option.get("key"))
+        keys.add(option.get("key"))
+        if not option.get("argument_for") or not option.get("argument_against"):
+            refuse("options[].argument_for and .argument_against are required")
+        for verdict in option.get("verdicts", []):
+            if verdict.get("problem") not in numbers:
+                refuse("options[].verdicts[].problem names problem %s, which this brief does "
+                       "not carry" % verdict.get("problem"))
+            if verdict.get("verdict") not in VERDICTS:
+                refuse("options[].verdicts[].verdict holds %r" % verdict.get("verdict"))
+            if verdict.get("verdict") != "not_assessed" and not verdict.get("why"):
+                refuse("options[].verdicts[].why is required for every verdict but not_assessed")
+
+    for part in doc.get("parts", []):
+        for fixes in part.get("fixes", []):
+            if fixes not in numbers:
+                refuse("parts[].fixes names problem %s, which this brief does not carry" % fixes)
+        for entry in part.get("files", []):
+            if entry.get("in_diff") is False and (entry.get("lines_added") or
+                                                  entry.get("lines_removed")):
+                refuse("parts[].files[] claims a file outside the diff with lines changed")
+
+    blind = doc.get("blind_pass")
+    if blind is not None:
+        if not blind.get("given") or not blind.get("looked_up"):
+            refuse("blind_pass.given and blind_pass.looked_up are required")
+        if (blind.get("pick_key") is None) != (blind.get("pick_why") is None):
+            refuse("blind_pass.pick_why is non-null exactly when blind_pass.pick_key is")
+        if blind.get("pick_key") is not None and blind["pick_key"] not in keys:
+            refuse('blind_pass.pick_key holds "%s", which is not a valid blind_pass.pick_key; '
+                   "expected one of: the key of one of this brief's own options"
+                   % blind["pick_key"])
+    else:
+        # The other direction, and the one the `not_run` row of review.md's state table is
+        # written against: an option attributed to a pass the brief does not record would badge
+        # the Alternatives page "Blind" with no blind column to put it in. Without this the
+        # `not_run` recipe had no control -- a brief that omitted `blind_pass` and left an
+        # option on `blind_pass` read green here and exits 1 against the real store.
+        for option in doc.get("options", []):
+            if option.get("proposed_by") in ("blind_pass", "both"):
+                refuse("options.proposed_by holds option %s: %s; an option from a pass this "
+                       "brief does not record is a pass nothing can show"
+                       % (option.get("key"), option.get("proposed_by")))
+
+    counter = work / ("rd.findings.%s" % review)
+    highest = int(counter.read_text()) if counter.exists() else 0
+    pointers = [(row.get("finding_seq"), True) for row in doc.get("disagreements", [])]
+    # An open choice MAY name a finding and is checked the same way when it does -- a choice is
+    # a choice, not a fault, but a pointer that dangles is a pointer that dangles.
+    pointers += [(choice.get("finding_seq"), False) for choice in doc.get("open_choices", [])]
+    for seq, must in pointers:
+        if seq is None and not must:
+            continue
+        if seq is None or not 1 <= seq <= highest:
+            refuse("brief refers to finding %s/%s, which does not exist" % (review, seq))
+
+    (work / ("rd.brief.%s.json" % review)).write_text(json.dumps(doc))
+    # Both derived, by the contract's own rules, so a test can assert the state a document
+    # produces rather than a state somebody wrote.
+    if blind is None:
+        state = "not_run"
+    elif any(o.get("proposed_by") in ("blind_pass", "both") for o in doc.get("options", [])):
+        state = "ran"
+    else:
+        state = "ran_and_found_nothing"
+    (work / ("rd.state.%s" % review)).write_text(state)
+    (work / ("rd.layer2.%s" % review)).write_text("done" if required is False
+                                                  else "waiting_on_you")
+    print("brief stored for review %s" % review)
+
+
+def problem_statement(argv, review):
+    doc = load(review)
+    if doc is None:
+        refuse("no brief for review %s" % review)
+    served = {
+        "review_id": int(review),
+        "problem": doc.get("problem"),
+        "how_it_works_today": doc.get("how_it_works_today"),
+        "flow_before_caption": doc.get("flow_before_caption"),
+        "flow_before": doc.get("flow_before", []),
+        "problems": [{"number": p.get("number"), "was_wrong": p.get("was_wrong")}
+                     for p in doc.get("problems", [])],
+    }
+    if "--json" in argv:
+        print(json.dumps({"problem_statement": served}, sort_keys=True))
+        return
+    print("review %s — the problem, and nothing of the change" % review)
+    print("  problem: %s" % served["problem"])
+
+
+def finding_add(argv, review):
+    counter = work / ("rd.findings.%s" % review)
+    seq = (int(counter.read_text()) if counter.exists() else 0) + 1
+    counter.write_text(str(seq))
+    if opt(argv, "--file") == "-":
+        sys.stdin.read()
+    print(seq)
+
+
+argv = sys.argv[1:]
+review = opt(argv, "--review")
+if argv[:2] == ["brief", "put"]:
+    put(argv, review)
+elif argv[:2] == ["brief", "problem-statement"]:
+    problem_statement(argv, review)
+elif argv[:2] == ["finding", "add"]:
+    finding_add(argv, review)
+else:
+    refuse("stand-in: unhandled call: %s" % " ".join(argv))
+RDBRIEF
 
 # ---- the stand-in gh ------------------------------------------------------------------------
 # One case per call dispatcher.py actually makes. An unrecognised call exits 1 loudly rather
@@ -166,6 +382,7 @@ PY
   echo ok > "$work/rd.mode"
   echo '{"work":[]}' > "$work/rd.work"
   rm -f "$work/rd.work."* "$work/pr."*.json "$work/reviews.json"
+  rm -f "$work/rd.brief."*.json "$work/rd.findings."* "$work/rd.state."* "$work/rd.layer2."*
 }
 
 D () { python3 "$disp" --instance "$inst" "$@"; }
@@ -798,6 +1015,597 @@ set +e; D doctor > "$work/out" 2>&1; set -e
 ok "  and reports the default as a default"            "$(says '✓ review mode: blind options pass on (default)')" yes
 
 # =============================================================================================
+printf '\nThe brief, in two writes -- the understanding into the record (DEV-883)\n'
+# `brief put` is the ONLY command that saves any of the understanding, and it REPLACES, so
+# workers/review.md has the worker write it twice: the problem half before step 3 dispatches
+# the blind pass, the whole brief after step 5. Nothing in dispatcher.py issues either call --
+# the worker does, from that brief -- so what is under test here is the brief's own
+# prescription, crossed against the field list the real binary accepts and then driven through
+# the stand-in.
+#
+# The store the stand-in writes lives under $work, like everything else here. REVIEW_DESK_DB is
+# never set and never read, so no test can reach ~/.review-desk even with it installed.
+#
+# NO BRACE IN AN INLINE `python3 -c` INSIDE `$( )`. Bash brace-expands a word before it parses
+# the quoting inside a command substitution, so a Python set or dict literal there splits the
+# word in two, runs the substitution twice with one alternative each, and hands `ok` four
+# arguments. It cost an hour to find; the helpers below exist so no assertion has to.
+
+cat > "$work/brieftable.py" <<'TABLE'
+"""Read workers/review.md's two tables and report what they name.
+
+The slot-to-field table says which field each `understand.md` slot goes in and which of the two
+brief writes it lands in. The pour table says which field each section of the blind pass's
+brief is poured from. Both are prose a worker obeys, so both are crossed here against what the
+real binary accepts and what its problem-only read actually serves.
+"""
+import json, pathlib, re, sys
+
+ACCEPTED = {
+    "problem", "diagram", "option_map", "options", "approach_verdict", "provenance",
+    "confirmation_required", "confirmation_not_required_because", "headline",
+    "how_it_works_today", "flow_before_caption", "flow_after_caption", "flow_before",
+    "flow_after", "problems", "support_table", "blind_pass", "parts", "open_choices",
+    "disagreements",
+}
+SERVED = {"problem", "how_it_works_today", "flow_before_caption", "flow_before", "problems"}
+# One per row of review-desk's contract/README.md, "The brief, by page", plus the three fields
+# a brief written the old way already had. A field this list names and the table does not is a
+# page DEV-885 draws from nothing.
+REQUIRED = [
+    "headline", "how_it_works_today", "flow_before", "flow_before_caption", "flow_after",
+    "flow_after_caption", "problems[].number", ".was_wrong", ".now_fixed", ".detail_title",
+    ".detail_before", ".detail_after", "support_table", "options[].key", "options[].verdicts",
+    ".proposed_by", ".argument_for", ".argument_against", ".chosen", "blind_pass.given",
+    ".pick_key", ".pick_why", ".questions", ".looked_up", "parts[]", ".in_diff",
+    "open_choices[]", "disagreements[]", ".finding_seq", "approach_verdict", "provenance",
+]
+
+
+def rows(lines, header):
+    start = next(i for i, l in enumerate(lines) if l.startswith(header))
+    out = []
+    for line in lines[start + 2:]:
+        if not line.startswith("|"):
+            break
+        out.append([c.strip() for c in line.strip().strip("|").split("|")])
+    return out
+
+
+def tokens(cell):
+    return re.findall(r"`([^`]+)`", cell)
+
+
+def roots(cell):
+    """The top-level fields a Field cell names.
+
+    A token starting with `.` is a sub-path of the token before it, which is how one row can
+    name a field and four of its members without repeating the root five times.
+    """
+    found, current = [], None
+    for token in tokens(cell):
+        if token.startswith("-"):
+            # A flag, not a field path. The Counts slot's destination is `layer set --detail`
+            # rather than a brief field, and a field path never begins with a dash.
+            continue
+        if token.startswith("."):
+            if current:
+                found.append(current)
+        else:
+            current = re.split(r"[\[.]", token)[0]
+            found.append(current)
+    return found
+
+
+def slot_name(cell):
+    """The slot a Slot cell names: the leading bolded phrase, and nothing after it.
+
+    `**Was wrong / now** - the now line` is the "Was wrong / now" slot. A row that qualifies
+    which half of a two-line slot it means is still that slot.
+    """
+    match = re.match(r"\*\*([^*]+)\*\*", cell)
+    return match.group(1).strip() if match else cell
+
+
+def understand_slots(path):
+    """Every slot `understand.md` defines, from its three slot tables and nowhere else.
+
+    By table header, not by "a row starting bold": the worked example has bolded first cells
+    too, and `**The blind pass would pick**` is prose about the Blind pick slot rather than a
+    slot of its own. Reading those as slots would let review.md name one and still pass.
+    """
+    lines = pathlib.Path(path).read_text().split("\n")
+    found = set()
+    for index, line in enumerate(lines):
+        if line.startswith("| Slot | What goes in it"):
+            for row in lines[index + 2:]:
+                if not row.startswith("|"):
+                    break
+                found.add(slot_name([c.strip() for c in row.strip().strip("|").split("|")][0]))
+    return found
+
+
+lines = pathlib.Path(sys.argv[1]).read_text().split("\n")
+
+slots = rows(lines, "| `understand.md` slot | Field | Write |")
+all_tokens, all_roots = [], set()
+write = {"1": set(), "2": set()}
+for slot, field, which in slots:
+    all_tokens += tokens(field)
+    these = roots(field)
+    all_roots |= set(these)
+    write[which.strip("* ")] |= set(these)
+
+joined = " ".join(all_tokens)
+poured = rows(lines, "| Template section | Poured from |")
+pour_roots = sorted({r for _, source in poured for r in roots(source)})
+
+named = {slot_name(slot) for slot, _, _ in slots}
+defined = understand_slots(sys.argv[2]) if len(sys.argv) > 2 else set()
+
+print(json.dumps({
+    "slots_named": sorted(named),
+    "slots_defined": sorted(defined),
+    # A slot review.md names that `understand.md` does not define is a slot a worker has to
+    # improvise. One `understand.md` defines that review.md does not name is a slot with
+    # nowhere to go, which is the defect DEV-883 exists to close -- so both directions.
+    "slots_improvised": sorted(named - defined) if defined else ["(no understand.md given)"],
+    "slots_unsaved": sorted(defined - named) if defined else ["(no understand.md given)"],
+    "roots": sorted(all_roots),
+    "unknown_roots": sorted(all_roots - ACCEPTED),
+    "missing_contract": [r for r in REQUIRED if r not in joined],
+    "write1": sorted(write["1"]),
+    "write2": sorted(write["2"]),
+    "in_both": sorted(write["1"] & write["2"]),
+    "served_expected": sorted(SERVED),
+    "pour_roots": pour_roots,
+    "pour_unserved": [r for r in pour_roots if r not in SERVED],
+    # The other direction. The read serves five fields for the blind brief to be poured from;
+    # one it serves and no template section carries is a field written at write 1 for a reader
+    # who never sees it. `problem` and `flow_before_caption` were both in that state.
+    "pour_unpoured": sorted(SERVED - set(pour_roots)),
+    "pour_sections": [section for section, _ in poured],
+}, sort_keys=True))
+TABLE
+
+# The top-level keys of a JSON document, optionally dropping a prefix. A helper rather than an
+# inline python because its one-liner would need a set literal. See the brace note above.
+cat > "$work/keys.py" <<'KEYS'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+drop = sys.argv[2] if len(sys.argv) > 2 else None
+print(sorted(k for k in doc if not (drop and k.startswith(drop))))
+KEYS
+
+# The pour, done exactly as the brief's table says: The system from how_it_works_today, How it
+# works today from flow_before, What is wrong from problems[].was_wrong.
+cat > "$work/pour.py" <<'POUR'
+import json, sys
+d = json.load(open(sys.argv[1]))["problem_statement"]
+out = ["## The system", d["how_it_works_today"] or "", "", "## How it works today"]
+# One number per ROW, boxes in a split row sharing it -- which is what review.md says and what
+# the real CLI's own plain rendering does. Numbering per box made a split row renumber every
+# step after it, and the first version of this file did exactly that.
+for index, row in enumerate(d["flow_before"], 1):
+    for box in row:
+        out.append("%d. %s - %s" % (index, box["title"], box.get("note") or ""))
+out += ["", "## What is wrong"]
+for problem in d["problems"]:
+    out.append("%d. **%s**" % (problem["number"], problem["was_wrong"]))
+open(sys.argv[2], "w").write("\n".join(out) + "\n")
+POUR
+
+cat > "$work/limitslots.py" <<'LIMITS'
+"""Every quotation `brief_lint.py --limits` attributes to `understand.md`, checked against it.
+
+`--limits` is the one place a limit says where it came from, so a citation quoting text that is
+not there is worse than no table at all. A provenance line reads
+`understand.md, Understand: 'Supporting table ... 3-4 rows'`; the ellipsis joins a slot name to
+the words that carry the number, and **both halves have to occur in the file**.
+
+Checking the whole quotation rather than the slot name is deliberate, and stronger in two ways
+a name check is not: it catches a slot that was renamed (the drift this is named after -- DEV-883
+renamed "How it works today" and `--limits` went on citing it) AND a quotation that was reworded
+where the slot stayed, which is how `'a title under 12 words'` survived DEV-884 changing that
+slot to "at most" in the same commit that wrote the citation. It also needs no slot table, so it
+judges the citations that quote a paragraph rather than a slot.
+
+Prints the count examined and then any fragment that is missing, because an empty result has to
+be distinguishable from a parse that found nothing to examine.
+"""
+import re, subprocess, sys
+
+limits = subprocess.run([sys.executable, sys.argv[1], "--limits"],
+                        capture_output=True, text=True, check=True).stdout
+doc = open(sys.argv[2]).read()
+
+# `[^'\n]` and not `[^']`: a provenance line that quotes nothing -- the semicolons limit cites
+# "understand.md, rule 3" in prose -- otherwise runs the character class forward off the end of
+# its line into the NEXT limit's display name, where the apostrophe in "An option's title"
+# closes the quote. That match then consumes the real opening quote after it, and because
+# `findall` is non-overlapping the Options citation is never examined at all. Measured: 7
+# captures either way, but 5 usable names instead of 6, with `Options` the one lost -- the exact
+# rename this check exists to catch.
+slots = set()
+lines = doc.split("\n")
+for index, line in enumerate(lines):
+    if line.startswith("| Slot | What goes in it"):
+        for row in lines[index + 2:]:
+            if not row.startswith("|"):
+                break
+            match = re.match(r"\| \*\*([^*]+)\*\*", row)
+            if match:
+                slots.add(match.group(1).strip())
+
+# A citation naming a SECTION quotes a slot, and its name is held to the slot table. One saying
+# "the paragraph" quotes prose and is held to the text. The two need telling apart because a
+# retired slot name can go on occurring in the file as something else: "How it works today" is
+# still the blind brief template's heading for the Before flow, two hundred lines below the slot
+# table it was removed from, so a substring check would have called the rename clean.
+SLOT = re.compile(r"understand\.md, (?:Understand|Alternatives|Solution): '([^'\n]*?) \.\.\. ([^'\n]*)'")
+# `[^'\n]` and not `[^']`: a provenance line that quotes nothing -- the semicolons limit cites
+# "understand.md, rule 3" in prose -- otherwise runs the character class forward off the end of
+# its line into the NEXT limit's display name, where the apostrophe in "An option's title"
+# closes the quote. That match then consumes the real opening quote after it, and because
+# `findall` is non-overlapping the Options citation is never examined at all. Measured: 7
+# captures either way, but 5 usable names instead of 6, with `Options` the one lost -- the exact
+# rename this check exists to catch.
+ANY = re.compile(r"understand\.md,[^'\n]*'([^'\n]*)'")
+
+missing, checked, as_slot = [], 0, set()
+for name, tail in SLOT.findall(limits):
+    checked += 1
+    as_slot.add("%s ... %s" % (name, tail))
+    if name not in slots:
+        missing.append("%s (not a slot)" % name)
+    if tail.strip() not in doc:
+        missing.append(tail.strip())
+# Whatever SLOT did not claim, checked as text. Skipping by what SLOT ACTUALLY captured, not by
+# re-testing the fragment's shape: the paragraph citation also carries an ellipsis, so a shape
+# test skipped it as a slot citation and left it the one quotation nothing examined.
+for fragment in ANY.findall(limits):
+    if fragment in as_slot:
+        continue
+    checked += 1
+    for half in fragment.split(" ... "):
+        if half.strip() and half.strip() not in doc:
+            missing.append(half.strip())
+
+print("%d checked; %s" % (checked, " | ".join(missing) or "none missing"))
+LIMITS
+
+brief_md="$root/skills/dispatcher/workers/review.md"
+understand_md="$root/skills/review-craft/understand.md"
+# `ask <expr> [file]` answers one question about that reading, so an assertion reads as the
+# question it asks.
+ask () { python3 "$work/brieftable.py" "${2:-$brief_md}" "${3:-$understand_md}" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print($1)"; }
+keys () { python3 "$work/keys.py" "$@"; }
+rc () { set +e; review-desk "$@" > "$work/out" 2>"$work/err"; echo $?; set -e; }
+quiet () { set +e; review-desk "$@" > "$work/ps" 2>"$work/err"; set -e; }
+
+instance '{"mode":"auto"}'
+
+printf '\n  the fields the brief names are ones Review Desk accepts, and cover the pages\n'
+ok "no field named is one the store would refuse"   "$(ask "d['unknown_roots']")" "[]"
+ok "  and every field the three pages draw is named" "$(ask "d['missing_contract']")" "[]"
+ok "  the superseded diagram is not among them"     "$(ask "d['roots'].count('diagram')")" 0
+ok "  and the brief says to stop writing it"        "$(grep -c 'Stop writing .diagram.' "$brief_md")" 1
+ok "  the derived state is never written"           "$(grep -c 'never write .blind_pass_state.' "$brief_md")" 1
+
+printf '\n  no slot improvises -- the two files name the same slots\n'
+# review.md's Slot column and understand.md's three slot tables, crossed both ways. One
+# direction catches a field a worker would have to invent a slot for; the other catches a slot
+# with nowhere to go, which is the defect this issue exists to close.
+ok "review.md names no slot understand.md lacks"    "$(ask "d['slots_improvised']")" "[]"
+ok "  and leaves no slot of it unsaved"             "$(ask "d['slots_unsaved']")" "[]"
+ok "  over every slot, not a handful"               "$(ask "len(d['slots_defined']) >= 20")" True
+ok "the colliding slot name is gone"                "$(grep -c '^| \*\*How it works today\*\* |' "$understand_md")" 0
+ok "  replaced by the plain-words slot"             "$(grep -c '^| \*\*The system\*\* |' "$understand_md")" 1
+ok "  and by the table, named as its own slot"      "$(grep -c '^| \*\*Supporting table\*\* |' "$understand_md")" 1
+ok "  with the table called change-half"            "$(grep -c 'Supporting table is change-half' "$understand_md")" 1
+ok "the record's verdict words are in understand.md" "$(grep -c '`fixed`, `partly`, `stays`, or `not_assessed`' "$understand_md")" 1
+ok "  and in the blind brief's own JSON"            "$(grep -c '"verdict": "fixed | partly | stays"' "$understand_md")" 1
+ok "  and the template no longer carries the old ones" "$(grep -c '"verdict": "yes | partly | no"' "$understand_md")" 0
+ok "  which survive only as the revision's quotation" "$(grep -c 'used to say .yes | partly | no.' "$understand_md")" 1
+ok "  and the brief says nothing maps anything"     "$(grep -c 'Nothing maps anything' "$brief_md")" 1
+
+printf '\n  the wording DEV-884 brings, adopted early so the rebase cannot lose it\n'
+# #72 edits the same file. Its three wording changes and its linter paragraph were taken verbatim
+# onto this branch, so `git merge-file` leaves only conflicts whose losing side is text this
+# branch supersedes -- measured at 4, each an old slot row or the stale paragraph. Without these
+# assertions a resolver taking "ours" wholesale would revert them and nothing would say so:
+# #72's own harness never reads this file.
+ok "the headline cap is at most, not under"         "$(grep -c 'One sentence, at most 20 words' "$understand_md")" 1
+ok "  and a was-wrong line carries the same cap"    "$(grep -c 'Two lines each, at most 20 words a line' "$understand_md")" 1
+ok "  an option title too"                          "$(grep -c 'a title of at most 12 words' "$understand_md")" 1
+ok "  in the blind brief's JSON as well"            "$(grep -c 'at most 12 words, plain English' "$understand_md")" 1
+ok "the 150-word top-layer budget is stated here"   "$(grep -c 'The whole top layer' "$understand_md")" 1
+ok "  and so is the linter that enforces it"        "$(grep -c 'Check it before you show it' "$understand_md")" 1
+
+printf '\n  write 1 is the problem half, and nothing else\n'
+ok "write 1 names exactly what the read serves"     "$(ask "d['write1']")" "$(ask "d['served_expected']")"
+ok "  and only the numbered problems are in both"   "$(ask "d['in_both']")" "['problems']"
+ok "  write 1 is ordered before step 3 dispatches"  "$(grep -c 'before step 3 dispatches' "$brief_md")" 1
+ok "  and after the ledger link, so it is seen live" "$(grep -c 'Write 1 comes after .Open it, link it' "$brief_md")" 1
+ok "  and step 2 says so where a worker reads it"   "$(grep -c 'save the problem half before you go on to step 3' "$brief_md")" 1
+ok "  the brief says why write 1 is the permissive one" "$(grep -c 'Why write 1 is the permissive one' "$brief_md")" 1
+
+printf '\n  the blind brief is poured from the problem-only read, not retyped\n'
+ok "the read is named as its source"                "$(grep -c 'brief problem-statement --review <id> --json' "$brief_md")" 1
+ok "  and read after write 1, not before"           "$(grep -c 'After write 1, read it' "$brief_md")" 1
+ok "every section is poured from a served field"    "$(ask "d['pour_unserved']")" "[]"
+ok "  and every served field is poured somewhere"   "$(ask "d['pour_unpoured']")" "[]"
+ok "  over five rows, one per served field"         "$(ask "len(d['pour_sections'])")" 5
+ok "without Review Desk the template is by hand"    "$(grep -c 'Without Review Desk, fill the' "$brief_md")" 1
+
+printf '\n  write 1, driven through the stand-in\n'
+cat > "$work/half.json" <<'JSON'
+{
+  "problem": "A retried delivery is sent again from the start.",
+  "how_it_works_today": "The portal posts a webhook when an order changes.",
+  "flow_before_caption": "Today",
+  "flow_before": [[{"title": "An order changes", "note": "the app enqueues a job"}],
+                  [{"title": "The job posts", "note": "nothing identifies the delivery"},
+                   {"title": "It times out", "problem": 1}],
+                  [{"title": "The queue retries it", "note": "from the start, as a new post"}],
+                  [{"title": "The receiver stores both", "note": "two orders, one event",
+                    "problem": 2}]],
+  "problems": [{"number": 1, "was_wrong": "A retry arrives as a second delivery."},
+               {"number": 2, "was_wrong": "Nothing records that it was a retry."}],
+  "confirmation_required": false,
+  "confirmation_not_required_because": "problem half only — the full brief follows at step 5"
+}
+JSON
+ok "the problem half is accepted"                   "$(rc brief put --review 1 --file "$work/half.json")" 0
+ok "  and its fields are the table's write 1"       "$(keys "$work/half.json" confirmation_)" "$(ask "d['write1']")"
+ok "  its store is under the temp dir"              "$(test -f "$work/rd.brief.1.json" && echo yes || echo no)" yes
+ok "  its reason is marked as scaffolding"          "$(python3 -c "
+import json
+print(json.load(open('$work/half.json'))['confirmation_not_required_because'][:17])")" "problem half only"
+ok "  which the brief requires as the opening phrase" "$(grep -c 'Begin it .problem half only' "$brief_md")" 1
+ok "  layer 2 settles at write 1, as the brief says" "$(cat "$work/rd.layer2.1")" done
+ok "  and the brief warns it moves twice"           "$(grep -c 'moves twice without you' "$brief_md")" 1
+ok "a problem half is recognisable from the record" "$(python3 -c "
+import json
+d = json.load(open('$work/rd.brief.1.json'))
+print(not d.get('options') and all(p.get('now_fixed') is None for p in d['problems']))")" True
+ok "  which the brief says to use, not memory"      "$(grep -c 'recognisable from the record, not from your memory' "$brief_md")" 1
+
+printf '\n  write 2, the whole of it\n'
+echo '{"lens":"sibling diff","severity":"should","claim":"the description and the code disagree"}' \
+  | review-desk finding add --review 1 --file - > "$work/seq"
+ok "a finding is numbered before the brief names it" "$(cat "$work/seq")" 1
+python3 - "$work/half.json" "$work/full.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+doc.update({
+    "headline": "A retry now carries the first delivery's key, so one event is delivered once.",
+    "support_table": {"title": "Who decides", "columns": ["Question", "Today", "After"],
+                      "rows": [["Who retries a delivery", "the queue", "the queue"],
+                               ["What a repeat costs", "a second order", "nothing"],
+                               ["Who names a delivery", "nobody", "the event"]]},
+    "flow_after_caption": "After",
+    "flow_after": [[{"title": "An order changes"}],
+                   [{"title": "The job posts with a key", "problem": 1},
+                    {"title": "The receiver drops a repeat", "problem": 2}],
+                   [{"title": "The queue retries with the same key", "problem": 1}],
+                   [{"title": "The receiver stores one", "problem": 2}]],
+    "options": [
+        {"key": "A", "title": "Retry inside the request", "argument_for": "no queue at all",
+         "argument_against": "it blocks the response", "chosen": False, "proposed_by": "ticket",
+         "verdicts": [{"problem": 1, "verdict": "partly", "why": "still a second delivery"},
+                      {"problem": 2, "verdict": "stays", "why": "nothing is recorded"}]},
+        {"key": "B", "title": "An idempotency key per event", "argument_for": "delivered once",
+         "argument_against": "one more column", "chosen": True, "proposed_by": "both",
+         "verdicts": [{"problem": 1, "verdict": "fixed", "why": "the receiver dedupes"},
+                      {"problem": 2, "verdict": "fixed", "why": "the key is the record"}]},
+        {"key": "C", "title": "Let the receiver ask us for what it missed",
+         "argument_for": "nothing to retry", "argument_against": "not our system to change",
+         "chosen": False, "proposed_by": "blind_pass",
+         "verdicts": [{"problem": 1, "verdict": "not_assessed"},
+                      {"problem": 2, "verdict": "not_assessed"}]},
+    ],
+    "blind_pass": {"given": "## The system\nposted when an order changes\n",
+                   "pick_key": "B", "pick_why": "The cheapest option that fixes both.",
+                   "looked_up": "nothing",
+                   "questions": ["Does the receiver already drop a repeat?"]},
+    "approach_verdict": "The right shape for the problem.",
+    "provenance": "from the ticket, the description and the code at a1b2c3d",
+    "parts": [{"title": "The key, stored per event", "summary": "one key, reused on a retry",
+               "fixes": [1, 2],
+               "files": [{"path": "jobs/DeliverWebhook.php", "lines_added": 96,
+                          "lines_removed": 22, "in_diff": True},
+                         {"path": "docs/webhooks.md", "lines_added": 0, "lines_removed": 0,
+                          "in_diff": False}]}],
+    "open_choices": [{"left_open": "Where the key is stored", "chosen": "a column on the event",
+                      "why": "the publish stays one statement", "departs_from_ticket": False}],
+    "disagreements": [{"description_says": "a retry is dropped after a day",
+                       "code_does": "it is retried for ever", "finding_seq": 1}],
+})
+for problem in doc["problems"]:
+    problem["now_fixed"] = "It is the same delivery, named by the same key."
+    problem["detail_title"] = "The key"
+    problem["detail_before"] = ["DeliverWebhook posted with no identifier."]
+    problem["detail_after"] = ["It reuses the event's key on every attempt."]
+doc.pop("confirmation_required")
+doc.pop("confirmation_not_required_because")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc, indent=1))
+PY
+ok "the whole brief is accepted"                    "$(rc brief put --review 1 --file "$work/full.json")" 0
+ok "  and its fields are the table's, all of them"  "$(keys "$work/full.json")" "$(ask "d['roots']")"
+ok "  none of which is one the store would refuse"  "$(ask "d['unknown_roots']")" "[]"
+ok "  false then true leaves layer 2 the developer's" "$(cat "$work/rd.layer2.1")" waiting_on_you
+ok "  and the brief waits for the one after write 2" "$(grep -c 'wait for the .brief_settled. that follows write 2' "$brief_md")" 1
+
+printf '\n  what the read withholds, with the whole brief on the record\n'
+# The pour is read back AFTER write 2, which is the only way the absences below mean anything:
+# every string asserted absent is one the record now holds.
+quiet brief problem-statement --review 1 --json
+ok "the read answers with one document"             "$(keys "$work/ps")" "['problem_statement']"
+ok "  holding six fields, which are the problem half" "$(python3 -c "
+import json
+print(sorted(json.load(open('$work/ps'))['problem_statement']))")" "['flow_before', 'flow_before_caption', 'how_it_works_today', 'problem', 'problems', 'review_id']"
+ok "  with no now-fixed line on any problem"        "$(python3 -c "
+import json
+d = json.load(open('$work/ps'))['problem_statement']
+print(len([p for p in d['problems'] if 'now_fixed' in p]))")" 0
+python3 "$work/pour.py" "$work/ps" "$work/poured.md"
+ok "the poured brief carries the before flow"       "$(grep -c 'the app enqueues a job' "$work/poured.md")" 1
+ok "  numbering by row, so a split row shares one"  "$(grep -c '^2\. [^*]' "$work/poured.md")" 2
+ok "  one number per row and no more"               "$(grep -c '^4\. [^*]' "$work/poured.md")" 1
+ok "  and never numbers past the last row"          "$(grep -c '^5\. ' "$work/poured.md")" 0
+ok "  and carries every numbered problem"           "$(grep -c '^[12]\. \*\*' "$work/poured.md")" 2
+ok "  but not the headline"                         "$(grep -c 'delivered once' "$work/poured.md")" 0
+ok "  nor a box of the after flow"                  "$(grep -c 'posts with a key' "$work/poured.md")" 0
+ok "  nor a now-fixed line"                         "$(grep -c 'named by the same key' "$work/poured.md")" 0
+ok "  nor an option the author considered"           "$(grep -c 'idempotency key per event' "$work/poured.md")" 0
+ok "  nor a part of the solution"                   "$(grep -c 'DeliverWebhook' "$work/poured.md")" 0
+
+printf '\n  the blind pass as three states, not two\n'
+ok "an option only the blind pass raised reads as ran" "$(cat "$work/rd.state.1")" ran
+ok "  and the brief says to mark it blind_pass"     "$(grep -c 'An option the pass raised and the ticket did not is .blind_pass.' "$brief_md")" 1
+ok "  and not to flatten one they both raised"      "$(grep -c 'do not flatten it to' "$brief_md")" 1
+python3 - "$work/full.json" "$work/nothingnew.json" "$work/notrun.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for option in doc["options"]:
+    option["proposed_by"] = "ticket"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+doc.pop("blind_pass")
+pathlib.Path(sys.argv[3]).write_text(json.dumps(doc))
+PY
+ok "a pass that put none forward is accepted"       "$(rc brief put --review 1 --file "$work/nothingnew.json")" 0
+ok "  and reads as ran-and-found-nothing"           "$(cat "$work/rd.state.1")" ran_and_found_nothing
+ok "a pass that did not run is accepted"            "$(rc brief put --review 1 --file "$work/notrun.json")" 0
+ok "  and reads as not-run"                         "$(cat "$work/rd.state.1")" not_run
+ok "  and the brief gives a recipe for each state"  "$(grep -c 'ran_and_found_nothing' "$brief_md")" 1
+# Why that recipe says "every option `ticket`" and not just "no `blind_pass`". Without this the
+# row had no control: dropping the pass and leaving an option attributed to it reads as a clean
+# `not_run` to anything that only checks for the pass, and exits 1 against the store.
+python3 - "$work/notrun.json" "$work/orphan.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+doc["options"][2]["proposed_by"] = "blind_pass"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+PY
+ok "an option left on a pass that is not recorded is refused" "$(rc brief put --review 1 --file "$work/orphan.json")" 1
+ok "  naming the option and what it claims"         "$(grep -c 'options.proposed_by holds option C' "$work/err")" 1
+ok "  which is why the recipe says every option ticket" "$(grep -c 'every option .ticket., and the reason in .provenance.' "$brief_md")" 1
+
+printf '\n  the refusals the brief is written around\n'
+instance '{"mode":"auto"}'
+python3 - "$work/full.json" "$work/needsgate.json" "$work/droppedflow.json" "$work/old.json" \
+         "$work/dropped.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+gated = dict(doc, confirmation_required=False,
+             confirmation_not_required_because="brief_gate is never for this instance")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(gated))
+# TWO documents, because a dropped problem is refused by everything that referred to it and
+# only the first refusal is reported. This one keeps the flow marks, so a FLOW refuses it.
+flow = json.loads(json.dumps(doc))
+flow["problems"] = [p for p in flow["problems"] if p["number"] != 2]
+pathlib.Path(sys.argv[3]).write_text(json.dumps(flow))
+# And this one unmarks both flows, so what is left to refuse it is the orphaned VERDICT.
+# Rows emptied by the filter go with them: an empty row is refused for its own reason.
+dropped = json.loads(json.dumps(flow))
+for field in ("flow_before", "flow_after"):
+    kept = [[b for b in row if b.get("problem") != 2] for row in dropped[field]]
+    dropped[field] = [row for row in kept if row]
+pathlib.Path(sys.argv[5]).write_text(json.dumps(dropped))
+old = json.loads(pathlib.Path(sys.argv[1]).read_text())
+old["blind_pass_state"] = "ran"
+pathlib.Path(sys.argv[4]).write_text(json.dumps(old))
+PY
+echo '{"lens":"l","severity":"should","claim":"c"}' \
+  | review-desk finding add --review 2 --file - > /dev/null
+ok "a brief asking for confirmation is accepted"    "$(rc brief put --review 2 --file "$work/full.json")" 0
+ok "  and cannot then be rewritten as needing none" "$(rc brief put --review 2 --file "$work/needsgate.json")" 1
+ok "  which is why write 1 writes false, not true"  "$(grep -c '.brief_gate: never. would be unreachable' "$brief_md")" 1
+
+# The trap under `brief_gate: always`: write 2 is "write 1's fields written again", and write
+# 1's fields include the REASON. Dropping only the flag leaves a brief that requires
+# confirmation and carries a reason for needing none, which is refused -- after step 5, with
+# the whole brief in hand. Both fields have to go.
+python3 - "$work/full.json" "$work/reasononly.json" <<'PY'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+doc["confirmation_not_required_because"] = "problem half only — the full brief follows at step 5"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+PY
+ok "write 1's reason carried into write 2 is refused" "$(rc brief put --review 5 --file "$work/reasononly.json")" 1
+ok "  and the brief says to drop both gate fields"  "$(grep -c 'neither gate field' "$brief_md")" 1
+
+# A new head commit is a different review id, so a later round holds no brief and the read it
+# would pour from answers with nothing. The brief used to say a later round finds the problem
+# half already there; it does not.
+ok "the read on a review with no brief exits 1"     "$(rc brief problem-statement --review 9)" 1
+ok "  and the brief says a new head is a new id"    "$(grep -c 'new head commit is a different' "$brief_md")" 1
+ok "a disagreement before its finding is refused"   "$(rc brief put --review 3 --file "$work/full.json")" 1
+ok "  naming the finding that does not exist"       "$(grep -c 'finding 3/1, which does not exist' "$work/err")" 1
+ok "  and the brief says to add the finding first"  "$(grep -c 'so .finding add. it first' "$brief_md")" 1
+echo '{"lens":"l","severity":"should","claim":"c"}' \
+  | review-desk finding add --review 3 --file - > /dev/null
+ok "  and is accepted once the finding exists"      "$(rc brief put --review 3 --file "$work/full.json")" 0
+# A SECOND write, which is what the claim is about: review 1 holds the whole brief first, so
+# the refusal is the one a worker meets at step 5 rather than one a first write would give too.
+echo '{"lens":"l","severity":"should","claim":"c"}' \
+  | review-desk finding add --review 1 --file - > /dev/null
+ok "the whole brief lands on review 1 first"        "$(rc brief put --review 1 --file "$work/full.json")" 0
+ok "dropping a problem refuses the second write"    "$(rc brief put --review 1 --file "$work/droppedflow.json")" 1
+ok "  on the flow box that marked it"               "$(grep -c 'flow_before names problem 2' "$work/err")" 1
+ok "and unmarking the flows does not rescue it"     "$(rc brief put --review 1 --file "$work/dropped.json")" 1
+ok "  the verdict that scored against it refuses too" "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
+ok "  and the brief forbids dropping or renumbering" "$(grep -c 'Never drop a problem, and never renumber one' "$brief_md")" 1
+ok "an unknown field is exit 1, not exit 2"         "$(rc brief put --review 4 --file "$work/old.json")" 1
+ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the structured brief' "$brief_md")" 1
+
+printf '\n  the brief is linted before it is sent, and never before that\n'
+# The first two assertions RUN the linter over the two documents this harness built, which is
+# the whole point: review.md tells a worker to write a brief that passes it, and the document
+# the brief's own tables prescribe is the one being measured. The rest assert what review.md
+# tells a worker to run and when.
+lint () { set +e; python3 "$root/skills/review-craft/brief_lint.py" "$@" > "$work/lint" 2>&1
+          echo $?; set -e; }
+ok "the whole brief this harness built passes the linter" "$(lint "$work/full.json")" 0
+ok "  on every one of its rules"                    "$(sed -n 's|^\([0-9]*\)/\1 checks passed$|all|p' "$work/lint")" all
+ok "the problem half does NOT pass it"              "$(lint "$work/half.json")" 1
+# `^FAIL  [a-z]` is the rule rows; the linter's closing verdict line is `FAIL — ...` and
+# counting it made four failures read as five.
+ok "  failing the four the brief names, and no more" "$(grep -c '^FAIL  [a-z]' "$work/lint")" 4
+ok "  which are the change half, every one"         "$(grep '^FAIL  [a-z]' "$work/lint" | awk '{print $2}' | sort | tr '\n' ' ')" "headline.present picture.after problems.marked_after problems.now_line "
+ok "every quotation --limits makes of understand.md is in it" "$(python3 "$work/limitslots.py" \
+    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "8 checked; none missing"
+ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
+ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
+ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
+ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint write 1' "$brief_md")" 1
+# The number in the prose, crossed against the run three assertions above. The first version
+# pinned 6, a count off a malformed fixture that the sentence's own list contradicted; it is 4,
+# and now a document that drifts fails the run rather than only the grep.
+ok "  with the count it would fail by"              "$(grep -c '4 of its 16 checks fail' "$brief_md")" 1
+ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
+ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
+ok "an absent linter is a broken install, said loudly" "$(grep -c 'brief_lint.py. that is not there is a broken install' "$brief_md")" 1
+ok "  and not confused with Review Desk's exit 2"   "$(grep -c 'these are two different absences' "$brief_md")" 1
+
+printf '\n  absent and broken are still what they were\n'
+instance '{"mode":"auto"}'
+echo broken > "$work/rd.mode"
+ok "a broken Review Desk breaks brief put too, with 2" "$(rc brief put --review 1 --file "$work/half.json")" 2
+ok "  which the brief answers once and carries on"  "$(grep -c 'once to the Dispatcher and then finish the review' "$brief_md")" 1
+instance '{"mode":"auto"}'
+hide
+put gh-portal-412 mode=review status=claimed repo=acme/portal number=412 title=T url=u --by test
+set +e; D brief gh-portal-412 > "$work/out" 2>&1; set -e
+ok "an absent Review Desk puts no command in a brief" "$(count 'brief put')" 0
+ok "  nor the problem-only read"                      "$(count 'problem-statement')" 0
+show
+
+# =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'
 # Without these, every assertion above could be passing for a reason unrelated to the behaviour.
 # Each substitution is counted rather than assumed: a sed that matched nothing would turn a
@@ -864,6 +1672,59 @@ echo '{"state":"MERGED"}' > "$work/pr.412.json"
 rc=$(run "$work/oldfield.py" poll 1)
 ok "old field list: a MERGED pull request is NOT skipped" "$(count '"event": "review_desk_requested"')" 1
 ok "  and it reports a state it could not establish"   "$(says '"pr_state": null')" yes
+
+# The three controls for DEV-883's block. Each rewrites the BRIEF, not the code: what is under
+# test there is a table of field names, so a control has to break the table.
+
+# Two reversals, because the crossing has two halves and only one of them catches each. A
+# renamed ROOT is a field the store refuses; a renamed MEMBER of a root it accepts is not, and
+# is caught instead by the coverage check against the contract's page table. The first version
+# of this control broke a member and asserted against the root check, which reported ok --
+# which is the whole reason a control is written before the test is believed.
+sed 's/`support_table\.title`/`support_tables.title`/' "$brief_md" > "$work/badroot.md"
+ok "the root reversal changed one line"                "$(grep -c 'support_tables.title' "$work/badroot.md")" 1
+ok "a field the store would refuse is NOT reported ok" "$(ask "d['unknown_roots'] == []" "$work/badroot.md")" False
+
+sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given` |/| **What the pass was given** | `blind_pass.handed` |/' \
+    "$brief_md" > "$work/badfield.md"
+ok "the member reversal changed one line"              "$(grep -c 'blind_pass.handed' "$work/badfield.md")" 1
+ok "  and it is the root check that does NOT catch it" "$(ask "d['unknown_roots']" "$work/badfield.md")" "[]"
+ok "a renamed member is caught by the page coverage"   "$(ask "d['missing_contract']" "$work/badfield.md")" "['blind_pass.given']"
+
+# The control for the limits crossing, and the drift it is named after: DEV-883 renamed
+# "How it works today" and `--limits` went on citing it, in the same repository, with nothing
+# crossing the two. Put the old name back and the crossing must say so.
+sed "s/'Supporting table /'How it works today /" \
+    "$root/skills/review-craft/brief_lint.py" > "$work/badlimits.py"
+ok "the citation reversal changed one line"            "$(grep -c "How it works today \.\.\. 3" "$work/badlimits.py")" 1
+# And the second half of the quotation, which a name-only check could not have judged.
+sed "s/'Options \.\.\. a title of at most 12 words'/'Options ... a title under 12 words'/" \
+    "$root/skills/review-craft/brief_lint.py" > "$work/badquote.py"
+ok "the reworded-quotation reversal changed one line"  "$(grep -c "a title under 12 words" "$work/badquote.py")" 1
+ok "a citation reworded where the slot stayed is caught" "$(python3 "$work/limitslots.py" \
+    "$work/badquote.py" "$understand_md")" "8 checked; a title under 12 words"
+ok "a limit citing a slot that is gone is caught"      "$(python3 "$work/limitslots.py" \
+    "$work/badlimits.py" "$understand_md")" "8 checked; How it works today (not a slot)"
+
+sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
+    "$brief_md" > "$work/badslot.md"
+ok "the slot-name reversal changed one line"           "$(grep -c 'The sytsem' "$work/badslot.md")" 1
+ok "a slot understand.md does not define is caught"    "$(ask "d['slots_improvised']" "$work/badslot.md")" "['The sytsem']"
+ok "  and the slot it left behind is caught too"       "$(ask "d['slots_unsaved']" "$work/badslot.md")" "['The system']"
+
+sed '/^| `## What is wrong`, its opening line | `problem` |$/d' "$brief_md" > "$work/badpour2.md"
+ok "the unpoured reversal removed one line"            "$(grep -c 'its opening line' "$work/badpour2.md")" 0
+ok "a served field poured nowhere is caught"           "$(ask "d['pour_unpoured']" "$work/badpour2.md")" "['problem']"
+
+sed 's/| `## The system` | `how_it_works_today` |/| `## The system` | `headline` |/' \
+    "$brief_md" > "$work/badpour.md"
+ok "the pour reversal changed one line"                "$(grep -c '| `## The system` | `headline` |' "$work/badpour.md")" 1
+ok "pouring from a field the read withholds is caught" "$(ask "d['pour_unserved']" "$work/badpour.md")" "['headline']"
+
+sed 's/^| \*\*Before\*\* | `flow_before\[\]\[\]`, with `flow_before_caption` | \*\*1\*\* |/| **Before** | `flow_before[][]`, with `flow_before_caption` | 2 |/' \
+    "$brief_md" > "$work/badwrite.md"
+ok "the write-column reversal changed one line"        "$(grep -c '^| \*\*Before\*\* | .flow_before\[\]\[\]., with .flow_before_caption. | 2 |' "$work/badwrite.md")" 1
+ok "a problem-half field moved to write 2 is caught"   "$(ask "d['write1'] == d['served_expected']" "$work/badwrite.md")" False
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
