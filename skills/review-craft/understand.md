@@ -30,22 +30,29 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 
 | Slot | What goes in it | Length |
 |---|---|---|
-| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, under 20 words |
+| **Headline** | What this change does, and what it buys. Plain enough for someone who has never opened the repository | One sentence, at most 20 words |
 | **How it works today** | One row per question the system answers, and who answers it. The column that changes is the point | 3–4 rows |
 | **Before** | The flow as it is today, one step per row, each with one line of detail. Numbered problems marked on the rows they sit on | 4–6 rows |
 | **After** | The same flow as the change leaves it, with the fixes marked | 4–7 rows |
 | **Problems** | What is wrong, numbered. The numbers are used by every later step and never renumbered | 2–4, numbered |
-| **Was wrong / now** | Per problem, one line of what was wrong and one line of what it is now | Two lines each |
+| **Was wrong / now** | Per problem, one line of what was wrong and one line of what it is now | Two lines each, at most 20 words a line |
 | **Names** | The classes, files, routes, columns and flags — one level down, behind the fold, never on the top layer | As long as it needs |
 
 The numbers are the spine of the whole review. Alternatives scores options against them, Solution
 says which part fixes which, and a finding can say which problem it threatens.
 
+**The whole top layer — the headline plus every was-wrong and now line — is 150 words.** That is a
+*budget*, and the per-line numbers above are *caps*: the budget is deliberately tighter than the
+sum of them, because four problems at the 20-word cap each way plus a 20-word headline would be
+180. A cap stops one line running away; the budget stops the top layer doing it collectively, and
+a brief cannot spend every cap at once. The approved board of 10 October 2026 spent 85 of the 150.
+`brief_lint.py` names the longest lines when the budget is what failed, not the caps.
+
 ## Alternatives — `review.md` steps 3 and 4
 
 | Slot | What goes in it |
 |---|---|
-| **Options** | One row per option: a title under 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — fixes it, partly, or leaves it |
+| **Options** | One row per option: a title of at most 12 words, who put it forward (the ticket, the blind pass, or both), and a verdict against each numbered problem — fixes it, partly, or leaves it |
 | **Built** | Which option the author built, and the one line of why |
 | **Blind pick** | What the blind session would have picked, and its one line of why |
 | **Questions** | What the blind session needed to know and was not told. These are often the best questions in the review |
@@ -341,10 +348,14 @@ their provenance, and **this file is where they are changed**.
 ## Revision
 
 **10 October 2026 (second change).** `brief_lint.py` arrived and enforces the limits in the tables
-above. Three of them were proposed looser in DEV-884 — a 25-word headline, 5 numbered problems,
-8 rows in a flow — and this file won each, because one fact has one owner and the slots are
-stated here. The linter reports what it measured either way, so a number that turns out to be
-wrong is visible rather than argued.
+above. Two of them were proposed looser in DEV-884 — 5 numbered problems and 8 rows in a flow —
+and this file won both, because one fact has one owner and the slots are stated here. The
+headline's slot read "under 20 words" against DEV-884's 25; Patrick ruled on 10 October 2026 that
+it is **at most 20**, which is what it now says and what the linter checks, so Review Desk's
+real-length brief passes on all eighteen rules. The options slot's "under 12 words" is read the
+same way and is checked. The 150-word total and the 20-word line limit both stand, and the
+paragraph above says why the first is tighter than eight of the second. The linter reports what it
+measured either way, so a number that turns out to be wrong is visible rather than argued.
 
 **10 October 2026.** New file. The three understanding steps moved ahead of the tests and the
 lenses in `workers/review.md`, and what each one produces is written down here with a blind

@@ -92,6 +92,15 @@ cat > "$work/base.json" <<'EOF'
     {"key": "A", "title": "Stamp each token with an hour and refuse the rest", "argument_for": "Small.", "argument_against": "Leaves the other links.", "chosen": false, "proposed_by": "ticket", "verdicts": []},
     {"key": "B", "title": "Expire the token and clear the account's other links", "argument_for": "Answers both.", "argument_against": "Two statements.", "chosen": true, "proposed_by": "both", "verdicts": []}
   ],
+  "support_table": {
+    "title": "The idea: three questions, each with one owner",
+    "columns": ["The question", "Who should answer it", "Before", "After"],
+    "rows": [
+      ["How long is a link good for?", "The token", "Forever", "An hour"],
+      ["Who may use it?", "The account", "Anyone holding it", "Anyone holding it"],
+      ["What happens to the others?", "The reset", "Nothing", "They are dropped"]
+    ]
+  },
   "blind_pass_state": "not_run",
   "parts": [],
   "open_choices": [],
@@ -122,7 +131,7 @@ ran () { grep -qE "^(PASS|FAIL)  $1( |\$)" "$work/out" && echo yes || echo no; }
 echo "The base brief"
 ok "a brief written to the slots passes"          "$(run "$work/base.json")" 0
 ok "and no rule is reported as failing"           "$(grep -c '^FAIL' "$work/out" || true)" 0
-ok "16 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 16
+ok "18 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 18
 ok "the header counts the problems and the rows"  "$(says '2 numbered problems, 4 before rows, 5 after rows')" yes
 ok "and names the top-layer budget it measured"   "$(says 'top-layer words of 150')" yes
 ok "stdin is the same document"                   "$(set +e; python3 "$lint" - <"$work/base.json" >"$work/out" 2>&1; echo $?; set -e)" 0
@@ -137,9 +146,10 @@ ok "as the one-sentence rule"                     "$(rule headline.one_sentence)
 ok "one sentence with a decimal point is one"     "$(mut 'b["headline"]="A reset link now lives 1.5 hours instead of forever, so an old mailbox link fails."'; case_run)" 0
 
 echo "The headline's length"
-ok "20 words fails against the limit of 19"       "$(mut 'b["headline"]=" ".join(["word"]*19)+" twenty."'; case_run)" 1
-ok "and the failure names both numbers"           "$(says 'runs 20 words against 19')" yes
-ok "19 words passes"                              "$(mut 'b["headline"]=" ".join(["word"]*18)+" nineteen."'; case_run)" 0
+ok "21 words fails against the limit of 20"       "$(mut 'b["headline"]=" ".join(["word"]*20)+" twentyone."'; case_run)" 1
+ok "and the failure names both numbers"           "$(says 'runs 21 words against 20')" yes
+ok "20 words passes"                              "$(mut 'b["headline"]=" ".join(["word"]*19)+" twenty."'; case_run)" 0
+ok "as Review Desk's real-length brief does"      "$(says '20 words of 20')" yes
 
 echo "There is a picture"
 ok "no before flow fails"                         "$(mut 'b["flow_before"]=[]'; case_run)" 1
@@ -234,12 +244,34 @@ b["flow_after"][2][0]["problem"] = 3
 b["flow_after"][3][0]["problem"] = 4'; case_run)" 1
 ok "on the total, not on any one line"            "$(rule top.length)$(rule line.length)" yesno
 ok "and the failure names the total"              "$(says 'top layer runs 177 words against 150')" yes
+ok "it names the longest lines to tighten"        "$(says 'Tighten the longest')" yes
+ok "with a slot and its count, three of them"     "$(grep -o 'line (20 words)' "$work/out" | wc -l | tr -d ' ')" 3
+ok "and says a cap is not the budget"             "$(says 'the budget stops the top layer')" yes
 ok "a 13-word box title fails"                    "$(mut 'b["flow_before"][0][0]["title"]=" ".join(["word"]*13)'; case_run)" 1
 ok "naming the row, the box and the count"        "$(says 'before row 1 box 1 title runs 13 words')" yes
 ok "12 words passes"                              "$(mut 'b["flow_before"][0][0]["title"]=" ".join(["word"]*12)'; case_run)" 0
 ok "a 15-word box note fails"                     "$(mut 'b["flow_after"][0][0]["note"]=" ".join(["word"]*15)'; case_run)" 1
 ok "naming the after flow"                        "$(says 'after row 1 box 1 note runs 15 words')" yes
 ok "14 words passes"                              "$(mut 'b["flow_after"][0][0]["note"]=" ".join(["word"]*14)'; case_run)" 0
+
+echo "An option's title"
+ok "13 words fails against the limit of 12"       "$(mut 'b["options"][0]["title"]=" ".join(["word"]*13)'; case_run)" 1
+ok "naming the option and the count"              "$(says 'option A runs 13 words')" yes
+ok "and where the mechanism goes instead"         "$(says 'argument_for')" yes
+ok "12 words passes"                              "$(mut 'b["options"][0]["title"]=" ".join(["word"]*12)'; case_run)" 0
+ok "a brief with no options passes"               "$(mut 'b["options"]=[]'; case_run)" 0
+
+echo "The supporting table"
+ok "three rows passes"                            "$(run "$work/base.json")" 0
+ok "and the count is named"                       "$(says '3 of 3-4')" yes
+ok "two rows fails the floor of three"            "$(mut 'b["support_table"]["rows"]=b["support_table"]["rows"][:2]'; case_run)" 1
+ok "naming the range"                             "$(says 'table holds 2 rows against 3 to 4')" yes
+ok "five rows fails the ceiling of four"          "$(mut 'b["support_table"]["rows"]=b["support_table"]["rows"]+b["support_table"]["rows"][:2]'; case_run)" 1
+ok "four rows passes"                             "$(mut 'b["support_table"]["rows"]=b["support_table"]["rows"]+[["A question","An owner","Before","After"]]'; case_run)" 0
+ok "no table at all passes"                       "$(mut 'b["support_table"]=None'; case_run)" 0
+ok "and the pass says so rather than a count"     "$(says 'no supporting table')" yes
+ok "a table that is a string is 2, not 1"         "$(mut 'b["support_table"]="three questions"'; case_run)" 2
+ok "rows that are not a list is 2"                "$(mut 'b["support_table"]["rows"]="three of them"'; case_run)" 2
 
 echo "The problem half is blind-safe"
 ok "an option title in the problem half fails"    "$(mut 'b["problem"]="Links never expire. The ticket asks us to expire the token and clear the account'"'"'s other links."'; case_run)" 1
@@ -336,7 +368,7 @@ ok "a file and --review together is 2"            "$(FIX="$work/show.json" PATH=
 
 echo "The limits table"
 ok "--limits prints it and exits 0"               "$(run --limits)" 0
-ok "every limit names where it came from"         "$(grep -c 'understand.md\|DEV-884\|Not a budget' "$work/out" || true)" 10
+ok "every limit names where it came from"         "$(grep -c 'understand.md\|DEV-884\|Not a budget' "$work/out" || true)" 12
 ok "and no limit is keyed on the diff"            "$(grep -ci 'changed line\|diff size\|lines added' "$work/out" || true)" 0
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

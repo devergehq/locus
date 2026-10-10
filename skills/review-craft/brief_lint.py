@@ -46,10 +46,18 @@ import sys
 # 10 October 2026, and provisional in exactly the way that file says they are.
 #
 # A range is (lowest, highest) and both ends fail. A single number is a ceiling.
+#
+# **A slot limit is a cap; the total is a budget, and the budget is deliberately tighter than the
+# sum of the caps.** At understand.md's four problems, eight lines at the 20-word cap plus a
+# 20-word headline would be 180 against a 150-word total — and that is the design rather than an
+# oversight: a cap stops one line running away, and the budget stops the top layer doing it
+# collectively. A brief cannot spend every cap at once. `top.length` therefore names the longest
+# lines it found, instead of telling an author to shorten everything.
 LIMITS: tuple[tuple[str, str, object, str], ...] = (
-    ("headline.words", "The headline", 19,
-     "understand.md, Understand: 'One sentence, under 20 words'. DEV-884's table said 25; "
-     "understand.md owns the slot. The approved board of 10 Oct 2026 ran 19"),
+    ("headline.words", "The headline", 20,
+     "understand.md, Understand: 'One sentence, at most 20 words'. The slot read 'under 20' and "
+     "DEV-884's table said 25; Patrick ruled 'at most 20' on 10 Oct 2026. The approved board ran "
+     "19, and Review Desk's real-length brief runs 20"),
     ("line.words", 'A problem\'s "was wrong" or "now" line', 20,
      "DEV-884, measured from the approved board of 10 Oct 2026, where the longest ran 16. "
      "understand.md states the slot as 'two lines each' and sets no number"),
@@ -72,6 +80,14 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
     ("top.semicolons", "Semicolons in one top-layer line", 1,
      "understand.md, rule 3: parallel things are a table, and the characteristic failure is "
      "one sentence of three clauses joined by semicolons. Two semicolons are three clauses"),
+    ("option.title.words", "An option's title", 12,
+     "understand.md, Alternatives: 'a title under 12 words', read as an inclusive cap the way the "
+     "headline is, per Patrick's ruling of 10 Oct 2026. No board measurement for this slot; "
+     "Review Desk's real-length brief runs 11 across eight options"),
+    ("support.rows", "Rows in the supporting table", (3, 4),
+     "understand.md, Understand: 'How it works today ... 3-4 rows' — the board's three questions, "
+     "each with one owner. Checked only when the brief holds a table: the contract serves null "
+     "when it holds none. The approved board ran 3"),
     ("leak.title.words", "Shortest title checked against the problem half", 3,
      "Not a budget. A title of one or two words — 'Web export' — appears in any honest problem "
      "statement, so checking it would make the leak rule untrustworthy rather than strict"),
@@ -297,11 +313,20 @@ def lint(brief: dict) -> int:
             measure=f"{len(top_layer(brief))} top-layer line(s), at most "
                     f"{LIMIT['top.semicolons']} semicolon each")
     total = sum(words(line) for _, line in top_layer(brief))
+    # Every line here can be inside its own cap and the total still over: the caps stop one line
+    # running away and this stops the top layer doing it collectively. So the failure names the
+    # lines to tighten. "Shorten it" over a brief whose every line already passes is not an
+    # instruction, it is a shrug — the author cannot tell which line the budget is objecting to.
+    worst = sorted(top_layer(brief), key=lambda sl: -words(sl[1]))[:3]
     L.check(total <= LIMIT["top.words"], "top.length",
             f"the top layer runs {total} words against {LIMIT['top.words']} — the headline plus "
-            f"{len(problems)} problems' was-wrong and now lines. Move the mechanism into "
-            "`detail_before` and `detail_after`, which are behind a click and never counted; "
-            "the board this limit was measured from ran 85",
+            f"{len(problems)} problems' was-wrong and now lines. Every line may be inside its own "
+            f"{LIMIT['line.words']}-word cap and the total still over: the caps stop one line "
+            "running away, the budget stops the top layer doing it collectively. Tighten the "
+            "longest — "
+            + "; ".join(f"{slot} ({words(line)} words)" for slot, line in worst)
+            + " — and move the mechanism into `detail_before` and `detail_after`, which are behind "
+              "a click and never counted; the board this limit was measured from ran 85",
             measure=f"{total} words of {LIMIT['top.words']}")
     lines = [(slot, line) for slot, line in top_layer(brief) if slot != "the headline"]
     long_lines = [(slot, words(line)) for slot, line in lines if words(line) > LIMIT["line.words"]]
@@ -326,6 +351,36 @@ def lint(brief: dict) -> int:
                 measure=f"longest of {len(boxes(before)) + len(boxes(after))} boxes: "
                         f"{max([words(b.get(field) or '') for _, _, b in boxes(before) + boxes(after)] or [0])}"
                         f" words of {LIMIT[key]}")
+
+    # ---- an option's title is a row of a matrix, read beside every other option's
+    over_opts = [f"option {o.get('key')} runs {words(o.get('title') or '')} words"
+                 for o in brief.get("options") or []
+                 if words(o.get("title") or "") > LIMIT["option.title.words"]]
+    L.check(not over_opts, "options.titles",
+            "; ".join(over_opts[:3]) + f" against {LIMIT['option.title.words']}. A title is read "
+            "beside every other option's, across a row of verdicts: name the approach, and leave "
+            "the mechanism to `argument_for` and `argument_against`, which are never "
+            "length-checked",
+            measure=f"longest of {len(brief.get('options') or [])} option(s): "
+                    f"{max([words(o.get('title') or '') for o in brief.get('options') or []] or [0])}"
+                    f" words of {LIMIT['option.title.words']}")
+
+    # ---- the one small supporting table, when the brief holds one
+    #
+    # Only when it holds one. The contract serves `support_table` null for a brief with no table
+    # and `how_it_works_today` carries the same ground in prose, so a missing table is a brief
+    # that answered the question another way — not a fault this can see.
+    table = brief.get("support_table")
+    low, high = LIMIT["support.rows"]
+    rows = (table or {}).get("rows") or []
+    L.check(table is None or low <= len(rows) <= high, "support.rows",
+            f"the supporting table holds {len(rows)} rows against {low} to {high}. "
+            + (f"Below {low} it is not a table, it is a sentence: ask the system another question "
+               "it answers, or drop the table and put it in `how_it_works_today`"
+               if len(rows) < low else
+               f"Past {high} it stops being the one small table beside the flows — keep the "
+               "questions whose answer the change moves, and leave the rest"),
+            measure=f"{len(rows)} of {low}-{high}" if table is not None else "no supporting table")
 
     # ---- the problem half is blind-safe
     #
@@ -430,6 +485,17 @@ def shaped(brief: dict) -> None:
         whole(p.get("number"), f"problems[{i}].number")
         text(p.get("was_wrong"), f"problems[{i}].was_wrong")
         text(p.get("now_fixed"), f"problems[{i}].now_fixed")
+
+    table = brief.get("support_table")
+    if table is not None:
+        if not isinstance(table, dict):
+            die(f"`support_table` is {type(table).__name__}, not an object with `columns` and "
+                "`rows`. Nothing was checked.")
+        for key in ("columns", "rows"):
+            if table.get(key) is not None and not isinstance(table[key], list):
+                die(f"`support_table.{key}` is {type(table[key]).__name__}, not a list. "
+                    "Nothing was checked.")
+        text(table.get("title"), "support_table.title")
 
     for i, o in enumerate(brief.get("options") or [], 1):
         if not isinstance(o, dict):

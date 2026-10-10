@@ -14,28 +14,31 @@ refuses to build when they disagree.
 ### Added
 
 - **`review-craft` now lints a brief.** `skills/review-craft/brief_lint.py` checks the structured
-  brief Review Desk stores — deterministic, read-only, standard library only, 16 rules. Nothing
+  brief Review Desk stores — deterministic, read-only, standard library only, 18 rules. Nothing
   checked one before: on the review that forced `understand.md` the session recorded 310 words of
   prose and a 50-line typed sketch for what the approved board carries in 85 words and one
   picture, and the house target of 150 words for a draft met 1,381, so asking in prose does not
-  hold. A headline that is one sentence under its limit, both flows drawn and inside their row
-  ranges, every numbered problem marked on a box in each flow and carrying both its lines, a top
-  layer with no class name, path or `::` and no sentence of three semicolon-joined clauses, every
-  length limit, and a problem half that names neither an option nor an after-only box — the half a
-  blind pass may be shown. Detail behind a click is never length-checked and there is no limit
+  hold. A headline that is one sentence of at most 20 words, both flows drawn and inside
+  their row ranges, every numbered problem marked on a box in each flow and carrying both its
+  lines, a top layer with no class name, path or `::` and no sentence of three semicolon-joined
+  clauses, every length limit, and a problem half that names neither an option nor an after-only
+  box — the half a blind pass may be shown. A slot limit is a cap and the 150-word top layer is a
+  budget, deliberately tighter than the sum of the caps; when the budget is what failed, the
+  failure names the longest lines to tighten. Detail behind a click is never length-checked and there is no limit
   keyed on the size of the diff. `brief_lint.py <file.json>` needs no `review-desk`; `--review N`
   reads the saved brief through it and a missing binary is loud and exits 2, never 1. A brief
   written the old way is reported as "not structured" once rather than failing fifteen rules about
   slots it never had. The limits sit in one table at the top of the file with their provenance
-  (`--limits`); `understand.md` owns them, which made three tighter than DEV-884 proposed.
-  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 119 assertions.
+  (`--limits`); `understand.md` owns them, which made two tighter than DEV-884 proposed and
+  settled the headline at 20 words. Review Desk's own real-length brief passes all 18.
+  `scripts/test-brief-lint.sh` covers every rule failing and passing, in 138 assertions.
 
 - **CI runs the four `scripts/test-*.sh` harnesses.** They covered the Python skill scripts and
   nothing executed them, so DEV-794's own finding — "nothing caught it, because nothing tested it" —
   would have stayed true of the suite written to close it. All four were green together (65 + 26 + 79
   + 36 = 206 assertions) and none needs credentials, the network or a built binary. The step globs
   `scripts/test-*.sh`, so a harness added afterwards is picked up with no registration — eight of
-  them now, 653 assertions. None had ever run
+  them now, 672 assertions. None had ever run
   on Linux, so the first red run there is information rather than a regression.
 
 ### Fixed

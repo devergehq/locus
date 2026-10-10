@@ -141,7 +141,7 @@ jobs:
       # The shell harnesses covering the Python skill scripts, which nothing ran until
       # DEV-794. That ticket's own finding was "nothing caught it, because nothing tested it", so
       # shipping a suite no job executes would have left the sentence true. They are added
-      # together because the doctrine above allows it: all of them are green (653 assertions
+      # together because the doctrine above allows it: all of them are green (672 assertions
       # across eight files), and "do not mark a check required until it is green" is about the
       # check, not about how many files it covers. Each fakes a binary on PATH or works on temp
       # files, so none needs credentials, the network, or a built binary -- and none reads a

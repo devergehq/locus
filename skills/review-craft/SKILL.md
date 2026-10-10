@@ -159,6 +159,12 @@ approved board's numbers and provisional in exactly the way `understand.md` says
 that file and the ticket that asked for this linter disagreed, **`understand.md` won**: it owns the
 slots, and this is its enforcement.
 
+**A slot limit is a cap; the 150-word top layer is a budget.** The budget is deliberately tighter
+than the sum of the caps — four problems at 20 words a line plus a 20-word headline would be 180 —
+because a cap stops one line running away and the budget stops the top layer doing it
+collectively. When the budget is what failed, the linter names the longest lines to tighten rather
+than saying "shorten it".
+
 **What it never measures: anything behind a click, and anything about the diff.** The budget is the
 top layer — the headline, and each problem's was-wrong and now line. A problem's detail, an
 option's arguments, a part's summary and the blind pass's answer are unbounded, because depth is
@@ -201,14 +207,17 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 than asked for. Nothing checked one before: on the review that forced `understand.md` the session
 recorded 310 words of prose and a 50-line typed sketch for what the approved board carries in 85
 words and one picture, and the house target of 150 words for a draft met 1,381 — so asking in
-prose does not hold. Sixteen rules, over the structured brief Review Desk stores: a headline that
+prose does not hold. Eighteen rules, over the structured brief Review Desk stores: a headline that
 is one short sentence, both flows drawn and inside their row ranges, every numbered problem marked
 on a box in each flow and carrying both its lines, a top layer with no class name, path or `::`
 and no sentence of three semicolon-joined clauses, every length limit, and a problem half that
-does not name an option or an after-only box — the half a blind pass may be shown. A brief written
+does not name an option or an after-only box — the half a blind pass may be shown. An option's
+title and the supporting table's row count are checked too, both slots `understand.md` states and
+DEV-884's rule table did not reach. A brief written
 the old way is reported as "not structured" once, rather than failing fifteen rules about slots it
-has never had. `understand.md` owns every per-slot limit, which made three of them tighter than
-DEV-884 proposed; the disagreements are named in `--limits`, next to the numbers.
+has never had. `understand.md` owns every per-slot limit, which made two of them tighter than
+DEV-884 proposed — and settled the headline at the 20 words Patrick ruled on, where the file had
+said "under 20" and the ticket 25. The disagreements are named in `--limits`, next to the numbers.
 
 **10 October 2026.** `understand.md` is new, and the three understanding steps now come first:
 `workers/review.md` had them at step 5 of 8, after the tests, the blind second lens and the
