@@ -88,8 +88,20 @@ for line in doc.split("\n")[start + 2:]:
     markers[key] = marker.group(1)
     numbered[marker.group(1)] = cells[2].strip("*") == "yes"
 
+# The trim cap, and the context the at-head branch takes. Both are numbers the brief states and
+# the builder needs; reading them is what puts the brief itself under test rather than a copy.
+cap = re.search(r"the cap is (\d+) entries", doc)
+at_head = re.search(r"Take the flagged line and \*\*three either side\*\*", doc)
+
 print(json.dumps({
     "context": int(context.group(1)) if context else None,
+    "cap": int(cap.group(1)) if cap else None,
+    # Spelled as a word in the prose, so the number is pinned by the phrase rather than parsed.
+    "at_head_context": 3 if at_head else None,
+    "trim_from_far_end": "end is further from the\n  flagged line's entry" in doc,
+    "trim_keeps_flagged": "never the flagged\n  line's own entry" in doc,
+    "trim_moves_start_line": "add one\n  to `start_line`" in doc,
+    "three_branches": "there is no fourth" in doc,
     "markers": markers,
     "numbered": numbered,
     "rows": rows,
@@ -143,13 +155,63 @@ def numbers(hunk):
     return out
 
 
+def trim(hunk, flagged, cap):
+    """The brief's trim: down to `cap` entries, from the end further from the flagged entry.
+
+    `start_line` moves by one for each non-removal dropped from the top, and the flagged entry is
+    never dropped. Leaving `start_line` alone is the one arithmetic error nothing else catches,
+    which is why section E reverses exactly that.
+    """
+    at = numbers(hunk).index(flagged)
+    lines = hunk["lines"]
+    start, top, bottom = hunk["start_line"], 0, len(lines) - 1
+    while bottom - top + 1 > cap:
+        # Equally far: the top, so the choice is never left to the order of a comparison.
+        if (at - top) >= (bottom - at):
+            if NUMBERED[lines[top]["marker"]]:
+                start += 1
+            top += 1
+        else:
+            bottom -= 1
+    return {"file": hunk["file"], "start_line": start, "lines": lines[top:bottom + 1]}
+
+
 for hunk in hunks:
     if line in numbers(hunk):
-        print(json.dumps(hunk, sort_keys=True))
+        print(json.dumps(trim(hunk, line, spec["cap"]), sort_keys=True))
         break
 else:
     sys.exit("no hunk in that diff draws %s:%d" % (path, line))
 HUNK
+
+cat > "$work/athead.py" <<'ATHEAD'
+"""The other branch: the code at the head commit, for a line the diff does not draw.
+
+    git show <head>:<path> | athead.py <spec.json> <path> <line>
+
+Three either side, clamped at the file's ends rather than padded, every entry `unchanged` --
+which is how the record says the line is not part of the change. There is no diff here, so there
+are no markers to read.
+"""
+import json, pathlib, sys
+
+spec = json.loads(pathlib.Path(sys.argv[1]).read_text())
+path, line, context = sys.argv[2], int(sys.argv[3]), spec["at_head_context"]
+
+held = sys.stdin.read().split("\n")
+if held and held[-1] == "":
+    held.pop()                      # the trailing newline is not a line of the file
+if not 1 <= line <= len(held):
+    sys.exit("%s has no line %d at that commit" % (path, line))
+
+start = max(1, line - context)
+end = min(len(held), line + context)
+print(json.dumps({
+    "file": path,
+    "start_line": start,
+    "lines": [{"marker": "unchanged", "text": held[n - 1]} for n in range(start, end + 1)],
+}, sort_keys=True))
+ATHEAD
 
 cat > "$work/numbers.py" <<'NUMBERS'
 """What a hunk's rows are numbered, and what text each number carries.
@@ -269,11 +331,24 @@ ok "  and never retyped"                            "$(grep -c 'Never retype it,
 ok "a removed line can never be flagged"            "$(grep -c 'can never be flagged' "$brief")" 1
 ok "one file line per entry"                        "$(grep -c 'One file line per entry' "$brief")" 1
 ok "a long hunk is trimmed from its ends"           "$(grep -c 'trimmed from its ends, never from its middle' "$brief")" 1
-ok "  with what that does to start_line"            "$(grep -c 'add one to' "$brief")" 1
+ok "  with a cap, read as a number"                 "$(ask "d['cap']")" 20
+ok "  which end to drop from, deterministically"    "$(ask "d['trim_from_far_end']")" True
+ok "  never the flagged line's own entry"           "$(ask "d['trim_keeps_flagged']")" True
+ok "  and what it does to start_line"               "$(ask "d['trim_moves_start_line']")" True
+ok "  naming the error nothing else would catch"    "$(grep -c 'puts the comment on the wrong line' "$brief")" 1
 ok "the three fields are a rule, not a nudge"       "$(grep -c 'this is a rule' "$brief")" 1
 ok "  naming all three"                             "$(grep -c '`hunk`, `flagged_line` and `inline_comment`' "$brief")" 1
-ok "a finding with no hunk is a fact about it"      "$(grep -c 'not an omission, and there are three kinds' "$brief")" 1
-ok "  and the three kinds are enumerated"           "$(grep -c 'A finding on a file the change never touches' "$brief")" 1
+ok "every finding with a file and a line has one"   "$(grep -c 'Every finding with a file and a line carries a hunk' "$brief")" 1
+ok "  the three branches are a closed set"          "$(ask "d['three_branches']")" True
+ok "  the second one reads the head checkout"       "$(grep -c 'git show <head>:<path>' "$brief")" 2
+ok "  three either side, clamped not padded"        "$(ask "d['at_head_context']")" 3
+ok "  marking every entry unchanged"                "$(grep -c 'mark \*\*every entry' "$brief")" 1
+ok "  and saying what that means"                   "$(grep -c 'this line is not part of the change' "$brief")" 1
+ok "  not a wider -U to make a hunk appear"         "$(grep -c 'Do not reach for .git diff. with a wider' "$brief")" 1
+ok "such a finding gets no inline thread"           "$(grep -c 'gets no inline thread' "$brief")" 1
+ok "  and posts in the body instead"                "$(grep -c 'posts \*\*in the body\*\*' "$brief")" 1
+ok "  and not twice, in an unanchored comment too"  "$(grep -c 'Do not also write that rule' "$brief")" 1
+ok "no file, or no line, carries none"              "$(grep -c 'A finding with no file, or a file and no line, carries no hunk' "$brief")" 1
 ok "the JSON is given, not described"               "$(grep -c '"flagged_line": 16,' "$brief")" 1
 ok "  with the hunk inside it"                      "$(grep -c '"marker": "removed",' "$brief")" 1
 
@@ -341,6 +416,17 @@ has claimed since before anything made it true.
 
 There is no idempotency key.
 DOC
+cat > "$fix/jobs/Backoff.php" <<'PHP'
+<?php
+
+class Backoff
+{
+    public function next($attempt)
+    {
+        return 1;
+    }
+}
+PHP
 git -C "$fix" add -A
 git -C "$fix" -c user.email=t@example.invalid -c user.name=T commit -qm base
 base=$(git -C "$fix" rev-parse HEAD)
@@ -354,6 +440,24 @@ p.write_text(p.read_text().replace(
     "\n"
     "        return $response;\n"))
 EDIT
+# And a change long enough to be trimmed: one `return` becomes a schedule of its own. At -U3
+# this is a single hunk of 30 entries, which is the only way the cap is under test at all.
+python3 - "$fix/jobs/Backoff.php" <<'LONG'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+body = ["        $schedule = ["]
+body += ["            %d => %d," % (n, 2 ** n) for n in range(1, 13)]
+body += [
+    "        ];",
+    "",
+    "        if (!isset($schedule[$attempt])) {",
+    "            throw new OutOfRangeException('no backoff for attempt ' . $attempt);",
+    "        }",
+    "",
+    "        return $schedule[$attempt];",
+]
+p.write_text(p.read_text().replace("        return 1;\n", "\n".join(body) + "\n"))
+LONG
 git -C "$fix" add -A
 git -C "$fix" -c user.email=t@example.invalid -c user.name=T commit -qm change
 head=$(git -C "$fix" rev-parse HEAD)
@@ -393,7 +497,51 @@ ok "  as is every other number it draws"             "$(python3 "$work/against.p
 ok "  the removal is drawn with no number"           "$(grep -c '^ ' "$work/numbered.txt")" 1
 ok "a removed line cannot be flagged: 17 is kept"    "$(sed -n 's/^17 //p' "$work/numbered.txt")" ""
 
-printf '\n  every finding whose file and line are in the change carries all three\n'
+printf '\n  the trim, at three positions of the flagged line\n'
+# A 26-entry hunk at -U3 and a cap of 20, so six entries come off -- and where they come off
+# depends on the flagged line. The middle and bottom cases move `start_line`, which is the
+# arithmetic that puts a comment on the wrong line when it is got wrong.
+git -C "$fix" show "$head:jobs/Backoff.php" > "$work/backoff-head.txt"
+# The entries `-U3` hands back, before the cap. Counted from the `@@` line onward so the diff's
+# own `---`/`+++` headers are not entries, and with `^[ +-]` rather than `^[ +-][^+-]` so a blank
+# context line (one space) and a blank addition (one plus) are both counted -- this change has
+# both, and the tighter pattern silently dropped them.
+entries () { git -C "$fix" diff "-U$(ask "d['context']")" "$base" "$head" -- "$1" \
+    | sed -n '/^@@/,$p' | grep -c '^[ +-]'; }
+ok "the long change is one hunk"                     "$(git -C "$fix" diff -U3 "$base" "$head" \
+    -- jobs/Backoff.php | grep -c '^@@')" 1
+ok "  of 26 entries at -U3"                          "$(entries jobs/Backoff.php)" 26
+ok "  against the cap the brief states"              "$(ask "d['cap']")" 20
+ok "  while the short change is under it"            "$(entries jobs/DeliverWebhook.php)" 10
+# trimmed <line>: build it, then report the count, the start line and the drawn-number check
+trimmed () {
+  build jobs/Backoff.php "$1" > /dev/null
+  python3 "$work/numbers.py" "$work/spec.json" "$work/hunk.json" > "$work/trimmed.txt"
+}
+trimmed 5
+ok "flagged near the top: 20 entries"                "$(field "len(hunk['lines'])")" 20
+ok "  start_line unmoved, so it came off the bottom" "$(field "hunk['start_line']")" 4
+ok "  the flagged line is still drawn"               "$(grep -c '^5 ' "$work/trimmed.txt")" 1
+ok "  with the text line 5 holds at head"            "$(sed -n 's/^5 //p' "$work/trimmed.txt")" "$(sed -n '5p' "$work/backoff-head.txt")"
+ok "  and every number it draws is the checkout's"   "$(python3 "$work/against.py" \
+    "$work/trimmed.txt" "$work/backoff-head.txt")" none
+trimmed 16
+ok "flagged in the middle: 20 entries"               "$(field "len(hunk['lines'])")" 20
+ok "  start_line moved by the non-removals dropped"  "$(field "hunk['start_line']")" 7
+ok "  the flagged line is still drawn"               "$(grep -c '^16 ' "$work/trimmed.txt")" 1
+ok "  with the text line 16 holds at head"           "$(sed -n 's/^16 //p' "$work/trimmed.txt")" "$(sed -n '16p' "$work/backoff-head.txt")"
+ok "  and every number it draws is the checkout's"   "$(python3 "$work/against.py" \
+    "$work/trimmed.txt" "$work/backoff-head.txt")" none
+ok "  the removal dropped from the top moved nothing" "$(grep -c '^ ' "$work/trimmed.txt")" 0
+trimmed 26
+ok "flagged near the bottom: 20 entries"             "$(field "len(hunk['lines'])")" 20
+ok "  start_line moved by five, not six"             "$(field "hunk['start_line']")" 9
+ok "  the flagged line is still drawn"               "$(grep -c '^26 ' "$work/trimmed.txt")" 1
+ok "  with the text line 26 holds at head"           "$(sed -n 's/^26 //p' "$work/trimmed.txt")" "$(sed -n '26p' "$work/backoff-head.txt")"
+ok "  and every number it draws is the checkout's"   "$(python3 "$work/against.py" \
+    "$work/trimmed.txt" "$work/backoff-head.txt")" none
+
+printf '\n  every finding with a file and a line carries a hunk, by one of two branches\n'
 # The rule, over a fixture set that deliberately holds both kinds. `in_change` is NOT read from
 # the fixture: it is the builder's exit code, so the finding set cannot assert its own answer.
 cat > "$work/findings.json" <<'FINDINGS'
@@ -409,14 +557,25 @@ cat > "$work/findings.json" <<'FINDINGS'
   "claim": "`$response` says its type, not its role",
   "file": "jobs/DeliverWebhook.php", "line": 16,
   "inline_comment": "`$delivery` reads better at the call site."},
+ {"lens": "boundary", "severity": "should",
+  "claim": "attempt 13 throws rather than capping",
+  "file": "jobs/Backoff.php", "line": 16,
+  "inline_comment": "A 13th attempt throws, where the queue expects a number.",
+  "why_it_matters": "The retry loop dies instead of backing off at its maximum."},
  {"lens": "sibling diff", "severity": "should",
   "claim": "the constructor takes a client it never checks",
   "file": "jobs/DeliverWebhook.php", "line": 5,
+  "inline_comment": "This line is not part of the change; the client is unchecked here.",
   "why_it_matters": "A null client fails at delivery time rather than at construction."},
  {"lens": "documentation", "severity": "nit",
   "claim": "the document still says there is no idempotency key",
   "file": "docs/webhooks.md", "line": 10,
+  "inline_comment": "The key exists now; this is the last line that says otherwise.",
   "why_it_matters": "The next reader believes the key does not exist."},
+ {"lens": "house style", "severity": "nit",
+  "claim": "the file opens with a blank line after the tag",
+  "file": "jobs/Backoff.php", "line": 2,
+  "inline_comment": "Not part of the change, and not what the other jobs do."},
  {"lens": "correction", "severity": "should",
   "claim": "the description says the retry is dropped after a day; nothing drops it",
   "why_it_matters": "A reviewer takes a bound on the blast radius that is not there."}
@@ -425,34 +584,46 @@ FINDINGS
 
 # Fill each finding in or out, by what git says, and report what the set looks like.
 cat > "$work/apply.py" <<'APPLY'
-"""Every finding, with a hunk where the change reaches its line and none where it does not.
+"""Every finding, with the hunk the brief's three branches give it.
 
-Prints one line per finding -- `<n> in|out <fields>` -- and writes the documents `finding add`
-would be given. Whether a finding is in the change is the builder's answer, never the fixture's.
+Prints one line per finding -- `<n> diff|at-head|none <fields>` -- and writes the documents
+`finding add` would be given. Which branch a finding takes is the builder's answer, never the
+fixture's: a fixture that declared it would be asserting what it wrote down.
 """
 import json, pathlib, subprocess, sys
 
 spec, findings, fix, base, head, out = sys.argv[1:7]
 context = json.loads(pathlib.Path(spec).read_text())["context"]
 findings = json.loads(pathlib.Path(findings).read_text())
+here = pathlib.Path(spec).parent
+
+
+def run(argv, feed):
+    return subprocess.run([sys.executable, *argv], input=feed, capture_output=True, text=True)
+
 
 for index, finding in enumerate(findings, 1):
-    hunk = None
+    hunk, branch = None, "none"
     if finding.get("file") and finding.get("line"):
+        path, line = finding["file"], str(finding["line"])
         diff = subprocess.run(
-            ["git", "-C", fix, "diff", "-U%d" % context, base, head, "--", finding["file"]],
+            ["git", "-C", fix, "diff", "-U%d" % context, base, head, "--", path],
             capture_output=True, text=True, check=True).stdout
-        built = subprocess.run(
-            [sys.executable, pathlib.Path(spec).with_name("hunk.py"), spec,
-             finding["file"], str(finding["line"])],
-            input=diff, capture_output=True, text=True)
+        built = run([here / "hunk.py", spec, path, line], diff)
         if built.returncode == 0:
-            hunk = json.loads(built.stdout)
+            hunk, branch = json.loads(built.stdout), "diff"
+        else:
+            # The second branch: the code at head, with no change in it. Not a wider `-U`.
+            at_head = subprocess.run(["git", "-C", fix, "show", "%s:%s" % (head, path)],
+                                     capture_output=True, text=True, check=True).stdout
+            built = run([here / "athead.py", spec, path, line], at_head)
+            if built.returncode == 0:
+                hunk, branch = json.loads(built.stdout), "at-head"
     if hunk:
         finding["hunk"] = hunk
         finding["flagged_line"] = finding["line"]
     pathlib.Path("%s/f%d.json" % (out, index)).write_text(json.dumps(finding, sort_keys=True))
-    print("%d %s %s" % (index, "in" if hunk else "out",
+    print("%d %s %s" % (index, branch,
                         ",".join(k for k in ("hunk", "flagged_line", "inline_comment")
                                  if finding.get(k))))
 APPLY
@@ -460,19 +631,49 @@ APPLY
 mkdir -p "$work/add"
 python3 "$work/apply.py" "$work/spec.json" "$work/findings.json" "$fix" "$base" "$head" \
     "$work/add" > "$work/applied.txt"
-# The rule, as one expression: of the findings git says are in the change, how many are missing
-# a field. Named here so section E's control can run the identical expression over a set that
-# has had its hunks stripped, rather than re-implementing the rule it is meant to reverse.
-incomplete () { grep ' in ' "$1" | grep -vc 'hunk,flagged_line,inline_comment' || true; }
-ok "two of the five findings are in the change"      "$(grep -c ' in ' "$work/applied.txt")" 2
-ok "  and three are not"                             "$(grep -c ' out ' "$work/applied.txt")" 3
-ok "every in-change finding carries all three"       "$(incomplete "$work/applied.txt")" 0
-ok "  which is the rule, not the fixture"            "$(grep -c 'hunk,flagged_line,inline_comment' "$work/applied.txt")" 2
-ok "no out-of-change finding carries a hunk"         "$(grep ' out ' "$work/applied.txt" \
+# The rule, as one expression: of the findings that have a file and a line, how many are missing
+# a field. Named here so section E's control can run the identical expression over a record whose
+# hunks have been removed, rather than re-implementing the rule it is meant to reverse.
+incomplete () { grep -E ' (diff|at-head) ' "$1" | grep -vc 'hunk,flagged_line,inline_comment' \
+    || true; }
+branch () { sed -n "s/^$1 \([a-z-]*\).*/\\1/p" "$work/applied.txt"; }
+ok "three findings take the diff branch"             "$(grep -c ' diff ' "$work/applied.txt")" 3
+ok "  three take the code at head"                   "$(grep -c ' at-head ' "$work/applied.txt")" 3
+ok "  and one has no file, so it takes neither"      "$(grep -c ' none ' "$work/applied.txt")" 1
+ok "every finding with a file and a line has a hunk" "$(incomplete "$work/applied.txt")" 0
+ok "  over six of the seven, not a handful"          "$(grep -c 'hunk,flagged_line,inline_comment' "$work/applied.txt")" 6
+ok "the finding with no file carries none"           "$(grep ' none ' "$work/applied.txt" \
     | grep -c hunk)" 0
-ok "a line the diff does not reach is out"           "$(sed -n 's/^3 \([a-z]*\).*/\1/p' "$work/applied.txt")" out
-ok "a file the change never touches is out"          "$(sed -n 's/^4 \([a-z]*\).*/\1/p' "$work/applied.txt")" out
-ok "and a correction to the description is out"      "$(sed -n 's/^5 \([a-z]*\).*/\1/p' "$work/applied.txt")" out
+ok "a line in the change takes the diff"             "$(branch 1)" diff
+ok "a long change is still the diff branch"          "$(branch 3)" diff
+ok "a line the diff does not draw goes to head"      "$(branch 4)" at-head
+ok "a file the change never touches goes to head"    "$(branch 5)" at-head
+ok "a line near the top of a file goes to head"      "$(branch 6)" at-head
+ok "and a correction to the description takes neither" "$(branch 7)" none
+
+printf '\n  the code at head, for a line the change does not touch\n'
+# An all-unchanged hunk is how the record says "this line is not part of the change". Its numbers
+# are checked against the checkout the same way the diff branch's are -- the clamp at a file's
+# ends is where an off-by-one would otherwise live.
+athead () { python3 -c "
+import json
+hunk = json.load(open('$work/add/f$1.json'))['hunk']
+print($2)"; }
+ok "every entry of an at-head hunk is unchanged"     "$(athead 4 "sorted({l['marker'] for l in hunk['lines']})")" "['unchanged']"
+ok "  three either side, so seven entries"           "$(athead 4 "len(hunk['lines'])")" 7
+ok "  starting three above the flagged line"         "$(athead 4 "hunk['start_line']")" 2
+git -C "$fix" show "$head:jobs/DeliverWebhook.php" > "$work/dw-head.txt"
+python3 "$work/numbers.py" "$work/spec.json" \
+    "$(python3 -c "
+import json
+json.dump(json.load(open('$work/add/f4.json'))['hunk'], open('$work/f4hunk.json', 'w'))
+print('$work/f4hunk.json')")" > "$work/f4numbered.txt"
+ok "  and every number it draws is the checkout's"   "$(python3 "$work/against.py" \
+    "$work/f4numbered.txt" "$work/dw-head.txt")" none
+ok "at the end of a file the span is clamped"        "$(athead 5 "len(hunk['lines'])")" 4
+ok "  not padded past the last line"                 "$(athead 5 "hunk['start_line'] + len(hunk['lines']) - 1")" 10
+ok "at the top of a file it starts at one"           "$(athead 6 "hunk['start_line']")" 1
+ok "  with five entries, not seven"                  "$(athead 6 "len(hunk['lines'])")" 5
 
 # =============================================================================================
 printf '\nC. the blocks, and the body they compose to\n'
@@ -570,12 +771,34 @@ else
       | python3 -c "
 import json, sys
 held = json.load(sys.stdin)['findings'][0]['hunk']
-want = json.load(open('$work/hunk.json'))
+want = json.load(open('$work/add/f1.json'))['hunk']
 print(held['start_line'] == want['start_line']
       and [(l['marker'], l['text']) for l in held['lines']]
           == [(l['marker'], l['text']) for l in want['lines']])")" True
   ok "  with the flagged line on it"                 "$(review-desk review show --review "$rid" --json \
       | python3 -c "import json,sys; print(json.load(sys.stdin)['findings'][0]['flagged_line'])")" 16
+  ok "  and accepted the all-unchanged one too"      "$(review-desk review show --review "$rid" --json \
+      | python3 -c "
+import json, sys
+held = json.load(sys.stdin)['findings'][3]['hunk']
+print(sorted({l['marker'] for l in held['lines']}), held['start_line'])")" "['unchanged'] 2"
+  ok "  with its flagged line inside it"             "$(review-desk review show --review "$rid" --json \
+      | python3 -c "
+import json, sys
+held = json.load(sys.stdin)['findings'][3]
+print(len(held['hunk']['lines']), held['flagged_line'])")" "7 5"
+  ok "  and a trimmed hunk is accepted as well"      "$(review-desk review show --review "$rid" --json \
+      | python3 -c "
+import json, sys
+held = json.load(sys.stdin)['findings'][2]['hunk']
+print(len(held['lines']), held['start_line'])")" "20 7"
+  # The store refuses a flagged line the hunk does not draw, so a trim that moved `start_line`
+  # wrongly would be refused HERE rather than drawn on the wrong line. That it was accepted with
+  # `flagged_line` 16 is the store agreeing with the arithmetic section B checked.
+  ok "  with the flagged line the trim kept"         "$(review-desk review show --review "$rid" --json \
+      | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['findings'][2]['flagged_line'])")" 16
 
   printf '\n  the refusals the brief is written around\n'
   python3 - "$work/add/f1.json" "$work" <<'BAD'
@@ -707,28 +930,44 @@ ok "no context draws four lines, not ten"            "$(python3 -c "
 import json
 print(len(json.load(open('$work/nohunk.json'))['lines']))")" 4
 
-# The defect DEV-891 is named after: a session that stored no hunk. `apply.py` with its hunk
-# step reversed produces exactly that record, and the SAME expression section B passes has to
-# fail on it.
-sed 's/^        if built.returncode == 0:$/        if False:  # HUNK STEP REVERSED/' \
-    "$work/apply.py" > "$work/nohunk.py"
-ok "the hunk-step reversal changed one line"          "$(grep -c 'HUNK STEP REVERSED' "$work/nohunk.py")" 1
+# The defect DEV-891 is named after: a session that found the code and stored none of it. The
+# reversal keeps the branch answer and drops only the fields, which is exactly that record -- and
+# the SAME expression section B passes has to fail on it.
+sed 's/^    if hunk:$/    if False:  # HUNK ATTACH REVERSED/' "$work/apply.py" > "$work/nohunk.py"
+ok "the attach reversal changed one line"             "$(grep -c 'HUNK ATTACH REVERSED' "$work/nohunk.py")" 1
 mkdir -p "$work/stripped"
 python3 "$work/nohunk.py" "$work/spec.json" "$work/findings.json" "$fix" "$base" "$head" \
     "$work/stripped" > "$work/stripped.txt"
-ok "  and left no finding in the change at all"       "$(grep -c ' in ' "$work/stripped.txt")" 0
-ok "  so no document carries a hunk"                  "$(grep -l '"hunk"' "$work"/stripped/f*.json \
+ok "  and still reports the branch for each"          "$(grep -cE ' (diff|at-head) ' "$work/stripped.txt")" 6
+ok "  while no document carries a hunk"               "$(grep -l '"hunk"' "$work"/stripped/f*.json \
     2>/dev/null | wc -l | tr -d ' ')" 0
-# With nothing reading as in-change, `incomplete` has nothing to count -- so the control that
-# matters is the one that KEEPS the in-change answer and drops only the fields.
-python3 - "$work/applied.txt" "$work/half.txt" <<'HALF'
-import pathlib, sys
-rows = pathlib.Path(sys.argv[1]).read_text().split("\n")
-pathlib.Path(sys.argv[2]).write_text("\n".join(
-    r.split(" in ")[0] + " in " if " in " in r else r for r in rows))
-HALF
-ok "the field reversal emptied the field list"        "$(grep -c ' in $' "$work/half.txt")" 2
-ok "an in-change finding with no fields is caught"    "$(incomplete "$work/half.txt")" 2
+ok "a finding with a file, a line and no hunk is caught" "$(incomplete "$work/stripped.txt")" 6
+
+# And the trim's own arithmetic, reversed: drop from the top without moving `start_line`.
+sed 's/^            if NUMBERED\[lines\[top\]\["marker"\]\]:$/            if False:  # START LINE REVERSED/' \
+    "$work/hunk.py" > "$work/nostart.py"
+ok "the start_line reversal changed one line"         "$(grep -c 'START LINE REVERSED' "$work/nostart.py")" 1
+git -C "$fix" diff -U3 "$base" "$head" -- jobs/Backoff.php \
+  | python3 "$work/nostart.py" "$work/spec.json" jobs/Backoff.php 26 > "$work/badtrim.json"
+python3 "$work/numbers.py" "$work/spec.json" "$work/badtrim.json" > "$work/badtrim.txt"
+ok "  leaving start_line where it was"                "$(python3 -c "
+import json
+print(json.load(open('$work/badtrim.json'))['start_line'])")" 4
+ok "a trim that does not move start_line is caught"   "$(python3 "$work/against.py" \
+    "$work/badtrim.txt" "$work/backoff-head.txt" | tr ',' ' ' | wc -w | tr -d ' ')" 20
+ok "  and the flagged line is not even drawn"         "$(grep -c '^26 ' "$work/badtrim.txt")" 0
+
+# The at-head branch, reversed: a wider `-U` instead of the checkout. The brief forbids it, and
+# this is why -- the lines come back marked as though the change had made them.
+git -C "$fix" diff -U20 "$base" "$head" -- jobs/DeliverWebhook.php \
+  | python3 "$work/hunk.py" "$work/spec.json" jobs/DeliverWebhook.php 5 > "$work/widened.json"
+ok "a wider -U does draw the line"                    "$(python3 -c "
+import json
+print(5 in [n for n in range(json.load(open('$work/widened.json'))['start_line'], 99)][:20])")" True
+ok "  but marks changed lines as changed"             "$(python3 -c "
+import json
+print(sorted({l['marker'] for l in json.load(open('$work/widened.json'))['lines']}))")" "['added', 'removed', 'unchanged']"
+ok "  where the at-head hunk says unchanged only"     "$(athead 4 "sorted({l['marker'] for l in hunk['lines']})")" "['unchanged']"
 
 # The composition, reversed: a glyph typed into the title composes twice.
 python3 - "$work/blocks.json" "$work/glyph.json" <<'GLYPH'

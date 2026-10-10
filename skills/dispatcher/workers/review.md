@@ -257,7 +257,7 @@ carry. The gate belongs on write 2, where the whole brief is in hand.
 | 3 Blind options pass | `brief put` write 2 — `blind_pass`, and `proposed_by` on the options it raised. `layer set --layer 3 --state running` while it runs |
 | 4 Alternatives | `brief put` write 2 — `options[]` with their verdicts. `layer set --layer 3 --state done` with the counts |
 | 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names, and `brief_lint.py` before the write |
-| 7 Read the change, 9 the second lens, 10 the lenses | `finding add` per finding, with its hunk, flagged line and inline comment where the change touches that line |
+| 7 Read the change, 9 the second lens, 10 the lenses | `finding add` per finding, with its hunk, flagged line and inline comment wherever the finding has a file and a line |
 | 12 The draft | `draft put --sections` — one block per posted finding, and a prose block for everything else |
 
 **Your slots go into these fields and no others.** A field Review Desk does not know is refused,
@@ -401,12 +401,13 @@ the next round will raise again, which is the repetition this whole project exis
 
 ### The code a finding is about
 
-**A finding on a line the change touches carries three more fields, and this is a rule rather
+**Every finding with a file and a line carries three more fields, and this is a rule rather
 than an encouragement:** `hunk`, `flagged_line` and `inline_comment`. The developer's page draws
 the code around the flagged line with the comment under it, and it is the page the review is
 read from — and Review Desk **does not fetch code**, so the hunk you store is the only copy of
 those lines there is. A review that stores none leaves the developer a list of claims and a file
-path to go and look up by hand. Measured on one real review by this brief's predecessor: **0 of 19 findings carried a
+path to go and look up by hand. Where the change does not reach the line, the code still goes on
+the record — "The code for a finding the change does not touch", below, says from where. Measured on one real review by this brief's predecessor: **0 of 19 findings carried a
 hunk and 0 carried a flagged line.**
 
 **Read the hunk from the checkout. Never retype it, and never reformat it.** Nothing in Review
@@ -446,10 +447,14 @@ Two more rules the store enforces, both worth knowing before a write is refused:
 - **One file line per entry.** A `text` holding an end-of-line character is refused: one entry
   draws one row under one number, so an entry holding three lines would shift every number after
   it, and `flagged_line` with them.
-- **A long hunk is trimmed from its ends, never from its middle.** Where `-U3` hands you more
-  than about twenty lines, drop whole lines from the top and the bottom and **add one to
-  `start_line` for every line you drop from the top that is not a removal.** Dropping from the
-  middle would make the page draw consecutive numbers over code that is not consecutive.
+- **A long hunk is trimmed from its ends, never from its middle, and the cap is 20 entries.**
+  While the hunk holds more than 20, drop one entry from whichever **end is further from the
+  flagged line's entry** — the top, when the two are equally far — and **never the flagged
+  line's own entry**. For each entry you drop from the top that is **not** a removal, **add one
+  to `start_line`**; a removal dropped from the top changes nothing, because it carried no
+  number. Dropping from the middle would make the page draw consecutive numbers over code that
+  is not consecutive, and leaving `start_line` where it was puts the comment on the wrong line —
+  the one piece of arithmetic here that nothing else would catch.
 
 **The JSON, for one finding, complete:**
 
@@ -489,14 +494,58 @@ the rest of what the page draws, each optional and independent of the others —
 verbatim output and keeps its newlines, `proof_note` is the plain sentence beneath it, and
 `verification` is `reproduced` only for something you actually ran.
 
-**A finding with no hunk is a fact about the finding, not an omission, and there are three kinds
-of it.** A finding on a file the change never touches, a finding on a line the diff does not
-reach, and a correction to the pull request's description: none of these has a hunk, and none
-should be given one. `git diff` will not produce one, and inventing one from the file at head
-would store code the change did not make as though it had. Leave `hunk` and `flagged_line` out
-and write the claim, the consequence and the fix — the page draws such a finding with its file
-and its line, as it always did. What is **not** acceptable is a finding whose file and line *are*
-in the change and which carries no hunk: that is the defect this section exists to close.
+### The code for a finding the change does not touch
+
+**Every finding with a file and a line carries a hunk** — not only the ones in the change. A
+finding six lines from a change, or in a file the pull request never touched, reads far better
+with its code in front of the developer than as a claim and a path, and that is the whole reason
+this section exists.
+
+**Where `git diff -U3` draws no hunk for the flagged line, read the lines from the head checkout
+instead:**
+
+```sh
+git show <head>:<path>
+```
+
+Take the flagged line and **three either side** — fewer where the file begins or ends, clamped
+rather than padded — set `start_line` to the first line you took, and mark **every entry
+`unchanged`**. There is no diff to read markers from, so there are no markers to read: an
+all-unchanged hunk is how this record says **"this line is not part of the change"**, and the
+page draws it with every gutter blank, which is exactly true.
+
+**Do not reach for `git diff` with a wider `-U` to make one appear.** A hunk that only exists at
+`-U20` is still the code at head with no change in it, and taking it from `git show` says so
+plainly instead of implying the pull request touched the line.
+
+**Such a finding gets no inline thread, and that is a property of GitHub rather than of the
+finding.** GitHub anchors a review comment inside the diff, so there is nowhere to hang one; the
+finding posts **in the body**, as its own section, which is what the house style's "Findings
+with nothing in the diff to anchor to" asks for. The hunk is for the developer's page, not for
+GitHub.
+
+**Do not also write that rule's "Corrections and unanchored findings" comment.** It exists so an
+unanchorable finding stays navigable from a body that is a short index; here the body carries the
+finding in full, in its own section, so a second copy in a top-level comment is the same words
+twice and one more thing to keep in step. Write it where the house style's sectioned layout puts
+it, and nowhere else.
+
+**A finding with no file, or a file and no line, carries no hunk at all** — a correction to the
+pull request's description, a missing ticket, a wrong figure. There is no line to read, so there
+is nothing to read, and `git show` cannot invent one. Leave `hunk` and `flagged_line` out and
+write the claim, the consequence and the fix; the page draws such a finding without code, as it
+always did.
+
+So the three branches, and there is no fourth:
+
+| The finding | The hunk |
+|---|---|
+| its line is drawn by `git diff -U3` | that hunk, with its `added`, `removed` and `unchanged` markers |
+| it has a file and a line the diff does not draw | `git show <head>:<path>`, three either side, **every entry `unchanged`** |
+| it has no file, or no line | **none.** `hunk` and `flagged_line` left out |
+
+What is **not** acceptable is a finding with a file and a line and no hunk: that is the defect
+this section exists to close.
 
 ### The draft, and then wait
 
