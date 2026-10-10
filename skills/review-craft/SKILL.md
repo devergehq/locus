@@ -1,7 +1,7 @@
 ---
 id: review-craft
 name: Review Craft
-description: How to understand a change before you judge it, how to read it, how to write what you found, and how to write the PR description that carries the decision — three understanding steps with a blind options pass, eight review lenses, four severities, a visible budget, evidence folded or moved to a comment rather than dropped, and two linters that check the result. Hands over method; it does not perform a review. USE WHEN reviewing a PR, explaining what a change is for before reading its code, writing review comments, deciding a severity, judging whether a finding is worth raising, checking a drafted review before posting, or writing or shortening a PR description.
+description: How to understand a change before you judge it, how to read it, how to write what you found, and how to write the PR description that carries the decision — three understanding steps with a blind options pass, eight review lenses, four severities, a visible budget, evidence folded or moved to a comment rather than dropped, and three linters that check the result. Hands over method; it does not perform a review. USE WHEN reviewing a PR, explaining what a change is for before reading its code, writing review comments, deciding a severity, judging whether a finding is worth raising, checking a brief or a drafted review before it is shown, or writing or shortening a PR description.
 triggers:
   - review craft
   - review style
@@ -47,6 +47,7 @@ waits for a human to approve it before anything reaches GitHub.
 | `understand.md` | The three steps that come **before** any test or lens: Understand, Alternatives, Solution. Their slots, the blind options pass and its brief template, the rules the top layer is written to, and a worked example | First, and before you read the diff in depth |
 | `lenses.md` | Eight lenses distilled from six months of review history, each with its evidential strength stated | **After** your own read of the diff, never before — they anchor you if they go first |
 | `house-style.md` | The shape of a review: the one rule, the word budget, the four severities, `<details>` proofs, suggestion blocks, posting mechanics — **and the shape of a PR description**: the record/working split and the budget for a diff | Before you write anything down |
+| `brief_lint.py` | The same, for the *brief* — the headline, the two flows, the numbered problems, the plain top layer and its 150-word budget, and whether the problem half still reads as blind | Before you show the understanding, and before you save it |
 | `review_lint.py` | A deterministic, read-only check of a *posted* review against those rules | Before you tell anyone the review is ready |
 | `pr_lint.py` | The same, for a *PR description* — its budget for that diff, headings, placeholders, rotting dates, and the comment its working notes link to | Before you tell anyone the PR is ready |
 | `examples/synthetic-billing-review.md` | One worked review, end to end | When you want the shape rather than the rules |
@@ -126,6 +127,9 @@ python3 review_lint.py <PR> --repo OWNER/REPO         # a posted review: agent's
 python3 review_lint.py <PR> --repo OWNER/REPO --review-id <ID>   # exactly that review
 python3 pr_lint.py --repo OWNER/REPO --pr <PR>        # a PR description
 python3 pr_lint.py draft.md --changed-lines 50        # a description before the PR exists
+python3 brief_lint.py brief.json                      # a brief before it is written
+python3 brief_lint.py --review <N>                    # the brief Review Desk already holds
+python3 brief_lint.py --limits                        # the limits, and where each came from
 ```
 
 **Post the `## Working notes` comment before you shorten the body.** `pr_lint.py` errors when the
@@ -137,8 +141,35 @@ with a dead link in its description. Comment first, then edit the body to link i
 `gh pr diff <n> --stat | tail -1`, or `additions + deletions` from the API. A budget checked
 against a guessed denominator reports PASS about nothing.
 
-Both exit **0** on pass (warnings included), **1** on errors, **2** when they could not run. Both
+All three exit **0** on pass, **1** on a fault and **2** when they could not run, and all three
 check **mechanics only**: a clean run means nothing is broken, not that anything is worth reading.
+`pr_lint.py` and `review_lint.py` carry a warning state that still exits 0; `brief_lint.py` has
+none, because every rule it holds is a rule.
+
+**`brief_lint.py` reads a document, and only reaches for `review-desk` if you ask it to.** With a
+file argument — a brief you are about to `review-desk brief put`, or `-` for standard input — it
+needs no binary at all, which is the point: the brief is worth checking *before* it is saved and
+shown. `--review N` reads the saved one through `review-desk review show`, and a `review-desk`
+missing from PATH is **loud and exits 2**, never 1: nothing was read, so there is no verdict to
+give, and a linter that went quiet there would have a worker reporting a brief checked by nothing.
+
+**Its limits sit in one table at the top of the file**, each with its date and what it was
+measured from, so they can be tuned without reading the code — `--limits` prints it. They are one
+approved board's numbers and provisional in exactly the way `understand.md` says they are. Where
+that file and the ticket that asked for this linter disagreed, **`understand.md` won**: it owns the
+slots, and this is its enforcement.
+
+**A slot limit is a cap; the 150-word top layer is a budget.** The budget is deliberately tighter
+than the sum of the caps — four problems at 20 words a line plus a 20-word headline would be 180 —
+because a cap stops one line running away and the budget stops the top layer doing it
+collectively. When the budget is what failed, the linter names the longest lines to tighten rather
+than saying "shorten it".
+
+**What it never measures: anything behind a click, and anything about the diff.** The budget is the
+top layer — the headline, and each problem's was-wrong and now line. A problem's detail, an
+option's arguments, a part's summary and the blind pass's answer are unbounded, because depth is
+allowed and it is the top that is read at a glance. And there is no limit keyed on how many lines
+the pull request changes, by Patrick's ruling of 9 October 2026.
 
 **A principal's review is linted too.** It carries no `agent:` marker by house style, and the
 linter once found reviews only by that marker, so it checked nothing on the reviews posted most.
@@ -153,9 +184,9 @@ valid comment containing the wrong text.
 script lived beside a single repository, which made it a footgun the moment it did not: run
 anywhere else and it lints a different repository's PR of the same number, then reports PASS.
 
-**A review is not finished until `review_lint.py` passes, and a PR is not ready until
-`pr_lint.py` passes.** Run it, fix what it names, run it again. A document nobody can fail is a
-suggestion; this is the rule.
+**A brief is not finished until `brief_lint.py` passes, a review is not finished until
+`review_lint.py` passes, and a PR is not ready until `pr_lint.py` passes.** Run it, fix what it
+names, run it again. A document nobody can fail is a suggestion; this is the rule.
 
 ## On the worked example
 
@@ -171,6 +202,22 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**10 October 2026 (second change).** `brief_lint.py` is new, and a brief is now checked rather
+than asked for. Nothing checked one before: on the review that forced `understand.md` the session
+recorded 310 words of prose and a 50-line typed sketch for what the approved board carries in 85
+words and one picture, and the house target of 150 words for a draft met 1,381 — so asking in
+prose does not hold. Eighteen rules, over the structured brief Review Desk stores: a headline that
+is one short sentence, both flows drawn and inside their row ranges, every numbered problem marked
+on a box in each flow and carrying both its lines, a top layer with no class name, path or `::`
+and no sentence of three semicolon-joined clauses, every length limit, and a problem half that
+does not name an option or an after-only box — the half a blind pass may be shown. An option's
+title and the supporting table's row count are checked too, both slots `understand.md` states and
+DEV-884's rule table did not reach. A brief written the old way is reported as "not structured"
+once, rather than as the four failures it would otherwise collect about slots the brief has never
+had. `understand.md` owns every per-slot limit, which made two of them tighter than DEV-884
+proposed — and settled the headline at the 20 words Patrick ruled on, where the file had said
+"under 20" and the ticket 25. The disagreements are named in `--limits`, next to the numbers.
 
 **10 October 2026.** `understand.md` is new, and the three understanding steps now come first:
 `workers/review.md` had them at step 5 of 8, after the tests, the blind second lens and the

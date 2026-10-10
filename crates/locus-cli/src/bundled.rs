@@ -305,6 +305,14 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/review-craft/pr_lint.py".into(),
             include_str!("../../../skills/review-craft/pr_lint.py"),
         ),
+        // The brief linter, and a third artefact again: a brief is a JSON document
+        // Review Desk stores, read by a developer before any code is opened, so what
+        // breaks it is an unreadable top layer rather than a long page or a commit
+        // message. It ships beside understand.md because it enforces that file.
+        (
+            "skills/review-craft/brief_lint.py".into(),
+            include_str!("../../../skills/review-craft/brief_lint.py"),
+        ),
         (
             "skills/review-craft/examples/synthetic-billing-review.md".into(),
             include_str!("../../../skills/review-craft/examples/synthetic-billing-review.md"),
