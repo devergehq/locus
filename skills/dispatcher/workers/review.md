@@ -17,46 +17,76 @@ signature unless they ask for one.
 
 ## Steps
 
-1. `gh pr checkout <n>` in your workspace. Read the PR description, the linked Linear ticket (the
-   id is in the title or branch; Linear MCP, the workspace in your dispatch block), the full diff, and the code
-   around it: callers, the models involved, migrations, and the tests that exist.
-2. **Run things instead of reading about them:** the tests the change touches (the repo's
+**The understanding comes first — all of it, before a test is run or a lens applied — because its
+whole purpose is to tell your principal what is being reviewed before they open any code, and an
+understanding written after the diff argues for the diff.**
+
+**Steps 2 to 6 are `review-craft`'s `understand.md`**: the slots each one produces, the rules they
+are written to, the blind pass's brief, and a worked example. Read it before you start step 2.
+
+1. **Set up, and read the ticket.** `gh pr checkout <n>` in your workspace. Note the head sha and
+   the base commit — `git merge-base origin/<base ref> HEAD`. Read the PR description and the
+   linked Linear ticket (the id is in the title or branch; Linear MCP, the workspace in your
+   dispatch block). **Not the diff yet.**
+2. **Understand.** From the ticket, the description and the code **as it was at the base commit**,
+   write the problem first and the change second: one headline sentence, how it works today, a
+   before flow and an after flow, numbered problems marked on both flows, and one line each of what
+   was wrong and what it is now. The top layer is plain — names go one level down.
+3. **Blind options pass.** Dispatch one session through **"Independent help"** in `_common.md`,
+   with traits different from your own, and give it the numbered problems and an export of the base
+   commit and **nothing else**: not the ticket, not this pull request, not the branch. The brief
+   template, the export command and the leak rule are in `understand.md`. **Reclaim it the moment
+   it reports** (`allele_sessions_discard`). If it cannot run — a depth limit, no slot after your
+   retries, or `blind_options_pass` off in your dispatch block — say so **once**, to the Dispatcher
+   and in your provenance, and carry straight on. There is no size threshold anywhere: a ten-line
+   change can have catastrophic consequences.
+4. **Alternatives.** Line the blind session's options up against the author's: one row per option,
+   scored against each numbered problem, with who put it forward. Say which one was built, which
+   one the blind pass would pick, and what it needed to know and was not told.
+5. **Solution.** Read the change as a design, not yet as code: its parts with their files, the
+   choices the ticket left open and what was chosen, and the places the description and the code
+   disagree. The question is whether this change is the right *shape* for the problem, not yet
+   whether it is correct. A patch on a symptom, a schema that will need changing again, or a
+   workaround for something fixable upstream is a finding, and it belongs in **Problem fit** at the
+   top, not as a nit at the bottom.
+6. **Show your principal, short.** The headline, the flows, the numbered problems with their
+   was-and-now lines, the options and the parts — a message someone new to the domain could follow.
+   Say what problem you think this change solves, so they can correct you early if you have it
+   wrong. **You are showing, not asking**: you never ask for a confirmation, and you never read a
+   reply as a sign-off.
+7. **Now read the change in full**: the diff, and the code around it — callers, the models
+   involved, migrations, and the tests that exist.
+8. **Run things instead of reading about them:** the tests the change touches (the repo's
    CLAUDE.md says how), static analysis and the formatter on the changed files. Write a
    throwaway test (not committed) when you suspect a hole.
-3. **Get a second lens, blind.** Dispatch an independent reviewer (see "Independent help") with
-   different traits. Give it the ticket and the diff, but not your findings. Merge its findings with
-   yours, and mark where you disagree rather than smoothing it over.
-4. **Only then** — not before, so it doesn't anchor you — run through the `review-craft` skill's
-   lenses and add anything they surface.
-4b. **Lint the description you were given.** `python3 ~/.locus/skills/review-craft/pr_lint.py
-   --repo OWNER/REPO --pr <n>`. A description wildly over its budget for the diff is a
-   `correction`-tagged finding, not a nit: where the repo squash-merges with `PR_BODY` it becomes
-   a permanent commit message, and the supporting detail belongs in a `## Working notes` comment instead. Say
-   what should move, not "shorten it" — an author who obeys "shorten" by paraphrasing destroys the
-   specifics, which is the scar the rule was written after.
+9. **Get a second lens on the code, blind.** Dispatch an independent reviewer (see "Independent
+   help") with different traits. Give it the ticket and the diff, but not your findings. Merge its
+   findings with yours, and mark where you disagree rather than smoothing it over. This is a second
+   session and a different job from step 3's: that one never sees the diff, this one starts from it.
+10. **Only then** — not before, so it doesn't anchor you — run through the `review-craft` skill's
+    lenses and add anything they surface.
+11. **Lint the description you were given.** `python3 ~/.locus/skills/review-craft/pr_lint.py
+    --repo OWNER/REPO --pr <n>`. A description wildly over its budget for the diff is a
+    `correction`-tagged finding, not a nit: where the repo squash-merges with `PR_BODY` it becomes
+    a permanent commit message, and the supporting detail belongs in a `## Working notes` comment instead. Say
+    what should move, not "shorten it" — an author who obeys "shorten" by paraphrasing destroys the
+    specifics, which is the scar the rule was written after.
+12. Prepare the draft **in this session**, in the house style. **Invoke the `review-craft` skill
+    and follow it** — the visible-word budget for this change's size, the four severities,
+    sentence-case headings, `<details>` for every proof, and suggestion blocks for mechanical
+    fixes. Its worked example shows the shape. Drop any finding you cannot back with evidence, or
+    make it a Question. **Problem fit** carries 2–3 sentences of the understanding and may carry the
+    before-and-after diagram; the rest of it was for your principal, not for the pull request.
 
-5. **Read the problem, not only the diff.** Before judging the change, state the problem in your own
-   words from the ticket, the PR description and the code — then ask whether this change is the right
-   *shape* for it, not just whether it is correct. A patch on a symptom, a schema that will need
-   changing again, or a workaround for something fixable upstream is a finding, and it belongs in
-   **Problem fit** at the top, not as a nit at the bottom. Reviewing only the change set is static
-   analysis with opinions. Say what problem you think this solves, so the author can correct you early
-   if you have it wrong.
-6. Prepare the draft **in this session**, in the house style. **Invoke the `review-craft` skill
-   and follow it** — the visible-word budget for this change's size, the four severities,
-   sentence-case headings, `<details>` for every proof, and suggestion blocks for mechanical
-   fixes. Its worked example shows the shape. Drop any finding you cannot back with evidence, or
-   make it a Question.
-
-   That skill carries the craft and nothing else: the lenses, the severities, the budget and the
-   linter. Claiming this ledger entry, labelling the ticket and never posting to GitHub are this
-   brief's job, not the skill's.
-6b. **Lint it** before you tell anyone it's ready: `review_lint.py <PR> --repo OWNER/REPO`, from
+    That skill carries the craft and nothing else: the lenses, the severities, the budget and the
+    linter. Claiming this ledger entry, labelling the ticket and never posting to GitHub are this
+    brief's job, not the skill's.
+12b. **Lint it** before you tell anyone it's ready: `review_lint.py <PR> --repo OWNER/REPO`, from
    the `review-craft` skill, must pass. Paste the final output in your report. It reads only what
    is posted, so once your principal's review is up, run it again with `--review-id <id>` from the
    post's response and fix what it names by editing the review, not by posting another.
-7. `D ledger put <KEY> status=done head_sha=<sha>` → message the Dispatcher: `Review #<n> ready`.
-8. Wait. Your principal will push back, ask questions, and edit. That conversation is the review.
+13. `D ledger put <KEY> status=done head_sha=<sha>` → message the Dispatcher: `Review #<n> ready`.
+14. Wait. Your principal will push back, ask questions, and edit. That conversation is the review.
 
 ## With Review Desk
 
@@ -105,25 +135,25 @@ one twice is the same as writing it once, so you can report progress without rea
 
 | Layer | Which of your steps | `--detail` is |
 |---|---|---|
-| 1 lint | step 2's test, static-analysis and formatter runs, and step 4b's `pr_lint` | what they said: `passed`, `3 failures`, `description 2.4x budget` |
-| 2 understand | step 5's "state the problem in your own words", **moved first** — see below | left to the store: writing the brief settles this layer |
-| 3 alternatives | the ways it could have been solved, written before you read the diff in depth | `4 options, B built` |
-| 4 solution map | step 5's "is this change the right *shape* for it" | your verdict in a phrase |
-| 5 code review | step 1's read, step 3's blind second lens, step 4's `review-craft` lenses | `6 findings, 2 blockers` |
-| 6 draft | step 6's draft and step 6b's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
+| 1 lint | step 8's test, static-analysis and formatter runs, and step 11's `pr_lint` | what they said: `passed`, `3 failures`, `description 2.4x budget` |
+| 2 understand | step 2 | left to the store: writing the brief settles this layer |
+| 3 alternatives | step 3's blind options pass and step 4's table | `7 options, 4 not on the ticket, C built` |
+| 4 solution map | step 5 | your verdict in a phrase |
+| 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` |
+| 6 draft | step 12's draft and step 12b's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
 | 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — |
 
 Three things that are easy to get wrong here:
 
-- **Layer 3 is written before the diff is read in depth**, which is the one place the order of
-  the steps above changes. Step 5 comes first: state the problem from the ticket and the
-  description, draw it, and write down the ways it could be solved — *then* read the diff and
-  record what was actually built against those options. Judging first and writing the brief
-  afterwards produces a brief that argues for the diff, which is worth nothing to anybody.
-- **Step 3's second lens is still blind, and step 4's lenses still come after your own read.**
-  Both record into layer 5. Give the blind reviewer the ticket and the diff and not your
-  findings, merge its findings with yours, and mark where you disagree rather than smoothing it
-  over. Run the `review-craft` lenses after, so they do not anchor you.
+- **Layers 2 to 4 are finished before the diff is read in depth, and the steps above already do
+  that** — this section no longer reorders anything. An earlier version of this brief had the
+  understanding at step 5, after the tests and the lenses, and asked you to move it here. Writing
+  the brief after judging the diff produces a brief that argues for the diff, which is worth
+  nothing to anybody.
+- **Two blind sessions, and they are not interchangeable.** Step 3 gets the problem and an export
+  of the base commit and never sees the diff; it records into layer 3. Step 9 gets the ticket and
+  the diff but not your findings; it records into layer 5. Reclaim each one when it reports, and
+  run the `review-craft` lenses after your own read so they do not anchor you.
 - **The store writes three layer rows and you write the rest, and the split is not where it
   looks.** Confirming a brief finishes layer 2 and writing one that needs no confirmation
   finishes it too, so **never write layer 2 at all**. Layer 6 is the other way round:
@@ -135,11 +165,20 @@ Three things that are easy to get wrong here:
 ### The brief, and whether it needs confirming
 
 `review-desk brief put --review <id> --file brief.json`, replacing any brief already held.
-`problem` is the only required field; `diagram`, `options`, `approach_verdict` and `provenance`
-are the rest. `options` is one card per alternative —
+**Write it once, after step 5** — every field it has is in hand by then, and the next paragraph is
+why writing it twice is a trap. `problem` is the only required field; `diagram`, `options`,
+`approach_verdict` and `provenance` are the rest. `options` is one card per alternative —
 `{"key": "A", "title": "...", "argument_for": "...", "argument_against": "...",
 "chosen": false}` — with `chosen` true on the one the author built. Do not use `option_map`: it
 is one opaque string, it cannot serve the dashboard's option cards, and giving both is refused.
+
+**Your slots go into those fields and no others.** `problem` is the headline plus the
+was-and-now lines, 2–3 sentences of it; `diagram` is mermaid that **parses** — a typed text sketch
+is not a diagram; `options` is one card per row of your Alternatives table, the blind pass's rows
+included, with its provenance in `provenance` along with the base sha and the option counts;
+`approach_verdict` is step 5's verdict. The flows, the solution parts and the choices the ticket
+left open have **no field here**, and you do not invent one for them — they go to your principal
+in step 6, and the record keeps what it has fields for.
 
 **`brief_gate` in your dispatch block decides whether the developer is asked**, and it is the
 caller's decision, not Review Desk's and not yours:
@@ -147,7 +186,7 @@ caller's decision, not Review Desk's and not yours:
 | `brief_gate` | What you write | Then |
 |---|---|---|
 | `never` (the default) | `"confirmation_required": false` with `"confirmation_not_required_because"` saying why — the gate is set to never for this instance, and the changed-line count | layer 2 settles at once and `work list` reports `sign_off: "waived"`. Carry straight on. |
-| `always` | nothing: `confirmation_required` defaults to true | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for `brief_settled`** before layer 3. |
+| `always` | nothing: `confirmation_required` defaults to true | layer 2 is the developer's turn. Tell the Dispatcher the brief is waiting, with the link, and **wait for `brief_settled`** before step 7 — the understanding is finished and the code review is what waits. |
 
 A brief written as needing the developer's confirmation **cannot** be rewritten as needing none;
 that refusal exits 1 and it is the whole of what makes the flag safe to have. So get the gate

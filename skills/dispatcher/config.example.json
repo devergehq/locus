@@ -61,6 +61,12 @@
     "brief_gate": "never"
   },
 
+  "_comment_review": "How a review worker works, independently of Review Desk. `blind_options_pass` is `workers/review.md` step 3: one session is dispatched with the numbered problems and an export of the base commit and nothing else, before the diff is read in depth, so its option list is not shaped by what was built. On its first trial it returned seven options against the ticket's four, three on both, and its pick matched what was built. It is NOT under `review_desk` on purpose — the pass runs with Review Desk missing, off or broken. There is no size threshold: a 10-line change can have catastrophic consequences. Defaulted in code, so an instance with no `review` block runs the pass; `init` adds the block on a re-run.",
+
+  "review": {
+    "blind_options_pass": true
+  },
+
   "tools": {
     "production_mcp": null
   },

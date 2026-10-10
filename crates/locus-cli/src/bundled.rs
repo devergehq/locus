@@ -286,6 +286,13 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/review-craft/lenses.md".into(),
             include_str!("../../../skills/review-craft/lenses.md"),
         ),
+        // The three understanding steps, which come before the lenses and before any
+        // test is run: review.md step 2 reads this file, so a sync that ships the
+        // brief without it leaves a worker with a brief pointing at nothing.
+        (
+            "skills/review-craft/understand.md".into(),
+            include_str!("../../../skills/review-craft/understand.md"),
+        ),
         (
             "skills/review-craft/review_lint.py".into(),
             include_str!("../../../skills/review-craft/review_lint.py"),
