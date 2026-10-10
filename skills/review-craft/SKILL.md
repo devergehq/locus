@@ -1,7 +1,7 @@
 ---
 id: review-craft
 name: Review Craft
-description: How to read a change, how to write what you found, and how to write the PR description that carries the decision — eight review lenses, four severities, a visible budget, evidence folded or moved to a comment rather than dropped, and two linters that check the result. Hands over method; it does not perform a review. USE WHEN reviewing a PR, writing review comments, deciding a severity, judging whether a finding is worth raising, checking a drafted review before posting, or writing or shortening a PR description.
+description: How to understand a change before you judge it, how to read it, how to write what you found, and how to write the PR description that carries the decision — three understanding steps with a blind options pass, eight review lenses, four severities, a visible budget, evidence folded or moved to a comment rather than dropped, and two linters that check the result. Hands over method; it does not perform a review. USE WHEN reviewing a PR, explaining what a change is for before reading its code, writing review comments, deciding a severity, judging whether a finding is worth raising, checking a drafted review before posting, or writing or shortening a PR description.
 triggers:
   - review craft
   - review style
@@ -11,6 +11,10 @@ triggers:
   - how should I review
   - review this properly
   - review checklist
+  - understand the change
+  - problem fit
+  - blind options pass
+  - alternatives considered
   - finding severity
   - pr description
   - pull request description
@@ -40,6 +44,7 @@ waits for a human to approve it before anything reaches GitHub.
 
 | File | What it carries | Read it when |
 |---|---|---|
+| `understand.md` | The three steps that come **before** any test or lens: Understand, Alternatives, Solution. Their slots, the blind options pass and its brief template, the rules the top layer is written to, and a worked example | First, and before you read the diff in depth |
 | `lenses.md` | Eight lenses distilled from six months of review history, each with its evidential strength stated | **After** your own read of the diff, never before — they anchor you if they go first |
 | `house-style.md` | The shape of a review: the one rule, the word budget, the four severities, `<details>` proofs, suggestion blocks, posting mechanics — **and the shape of a PR description**: the record/working split and the budget for a diff | Before you write anything down |
 | `review_lint.py` | A deterministic, read-only check of a *posted* review against those rules | Before you tell anyone the review is ready |
@@ -50,6 +55,10 @@ waits for a human to approve it before anything reaches GitHub.
 
 Everything below is argued in `house-style.md`. This is the part worth holding in your head.
 
+- **Understand the change before you judge it, and in that order.** The problem, then the
+  alternatives, then the solution — all three before a test is run or a lens applied, because an
+  understanding written after the diff argues for the diff. `understand.md` has the slots, and
+  the top layer of each one is plain: no class names, no paths, no `::`.
 - **The body tells the story; the findings live on the code; only proof is folded away.** Nothing
   is deleted — evidence is demoted, not dropped.
 - **150 visible words in the body. Hard ceiling 400, whatever the size of the diff.** Table rows
@@ -162,6 +171,15 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**10 October 2026.** `understand.md` is new, and the three understanding steps now come first:
+`workers/review.md` had them at step 5 of 8, after the tests, the blind second lens and the
+lenses. It carries the slots each step produces, a blind options pass between the first two
+(its brief template, its export-the-base-commit pin and its leak rule), the plain-top-layer,
+drawn-not-typed and parallel-things-are-a-table rules, and one invented worked example at the
+length a real one runs to. Nothing in `house-style.md`'s budgets or in either linter changed:
+**Problem fit** in a posted review keeps its 2–3 sentences and may carry the before-and-after
+diagram, which is what `review_lint.py` already allows.
 
 **22 September 2026, later.** "Fit GitHub's column": no prose or long paths in table cells, a
 finding that needs prose written as a section, and a body diagram under its finding.

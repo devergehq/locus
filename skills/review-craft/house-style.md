@@ -81,6 +81,14 @@ Reviewer: <traits> · <backend> · reviewed <sha-short>
 </details>
 ```
 
+**Problem fit is 2–3 sentences, and it is the only part of the understanding that reaches GitHub.**
+The headline, and whether the change is the right shape for the problem. The flows, the options and
+the solution parts were for your principal, before they opened any code; the pull request gets the
+conclusion. It **may** carry the before-and-after diagram directly beneath it: `review_lint.py`
+homes a body diagram under Problem fit or under a finding and **warns** on one anywhere else, and
+a diagram costs nothing against the body's word count. How the understanding is built, and what its slots are, is
+`understand.md`.
+
 A **Disposition column on the Open table** gives declined findings a home: a reader may want to
 overrule one, but it is not waiting on them, and it should not read as an open question.
 
@@ -978,6 +986,11 @@ marketing, uncited; and "200–400 LOC" is a distortion of the Cisco study's "un
 exceed 400", whose upper bound rests on the unsourced 60-minute claim.
 
 ## Revision
+
+**10 October 2026.** One paragraph added, under the body's shape: **Problem fit** carries 2–3
+sentences and may carry the before-and-after diagram, and it is the only part of the
+understanding that reaches GitHub. Nothing else here changed, and no budget moved — the three
+understanding steps that produce it are new, and they live in `understand.md`.
 
 **18 September 2026.** Until today this guide ruled PR descriptions out of scope, on two reasons.
 The first was sound — descriptions follow the repo's templates and are a durable record, so the

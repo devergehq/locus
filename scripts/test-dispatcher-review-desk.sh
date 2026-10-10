@@ -34,6 +34,14 @@ mkdir -p "$work/bin"
 PATH="$work/bin:$PATH"
 export PATH
 export RDWORK="$work"
+# Two PATHs, because "no review-desk on PATH" has to mean no review-desk on ANY entry. The
+# developer who runs this harness is the one most likely to have the real binary installed —
+# `~/.local/bin/review-desk` — and `hide` used to remove only the stand-in, so every absent-command
+# assertion fell through to the real one. That failed seven assertions on their machine while
+# passing in CI, and worse: the fall-through calls `work list`, which opens the live store under
+# `~/.review-desk`. $MINPATH keeps the fakes and drops everything else.
+FULLPATH="$PATH"
+MINPATH="$work/bin:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)")"
 
 pass=0
 fail=0
@@ -131,9 +139,9 @@ echo '{"sessions":[],"archived_sessions":[]}' > "$work/allele.json"
 
 instance () {
   rm -rf "$inst"; mkdir -p "$inst/runtime/ledger" "$inst/runtime/watch"
-  python3 - "$inst/config.json" "$work/allele.json" "${1:-}" <<'PY'
+  python3 - "$inst/config.json" "$work/allele.json" "${1:-}" "${2:-}" <<'PY'
 import json, sys, pathlib
-dest, state, block = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+dest, state, block, review = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 cfg = {
   "linear": {"api_key_env": "TEST_NO_SUCH_TOKEN", "mcp_workspace": "ws", "team_key": "ZZ",
              "label_group_id": "g",
@@ -150,6 +158,8 @@ cfg = {
 }
 if block:
     cfg["review_desk"] = json.loads(block)
+if review:
+    cfg["review"] = json.loads(review)
 dest.write_text(json.dumps(cfg, indent=2))
 PY
   : > "$work/rd.calls"; : > "$work/gh.calls"
@@ -159,6 +169,10 @@ PY
 }
 
 D () { python3 "$disp" --instance "$inst" "$@"; }
+# hide/show: an absent command, which is a different fact from a broken one. Both halves matter —
+# the stand-in goes away AND the PATH narrows to the fakes, or a real install answers instead.
+hide () { mv "$work/bin/review-desk" "$work/review-desk.hidden"; PATH="$MINPATH"; export PATH; }
+show () { mv "$work/review-desk.hidden" "$work/bin/review-desk"; PATH="$FULLPATH"; export PATH; }
 put () { D ledger put "$@" >/dev/null; }
 says  () { grep -q -- "$1" "$work/out" && echo yes || echo no; }
 count () { grep -c -- "$1" "$work/out" 2>/dev/null || true; }
@@ -244,14 +258,19 @@ elif scenario == "watch_reenter":
 
 elif scenario == "fill_absent":
     # `init`'s reconciliation, without `init`: cmd_init needs Linear auth to mint labels, and the
-    # behaviour under test is one function over two dicts.
-    template = json.loads((m.CODE_DIR / "config.example.json").read_text())["review_desk"]
+    # behaviour under test is one function over two dicts. The section defaults to `review_desk`,
+    # so the calls written before `review` existed read exactly as they did.
+    section = rest[1] if len(rest) > 1 else "review_desk"
+    template = json.loads((m.CODE_DIR / "config.example.json").read_text())[section]
     existing = json.loads(rest[0])
-    added = m.fill_absent("review_desk", existing, template)
+    added = m.fill_absent(section, existing, template)
     print(json.dumps({"added": sorted(added), "result": existing}))
 
 elif scenario == "cfg":
     print(json.dumps(m.review_desk_cfg(json.loads(rest[0]))))
+
+elif scenario == "review_cfg":
+    print(json.dumps(m.review_cfg(json.loads(rest[0]))))
 
 else:
     sys.exit("unknown scenario " + scenario)
@@ -273,7 +292,7 @@ printf '\nSilence -- no review_desk block, no review-desk on PATH\n'
 # able to stay unchanged.
 
 instance ""
-mv "$work/bin/review-desk" "$work/review-desk.hidden"
+hide
 put gh-portal-1 mode=review status=active repo=acme/portal number=1 session_id=s1 --by test
 rc=$(run "$disp" poll 2)
 ok "a poll tick exits clean with no Review Desk"       "$rc" 0
@@ -285,15 +304,12 @@ ok "a watch tick exits clean"                          "$rc" 0
 ok "  and says nothing about review_desk"              "$(count review_desk)" 0
 set +e; D status > "$work/out" 2>&1; set -e
 ok "\`status\` names no review_desk source"              "$(count review_desk)" 0
-mv "$work/review-desk.hidden" "$work/bin/review-desk"
+show
 
 # =============================================================================================
 printf '\nWhether Review Desk is used -- the mode matrix, through doctor\n'
 
 doctor () { set +e; D doctor > "$work/out" 2>&1; set -e; grep 'review desk' "$work/out" || true; }
-# hide/show: an absent command, which is a different fact from a broken one
-hide () { mv "$work/bin/review-desk" "$work/review-desk.hidden"; }
-show () { mv "$work/review-desk.hidden" "$work/bin/review-desk"; }
 
 instance ''
 ok "no block at all reads as auto"                     "$(doctor | grep -c 'mode auto')" 1
@@ -726,6 +742,60 @@ brc=$?; set -e
 ok "a brief works with no \`locus\` on PATH"             "$brc" 0
 ok "  falling back to the plain role line"             "$(says 'You are R')" yes
 ok "  and still naming Review Desk"                    "$(says 'Review Desk: ')" yes
+
+# =============================================================================================
+printf '\nthe blind options pass -- a setting of its own, outside review_desk (DEV-886)\n'
+# The pass runs with Review Desk missing, off or broken, so its switch may not live under
+# `review_desk`. Three things are asserted: the default is on, in code and not only in the
+# template; the brief NAMES it either way, because a worker reads no config; and `doctor` crosses
+# a value that `review_cfg` would otherwise default past.
+
+rc=$(run "$disp" review_cfg '{}')
+ok "a config with no review block defaults on"         "$(says '"blind_options_pass": true')" yes
+rc=$(run "$disp" review_cfg '{"review":{"blind_options_pass":false}}')
+ok "  and false is read as false"                      "$(says '"blind_options_pass": false')" yes
+rc=$(run "$disp" review_cfg '{"review":{"blind_options_pass":null}}')
+ok "  while null is absent, not off"                   "$(says '"blind_options_pass": true')" yes
+ok "the setting is not under review_desk"              "$(python3 -c "
+import json, sys
+sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+t = json.loads((d.CODE_DIR / 'config.example.json').read_text())
+print('blind_options_pass' not in t['review_desk'] and t['review'] == d.REVIEW_DEFAULTS)")" True
+ok "the template's review block has no threshold"      "$(python3 -c "
+import json, sys
+sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+t = json.loads((d.CODE_DIR / 'config.example.json').read_text())['review']
+print(sorted(t) == ['blind_options_pass'])")" True
+rc=$(run "$disp" fill_absent '{}' review)
+ok "an older config learns the one key"                "$(says '"added": \["review.blind_options_pass"\]')" yes
+rc=$(run "$disp" fill_absent '{"blind_options_pass":false}' review)
+ok "  and a value the operator set is left alone"      "$(says '"blind_options_pass": false')" yes
+
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=claimed repo=acme/portal number=412 title=T url=u --by test
+set +e; D brief gh-portal-412 > "$work/out" 2>&1; set -e
+ok "a review brief says the pass is on"                "$(says 'Blind options pass: \*\*on\*\*')" yes
+ok "  and points at step 3"                            "$(says 'review.md. step 3')" yes
+instance '{"mode":"auto"}' '{"blind_options_pass":false}'
+put gh-portal-412 mode=review status=claimed repo=acme/portal number=412 title=T url=u --by test
+set +e; D brief gh-portal-412 > "$work/out" 2>&1; set -e
+ok "off is named in the brief, not omitted"            "$(says 'Blind options pass: \*\*off\*\*')" yes
+ok "  and the worker is told to say so once"           "$(says 'say so once')" yes
+instance '{"mode":"off"}' '{"blind_options_pass":true}'
+put EX-1 mode=implement status=claimed title=T url=u --by test
+set +e; D brief EX-1 > "$work/out" 2>&1; set -e
+ok "a non-review brief says nothing about it"          "$(count 'Blind options pass')" 0
+
+# `doctor` reaches Linear for nothing in these two checks, but it does run every other check in
+# the command, so only its exit code and the line are asserted.
+instance '{"mode":"off"}' '{"blind_options_pass":"off"}'
+set +e; D doctor > "$work/out" 2>&1; set -e
+ok "doctor crosses a string where a bool belongs"      "$(says '✗ review mode: review.blind_options_pass')" yes
+instance '{"mode":"off"}'
+set +e; D doctor > "$work/out" 2>&1; set -e
+ok "  and reports the default as a default"            "$(says '✓ review mode: blind options pass on (default)')" yes
 
 # =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'

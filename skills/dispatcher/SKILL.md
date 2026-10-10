@@ -69,6 +69,9 @@ allele sidebar, and stop.
    own section below. It fails only on a **broken** install, or on an absent one under
    `mode: on`; a dashboard that is not answering is reported and never fails, because
    `review-desk serve` is your principal's to start and a review can be prepared without it.
+   A fourth, **`review mode`**, reports whether a review worker's blind options pass is on, and
+   whether that came from the config or from the default. It fails only on a value that is
+   neither `true` nor `false`, because a worker would be told the pass is on for any truthy one.
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
@@ -112,8 +115,9 @@ allele sidebar, and stop.
 - `D status` prints **two** counts and they measure different things. `ledger working N/<max>`
   is **advisory**: nothing in `dispatcher.py` refuses a dispatch at that number, and it counts
   ledger entries. `allele dispatched N/<max>` is **enforced** — allele returns a capacity error
-  at its own cap — and it counts sessions, including every reviewer a worker dispatches, which
-  never reach the ledger. Budget against the second. A `?` for the limit means allele's settings
+  at its own cap — and it counts sessions, including every helper a worker dispatches, which
+  never reach the ledger. **A review worker dispatches up to two**: the blind options pass
+  before it reads the diff, and the blind second lens after. Budget against the second. A `?` for the limit means allele's settings
   could not be read, which is not the same as headroom.
 - At the cap: `D ledger put <KEY> status=queued ... --by dispatcher`. The poller re-emits queued
   items every 15 minutes. Whenever a worker reports done, failed or stopped, check

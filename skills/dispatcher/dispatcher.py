@@ -329,6 +329,30 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
     return live, archived
 
 
+# ------------------------------------------------------------------------------- review mode
+
+# How a review worker works, independently of Review Desk. `blind_options_pass` is the step that
+# dispatches one session given the numbered problems and an export of the base commit and nothing
+# else, before the diff is read in depth — `workers/review.md` step 3, taught in `review-craft`'s
+# `understand.md`.
+#
+# **Deliberately not under `review_desk`.** The pass runs with Review Desk missing, off or broken,
+# and burying its switch under an optional integration's block would make it unreachable on the
+# instances most likely to want it. Defaulted here, like every other setting in this file, so an
+# instance whose config has never heard of the block behaves as though it said `true`.
+#
+# There is no size threshold and there is not going to be one: a ten-line change can have
+# catastrophic consequences, which is the whole argument for reading the problem before the diff.
+REVIEW_DEFAULTS = {"blind_options_pass": True}
+
+
+def review_cfg(cfg: dict) -> dict:
+    """The `review` block with every key defaulted. `None` is treated as absent, as elsewhere."""
+    block = dict(REVIEW_DEFAULTS)
+    block.update({k: v for k, v in (cfg.get("review") or {}).items() if v is not None})
+    return block
+
+
 # --------------------------------------------------------------------------- review desk
 
 # Review Desk (devergehq/review-desk) keeps the record of a review: the brief, the options, the
@@ -1775,6 +1799,15 @@ def cmd_brief(args) -> None:
         extra.append(f"- Production reads: the `{production_mcp}` MCP, read-only, aggregates and ids only.")
     if mode in ("review", "implement"):
         extra.append("- Review craft: invoke the `review-craft` skill for the house style, the lenses and the linter.")
+    if mode == "review":
+        # Named either way. A worker cannot read this config — the brief is the only channel —
+        # and "it is on" is as load-bearing as "it is off": step 3 is not optional when it is on.
+        on = bool(review_cfg(cfg)["blind_options_pass"])
+        extra.append(
+            "- Blind options pass: **on**. `review.md` step 3 — dispatch it, and reclaim it when "
+            "it reports." if on else
+            "- Blind options pass: **off** for this instance. Skip `review.md` step 3, say so once "
+            "in your provenance and in your report, and mark every option as the ticket's.")
     # Review Desk is named in the brief ONLY for a review, and only when it is configured on.
     # `auto` with nothing installed adds no line at all, which is what keeps a worker on a
     # machine without it reading exactly the brief it read before this existed.
@@ -2572,9 +2605,23 @@ def cmd_doctor(args) -> None:
         said.append(review_desk_dashboard(rd))
         return " · ".join(said)
 
+    def review_check():
+        """The review-mode settings. One cross for a value a worker would read as the wrong answer."""
+        raw = (cfg.get("review") or {}).get("blind_options_pass")
+        if raw is not None and not isinstance(raw, bool):
+            raise RuntimeError(f"review.blind_options_pass is {raw!r}, not true or false — a "
+                               f"worker is told it is on whenever the value is truthy, so a "
+                               f"string like \"off\" switches nothing off")
+        on = review_cfg(cfg)["blind_options_pass"]
+        where = "config" if raw is not None else "default"
+        return f"blind options pass {'on' if on else 'off'} ({where})"
+
     check("watchers", watchers)
     check("watch cursors", cursors)
+    # Order matters only for the reader: `skills/dispatcher/SKILL.md` names these as the third
+    # and the fourth check, so swapping them makes its prose wrong rather than its logic.
     check("review desk", review_desk_check)
+    check("review mode", review_check)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))
@@ -2772,7 +2819,11 @@ def cmd_init(args) -> None:
                # It is a convenience rather than a migration: `review_desk_cfg` defaults the same
                # four keys in code, so an instance that never re-runs `init` behaves as `auto`.
                + fill_absent("review_desk", cfg.setdefault("review_desk", {}),
-                             template["review_desk"]))
+                             template["review_desk"])
+               # Six. `review` qualifies on the same rule: one boolean with a real default and
+               # nothing for anybody to edit. `review_cfg` defaults it in code as well, so this is
+               # how an older instance comes to SHOW the setting it was already getting.
+               + fill_absent("review", cfg.setdefault("review", {}), template["review"]))
     if learned:
         print(f"new in this version: {', '.join(learned)}")
 
