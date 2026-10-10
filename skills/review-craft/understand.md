@@ -64,6 +64,7 @@ switches it off, and your dispatch block tells you which way it is set.
 **Pin it to the base commit by exporting that commit, not by checking it out.**
 
 ```bash
+git fetch -q origin                        # the base ref has to be there to merge-base against
 base=$(git merge-base "origin/$(gh pr view <n> --json baseRefName --jq .baseRefName)" "<head sha>")
 dir=$(mktemp -d)
 git archive "$base" | tar -x -C "$dir"     # a tree with no .git in it
@@ -125,6 +126,9 @@ Give between four and seven options. Include doing nothing only if it is defensi
 options that fix the problems separately as well as together, and at least one that moves the
 problem somewhere else rather than fixing it in place.
 ```
+
+One entry in `fixes` per numbered problem, and **the answer path goes in your own workspace, not
+in the export** — the export is thrown away and you still need the file.
 
 **Reclaim it the moment it reports** — `allele_sessions_discard`, then `rm -rf "$dir"`. A helper
 left running holds a slot against the global cap.
