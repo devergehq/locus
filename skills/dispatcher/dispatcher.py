@@ -2606,7 +2606,7 @@ def cmd_doctor(args) -> None:
         return " · ".join(said)
 
     def review_check():
-        """The review-mode settings. One cross for a value `review_cfg` would silently default."""
+        """The review-mode settings. One cross for a value a worker would read as the wrong answer."""
         raw = (cfg.get("review") or {}).get("blind_options_pass")
         if raw is not None and not isinstance(raw, bool):
             raise RuntimeError(f"review.blind_options_pass is {raw!r}, not true or false — a "
