@@ -4,13 +4,15 @@
 before they open any code.** It is not a warm-up for the findings, and it is not notes for you. It
 is the one thing a newcomer to the domain could read and then follow the rest of the review.
 
-Three steps, in this order, and **all three before a test is run or a lens applied**:
+Three steps, in this order, and **all three before a test is run or a lens applied**. They are
+`workers/review.md`'s steps 2 to 6 and Review Desk's layers 2 to 4; the numbers below are that
+brief's, so a worker reading both never has to translate:
 
 | Step | You read | You produce |
 |---|---|---|
-| 1 Understand | The ticket, the description, and the code **as it was before the change** | The problem first, then the change: a headline, how it works today, a before flow, an after flow, numbered problems, and one line each of was-wrong and now |
-| 2 Alternatives | A blind session's options, then the author's | Every option scored against each numbered problem, and who put it forward |
-| 3 Solution | The change as a design — not yet as code | The change in parts with their files, the choices the ticket left open, and where the description and the code disagree |
+| Understand | The ticket, the description, and the code **as it was before the change** | The problem first, then the change: a headline, how it works today, a before flow, an after flow, numbered problems, and one line each of was-wrong and now |
+| Alternatives | A blind session's options, then the author's | Every option scored against each numbered problem, and who put it forward |
+| Solution | The change as a design — not yet as code | The change in parts with their files, the choices the ticket left open, and where the description and the code disagree |
 
 Then you show your principal, short, and only then do you read the diff in depth.
 
@@ -24,7 +26,7 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 
 ---
 
-## Step 1 — Understand
+## Understand — `review.md` step 2
 
 | Slot | What goes in it | Length |
 |---|---|---|
@@ -39,7 +41,7 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 The numbers are the spine of the whole review. Alternatives scores options against them, Solution
 says which part fixes which, and a finding can say which problem it threatens.
 
-## Step 2 — Alternatives
+## Alternatives — `review.md` steps 3 and 4
 
 | Slot | What goes in it |
 |---|---|
@@ -138,7 +140,7 @@ retries, or the setting switched off: name it in the provenance slot and in one 
 Dispatcher, mark every option row as the ticket's, and review the change. A blind pass is worth a
 great deal and is worth nothing at all compared to a review that never arrives.
 
-## Step 3 — Solution
+## Solution — `review.md` step 5
 
 | Slot | What goes in it |
 |---|---|
@@ -154,7 +156,7 @@ belongs here and in **Problem fit** at the top of the posted review, never as a 
 A departure from the ticket is not a finding on its own. Say what was chosen and why; if the why
 does not hold, *that* is the finding.
 
-## Showing it
+## Showing it — `review.md` step 6
 
 One message, before you read the diff in depth: the headline, the two flows, the numbered problems
 with their was-and-now lines, the options table, and the parts. Nothing about code quality yet.
@@ -208,8 +210,7 @@ lists in a shop's admin.
 
 ### Understand
 
-> Each price file is imported on its own and published in one step, so one bad file no longer
-> stops the night.
+> Each price file is imported on its own and published in one step.
 
 | What decides it | Today | After |
 |---|---|---|
@@ -320,9 +321,9 @@ What the blind pass needed and was not told:
 
 **Problem fit keeps its 2–3 sentences.** The understanding is for your principal, not for the pull
 request: what reaches GitHub is the headline, whether the change is the right shape, and nothing
-else. It **may** carry the before-and-after diagram beneath it — `review_lint.py` allows a body
-diagram under Problem fit or under a finding, and nowhere else — and a diagram costs nothing
-against a review's word budget.
+else. It **may** carry the before-and-after diagram beneath it: `review_lint.py` homes a body diagram
+under Problem fit or under a finding and **warns** on one anywhere else, and a diagram costs
+nothing at all against a review's word budget — mermaid is stripped before the words are counted.
 
 **With Review Desk**, the slots go into the fields it already has and no others: `problem` short,
 `diagram` as mermaid that parses, one `options` card per row of the Alternatives table with

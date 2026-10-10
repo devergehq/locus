@@ -36,10 +36,12 @@ are written to, the blind pass's brief, and a worked example. Read it before you
    with traits different from your own, and give it the numbered problems and an export of the base
    commit and **nothing else**: not the ticket, not this pull request, not the branch. The brief
    template, the export command and the leak rule are in `understand.md`. **Reclaim it the moment
-   it reports** (`allele_sessions_discard`). If it cannot run — a depth limit, no slot after your
-   retries, or `blind_options_pass` off in your dispatch block — say so **once**, to the Dispatcher
-   and in your provenance, and carry straight on. There is no size threshold anywhere: a ten-line
-   change can have catastrophic consequences.
+   it reports** (`allele_sessions_discard`). If it cannot run — a depth-limit error, or
+   `blind_options_pass` off in your dispatch block — say so **once**, to the Dispatcher and in your
+   provenance, and carry straight on. **A capacity error is not that case**: `_common.md` governs
+   it unchanged, so tell the Dispatcher you are waiting for a slot, keep working on step 2's
+   loose ends, and retry. There is no size threshold anywhere: a ten-line change can have
+   catastrophic consequences.
 4. **Alternatives.** Line the blind session's options up against the author's: one row per option,
    scored against each numbered problem, with who put it forward. Say which one was built, which
    one the blind pass would pick, and what it needed to know and was not told.
@@ -81,12 +83,12 @@ are written to, the blind pass's brief, and a worked example. Read it before you
     That skill carries the craft and nothing else: the lenses, the severities, the budget and the
     linter. Claiming this ledger entry, labelling the ticket and never posting to GitHub are this
     brief's job, not the skill's.
-12b. **Lint it** before you tell anyone it's ready: `review_lint.py <PR> --repo OWNER/REPO`, from
-   the `review-craft` skill, must pass. Paste the final output in your report. It reads only what
-   is posted, so once your principal's review is up, run it again with `--review-id <id>` from the
-   post's response and fix what it names by editing the review, not by posting another.
-13. `D ledger put <KEY> status=done head_sha=<sha>` → message the Dispatcher: `Review #<n> ready`.
-14. Wait. Your principal will push back, ask questions, and edit. That conversation is the review.
+13. **Lint it** before you tell anyone it's ready: `review_lint.py <PR> --repo OWNER/REPO`, from
+    the `review-craft` skill, must pass. Paste the final output in your report. It reads only what
+    is posted, so once your principal's review is up, run it again with `--review-id <id>` from the
+    post's response and fix what it names by editing the review, not by posting another.
+14. `D ledger put <KEY> status=done head_sha=<sha>` → message the Dispatcher: `Review #<n> ready`.
+15. Wait. Your principal will push back, ask questions, and edit. That conversation is the review.
 
 ## With Review Desk
 
@@ -140,7 +142,7 @@ one twice is the same as writing it once, so you can report progress without rea
 | 3 alternatives | step 3's blind options pass and step 4's table | `7 options, 4 not on the ticket, C built` |
 | 4 solution map | step 5 | your verdict in a phrase |
 | 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` |
-| 6 draft | step 12's draft and step 12b's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
+| 6 draft | step 12's draft and step 13's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
 | 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — |
 
 Three things that are easy to get wrong here:
@@ -176,9 +178,12 @@ is one opaque string, it cannot serve the dashboard's option cards, and giving b
 was-and-now lines, 2–3 sentences of it; `diagram` is mermaid that **parses** — a typed text sketch
 is not a diagram; `options` is one card per row of your Alternatives table, the blind pass's rows
 included, with its provenance in `provenance` along with the base sha and the option counts;
-`approach_verdict` is step 5's verdict. The flows, the solution parts and the choices the ticket
-left open have **no field here**, and you do not invent one for them — they go to your principal
-in step 6, and the record keeps what it has fields for.
+`approach_verdict` is step 5's verdict. Everything else has **no field here** and you do not
+invent one — a field Review Desk does not know is refused. That is the flows, the per-problem
+verdicts, the solution parts, the choices the ticket left open, and the places the description and
+the code disagree. Two of them do have a home: `provenance` is a free string, so the blind pass's
+pick and the questions it needed answered go in there, named as the blind pass's. The rest goes to
+your principal in step 6, and the record keeps what it has fields for.
 
 **`brief_gate` in your dispatch block decides whether the developer is asked**, and it is the
 caller's decision, not Review Desk's and not yours:
@@ -279,7 +284,7 @@ post again, on somebody's pull request, under your principal's name.
 5. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
    the ledger. The record will say the draft is approved and unposted while GitHub says
    otherwise, and the check in step 2 is what makes the retry safe rather than duplicative.
-6. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 6b's
+6. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
    "fix what it names by editing the review" governs your own text and nothing else. Your threads
    you may edit freely. **The body you may not touch**, because the developer signed off on those
    characters and replacing them puts text they never read on the pull request under their name —

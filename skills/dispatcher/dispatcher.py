@@ -2618,8 +2618,10 @@ def cmd_doctor(args) -> None:
 
     check("watchers", watchers)
     check("watch cursors", cursors)
-    check("review mode", review_check)
+    # Order matters only for the reader: `skills/dispatcher/SKILL.md` names these as the third
+    # and the fourth check, so swapping them makes its prose wrong rather than its logic.
     check("review desk", review_desk_check)
+    check("review mode", review_check)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))

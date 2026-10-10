@@ -34,6 +34,14 @@ mkdir -p "$work/bin"
 PATH="$work/bin:$PATH"
 export PATH
 export RDWORK="$work"
+# Two PATHs, because "no review-desk on PATH" has to mean no review-desk on ANY entry. The
+# developer who runs this harness is the one most likely to have the real binary installed —
+# `~/.local/bin/review-desk` — and `hide` used to remove only the stand-in, so every absent-command
+# assertion fell through to the real one. That failed seven assertions on their machine while
+# passing in CI, and worse: the fall-through calls `work list`, which opens the live store under
+# `~/.review-desk`. $MINPATH keeps the fakes and drops everything else.
+FULLPATH="$PATH"
+MINPATH="$work/bin:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)")"
 
 pass=0
 fail=0
@@ -161,6 +169,10 @@ PY
 }
 
 D () { python3 "$disp" --instance "$inst" "$@"; }
+# hide/show: an absent command, which is a different fact from a broken one. Both halves matter —
+# the stand-in goes away AND the PATH narrows to the fakes, or a real install answers instead.
+hide () { mv "$work/bin/review-desk" "$work/review-desk.hidden"; PATH="$MINPATH"; export PATH; }
+show () { mv "$work/review-desk.hidden" "$work/bin/review-desk"; PATH="$FULLPATH"; export PATH; }
 put () { D ledger put "$@" >/dev/null; }
 says  () { grep -q -- "$1" "$work/out" && echo yes || echo no; }
 count () { grep -c -- "$1" "$work/out" 2>/dev/null || true; }
@@ -280,7 +292,7 @@ printf '\nSilence -- no review_desk block, no review-desk on PATH\n'
 # able to stay unchanged.
 
 instance ""
-mv "$work/bin/review-desk" "$work/review-desk.hidden"
+hide
 put gh-portal-1 mode=review status=active repo=acme/portal number=1 session_id=s1 --by test
 rc=$(run "$disp" poll 2)
 ok "a poll tick exits clean with no Review Desk"       "$rc" 0
@@ -292,15 +304,12 @@ ok "a watch tick exits clean"                          "$rc" 0
 ok "  and says nothing about review_desk"              "$(count review_desk)" 0
 set +e; D status > "$work/out" 2>&1; set -e
 ok "\`status\` names no review_desk source"              "$(count review_desk)" 0
-mv "$work/review-desk.hidden" "$work/bin/review-desk"
+show
 
 # =============================================================================================
 printf '\nWhether Review Desk is used -- the mode matrix, through doctor\n'
 
 doctor () { set +e; D doctor > "$work/out" 2>&1; set -e; grep 'review desk' "$work/out" || true; }
-# hide/show: an absent command, which is a different fact from a broken one
-hide () { mv "$work/bin/review-desk" "$work/review-desk.hidden"; }
-show () { mv "$work/review-desk.hidden" "$work/bin/review-desk"; }
 
 instance ''
 ok "no block at all reads as auto"                     "$(doctor | grep -c 'mode auto')" 1
@@ -783,10 +792,10 @@ ok "a non-review brief says nothing about it"          "$(count 'Blind options p
 # the command, so only its exit code and the line are asserted.
 instance '{"mode":"off"}' '{"blind_options_pass":"off"}'
 set +e; D doctor > "$work/out" 2>&1; set -e
-ok "doctor crosses a string where a bool belongs"      "$(says 'review mode: review.blind_options_pass')" yes
+ok "doctor crosses a string where a bool belongs"      "$(says '✗ review mode: review.blind_options_pass')" yes
 instance '{"mode":"off"}'
 set +e; D doctor > "$work/out" 2>&1; set -e
-ok "  and reports the default as a default"            "$(says 'review mode: blind options pass on (default)')" yes
+ok "  and reports the default as a default"            "$(says '✓ review mode: blind options pass on (default)')" yes
 
 # =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'

@@ -84,9 +84,9 @@ Reviewer: <traits> · <backend> · reviewed <sha-short>
 **Problem fit is 2–3 sentences, and it is the only part of the understanding that reaches GitHub.**
 The headline, and whether the change is the right shape for the problem. The flows, the options and
 the solution parts were for your principal, before they opened any code; the pull request gets the
-conclusion. It **may** carry the before-and-after diagram directly beneath it — `review_lint.py`
-allows a body diagram under Problem fit or under a finding and nowhere else, and a diagram costs
-nothing against the body's word count. How the understanding is built, and what its slots are, is
+conclusion. It **may** carry the before-and-after diagram directly beneath it: `review_lint.py`
+homes a body diagram under Problem fit or under a finding and **warns** on one anywhere else, and
+a diagram costs nothing against the body's word count. How the understanding is built, and what its slots are, is
 `understand.md`.
 
 A **Disposition column on the Open table** gives declined findings a home: a reader may want to

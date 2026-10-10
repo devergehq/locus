@@ -23,6 +23,14 @@
 # file rather than only stdout, that the file is bounded, and that `status` reports it.
 set -eu
 
+# No `review-desk` on PATH, deliberately. Poller.review_desk asks it per repository served,
+# and a real install — `~/.local/bin/review-desk` on the developer's own machine, most likely —
+# would answer from the live store under `~/.review-desk`. This harness is about the logic, and
+# absent is the state it was written against. Narrowed here rather than stubbed because nothing
+# in it asserts anything about Review Desk.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)")"
+export PATH
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 disp="$root/skills/dispatcher/dispatcher.py"
 

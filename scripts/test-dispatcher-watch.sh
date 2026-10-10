@@ -25,6 +25,14 @@
 #     asserted on the parse instead (`parse_watch_argv` plus a path comparison).
 set -eu
 
+# No `review-desk` on PATH, deliberately. Watcher.review_desk asks it about any entry carrying a review_desk_id,
+# and a real install — `~/.local/bin/review-desk` on the developer's own machine, most likely —
+# would answer from the live store under `~/.review-desk`. This harness is about the logic, and
+# absent is the state it was written against. Narrowed here rather than stubbed because nothing
+# in it asserts anything about Review Desk.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v python3)")"
+export PATH
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 disp="$root/skills/dispatcher/dispatcher.py"
 
