@@ -314,8 +314,9 @@ Seven things that table does not say on its own:
   `stays` and `not_assessed`, in `understand.md`'s tables, in its worked example and in the blind
   brief's own JSON — which said `yes | partly | no` until this landed. Nothing maps anything, which
   is the point: a mapping is a step that can be skipped silently. `not_assessed` is the one the
-  blind session never sends, because it means **nobody scored this option against this problem**,
-  and it is the one verdict that takes no `why`.
+  blind session never sends, because it means **nobody scored this option against this problem**.
+  It is the one verdict whose `why` is *optional* — the store requires one for the other three
+  and accepts one here, so leaving it out is the honest shape rather than the only legal one.
 - **A disagreement has to name a finding, so `finding add` it first.** A write naming a finding
   that does not exist is refused, which is the same rule the record is read by: a disagreement
   nothing raises posts a review that never mentions it. An open choice needs no finding; a choice
@@ -333,7 +334,9 @@ template:
 | Template section | Poured from |
 |---|---|
 | `## The system` | `how_it_works_today` |
-| `## How it works today` | `flow_before`, one numbered line per row, each box's title and its note |
+| `## How it works today`, its caption | `flow_before_caption` |
+| `## How it works today`, the numbered lines | `flow_before`, one per row, each box's title and its note |
+| `## What is wrong`, its opening line | `problem` |
 | `## What is wrong`, the bold problem on each line | `problems[].was_wrong`, in number order |
 
 Nothing that read serves is retyped. **Be clear about what that buys and what it does not.** It

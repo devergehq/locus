@@ -1160,6 +1160,10 @@ print(json.dumps({
     "served_expected": sorted(SERVED),
     "pour_roots": pour_roots,
     "pour_unserved": [r for r in pour_roots if r not in SERVED],
+    # The other direction. The read serves five fields for the blind brief to be poured from;
+    # one it serves and no template section carries is a field written at write 1 for a reader
+    # who never sees it. `problem` and `flow_before_caption` were both in that state.
+    "pour_unpoured": sorted(SERVED - set(pour_roots)),
     "pour_sections": [section for section, _ in poured],
 }, sort_keys=True))
 TABLE
@@ -1192,27 +1196,38 @@ open(sys.argv[2], "w").write("\n".join(out) + "\n")
 POUR
 
 cat > "$work/limitslots.py" <<'LIMITS'
-"""Every slot `brief_lint.py --limits` cites, and whether `understand.md` still defines it.
+"""Every quotation `brief_lint.py --limits` attributes to `understand.md`, checked against it.
 
-A provenance line attributes a limit to a quoted slot: `understand.md, Understand:
-'Supporting table ... 3-4 rows'`. The name is the part before the ellipsis. Lines that quote a
-Length cell rather than a slot ('One sentence, at most 20 words') name no slot and are skipped.
+`--limits` is the one place a limit says where it came from, so a citation quoting text that is
+not there is worse than no table at all. A provenance line reads
+`understand.md, Understand: 'Supporting table ... 3-4 rows'`; the ellipsis joins a slot name to
+the words that carry the number, and **both halves have to occur in the file**.
 
-This exists because the drift happened: DEV-883 renamed "How it works today" and `--limits`
-went on citing it, so the one place a limit says where it came from pointed at a slot that no
-longer existed. Both halves are in the same repository and nothing crossed them.
+Checking the whole quotation rather than the slot name is deliberate, and stronger in two ways
+a name check is not: it catches a slot that was renamed (the drift this is named after -- DEV-883
+renamed "How it works today" and `--limits` went on citing it) AND a quotation that was reworded
+where the slot stayed, which is how `'a title under 12 words'` survived DEV-884 changing that
+slot to "at most" in the same commit that wrote the citation. It also needs no slot table, so it
+judges the citations that quote a paragraph rather than a slot.
+
+Prints the count examined and then any fragment that is missing, because an empty result has to
+be distinguishable from a parse that found nothing to examine.
 """
 import re, subprocess, sys
 
 limits = subprocess.run([sys.executable, sys.argv[1], "--limits"],
                         capture_output=True, text=True, check=True).stdout
-cited = set()
-for quoted in re.findall(r"understand\.md,[^']*'([^']*)'", limits):
-    if " ... " in quoted:
-        cited.add(quoted.split(" ... ")[0].strip())
+doc = open(sys.argv[2]).read()
 
-defined = set()
-lines = open(sys.argv[2]).read().split("\n")
+# `[^'\n]` and not `[^']`: a provenance line that quotes nothing -- the semicolons limit cites
+# "understand.md, rule 3" in prose -- otherwise runs the character class forward off the end of
+# its line into the NEXT limit's display name, where the apostrophe in "An option's title"
+# closes the quote. That match then consumes the real opening quote after it, and because
+# `findall` is non-overlapping the Options citation is never examined at all. Measured: 7
+# captures either way, but 5 usable names instead of 6, with `Options` the one lost -- the exact
+# rename this check exists to catch.
+slots = set()
+lines = doc.split("\n")
 for index, line in enumerate(lines):
     if line.startswith("| Slot | What goes in it"):
         for row in lines[index + 2:]:
@@ -1220,9 +1235,43 @@ for index, line in enumerate(lines):
                 break
             match = re.match(r"\| \*\*([^*]+)\*\*", row)
             if match:
-                defined.add(match.group(1).strip())
+                slots.add(match.group(1).strip())
 
-print(" ".join(sorted(cited - defined)) or "none")
+# A citation naming a SECTION quotes a slot, and its name is held to the slot table. One saying
+# "the paragraph" quotes prose and is held to the text. The two need telling apart because a
+# retired slot name can go on occurring in the file as something else: "How it works today" is
+# still the blind brief template's heading for the Before flow, two hundred lines below the slot
+# table it was removed from, so a substring check would have called the rename clean.
+SLOT = re.compile(r"understand\.md, (?:Understand|Alternatives|Solution): '([^'\n]*?) \.\.\. ([^'\n]*)'")
+# `[^'\n]` and not `[^']`: a provenance line that quotes nothing -- the semicolons limit cites
+# "understand.md, rule 3" in prose -- otherwise runs the character class forward off the end of
+# its line into the NEXT limit's display name, where the apostrophe in "An option's title"
+# closes the quote. That match then consumes the real opening quote after it, and because
+# `findall` is non-overlapping the Options citation is never examined at all. Measured: 7
+# captures either way, but 5 usable names instead of 6, with `Options` the one lost -- the exact
+# rename this check exists to catch.
+ANY = re.compile(r"understand\.md,[^'\n]*'([^'\n]*)'")
+
+missing, checked, as_slot = [], 0, set()
+for name, tail in SLOT.findall(limits):
+    checked += 1
+    as_slot.add("%s ... %s" % (name, tail))
+    if name not in slots:
+        missing.append("%s (not a slot)" % name)
+    if tail.strip() not in doc:
+        missing.append(tail.strip())
+# Whatever SLOT did not claim, checked as text. Skipping by what SLOT ACTUALLY captured, not by
+# re-testing the fragment's shape: the paragraph citation also carries an ellipsis, so a shape
+# test skipped it as a slot citation and left it the one quotation nothing examined.
+for fragment in ANY.findall(limits):
+    if fragment in as_slot:
+        continue
+    checked += 1
+    for half in fragment.split(" ... "):
+        if half.strip() and half.strip() not in doc:
+            missing.append(half.strip())
+
+print("%d checked; %s" % (checked, " | ".join(missing) or "none missing"))
 LIMITS
 
 brief_md="$root/skills/dispatcher/workers/review.md"
@@ -1288,7 +1337,8 @@ printf '\n  the blind brief is poured from the problem-only read, not retyped\n'
 ok "the read is named as its source"                "$(grep -c 'brief problem-statement --review <id> --json' "$brief_md")" 1
 ok "  and read after write 1, not before"           "$(grep -c 'After write 1, read it' "$brief_md")" 1
 ok "every section is poured from a served field"    "$(ask "d['pour_unserved']")" "[]"
-ok "  and all three sections are accounted for"     "$(ask "len(d['pour_sections'])")" 3
+ok "  and every served field is poured somewhere"   "$(ask "d['pour_unpoured']")" "[]"
+ok "  over five rows, one per served field"         "$(ask "len(d['pour_sections'])")" 5
 ok "without Review Desk the template is by hand"    "$(grep -c 'Without Review Desk, fill the' "$brief_md")" 1
 
 printf '\n  write 1, driven through the stand-in\n'
@@ -1527,8 +1577,8 @@ ok "the problem half does NOT pass it"              "$(lint "$work/half.json")" 
 # counting it made four failures read as five.
 ok "  failing the four the brief names, and no more" "$(grep -c '^FAIL  [a-z]' "$work/lint")" 4
 ok "  which are the change half, every one"         "$(grep '^FAIL  [a-z]' "$work/lint" | awk '{print $2}' | sort | tr '\n' ' ')" "headline.present picture.after problems.marked_after problems.now_line "
-ok "every slot --limits cites is one understand.md defines" "$(python3 "$work/limitslots.py" \
-    "$root/skills/review-craft/brief_lint.py" "$understand_md")" none
+ok "every quotation --limits makes of understand.md is in it" "$(python3 "$work/limitslots.py" \
+    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "8 checked; none missing"
 ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
 ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
 ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
@@ -1644,17 +1694,27 @@ ok "a renamed member is caught by the page coverage"   "$(ask "d['missing_contra
 # The control for the limits crossing, and the drift it is named after: DEV-883 renamed
 # "How it works today" and `--limits` went on citing it, in the same repository, with nothing
 # crossing the two. Put the old name back and the crossing must say so.
-sed "s/'Supporting table \.\.\. 3-4 rows'/'How it works today ... 3-4 rows'/" \
+sed "s/'Supporting table /'How it works today /" \
     "$root/skills/review-craft/brief_lint.py" > "$work/badlimits.py"
-ok "the citation reversal changed one line"            "$(grep -c "How it works today \.\.\. 3-4 rows" "$work/badlimits.py")" 1
+ok "the citation reversal changed one line"            "$(grep -c "How it works today \.\.\. 3" "$work/badlimits.py")" 1
+# And the second half of the quotation, which a name-only check could not have judged.
+sed "s/'Options \.\.\. a title of at most 12 words'/'Options ... a title under 12 words'/" \
+    "$root/skills/review-craft/brief_lint.py" > "$work/badquote.py"
+ok "the reworded-quotation reversal changed one line"  "$(grep -c "a title under 12 words" "$work/badquote.py")" 1
+ok "a citation reworded where the slot stayed is caught" "$(python3 "$work/limitslots.py" \
+    "$work/badquote.py" "$understand_md")" "8 checked; a title under 12 words"
 ok "a limit citing a slot that is gone is caught"      "$(python3 "$work/limitslots.py" \
-    "$work/badlimits.py" "$understand_md")" "How it works today"
+    "$work/badlimits.py" "$understand_md")" "8 checked; How it works today (not a slot)"
 
 sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
     "$brief_md" > "$work/badslot.md"
 ok "the slot-name reversal changed one line"           "$(grep -c 'The sytsem' "$work/badslot.md")" 1
 ok "a slot understand.md does not define is caught"    "$(ask "d['slots_improvised']" "$work/badslot.md")" "['The sytsem']"
 ok "  and the slot it left behind is caught too"       "$(ask "d['slots_unsaved']" "$work/badslot.md")" "['The system']"
+
+sed '/^| `## What is wrong`, its opening line | `problem` |$/d' "$brief_md" > "$work/badpour2.md"
+ok "the unpoured reversal removed one line"            "$(grep -c 'its opening line' "$work/badpour2.md")" 0
+ok "a served field poured nowhere is caught"           "$(ask "d['pour_unpoured']" "$work/badpour2.md")" "['problem']"
 
 sed 's/| `## The system` | `how_it_works_today` |/| `## The system` | `headline` |/' \
     "$brief_md" > "$work/badpour.md"

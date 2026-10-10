@@ -123,9 +123,13 @@ Rules
 <Two or three sentences a newcomer could follow: what this is, who uses it, what it is for.>
 
 ## How it works today
-1. <The Before flow, one numbered line per step.>
+<The Before flow's caption, if it has one.>
+
+1. <The Before flow, one numbered line per row — boxes in a split row share their number.>
 
 ## What is wrong
+<The problem the change is solving, in plain words.>
+
 1. **<The problem, plain.>** <One or two sentences of mechanism, and the evidence that it bites.>
 
 ## What to produce
@@ -423,7 +427,9 @@ Then the slots were reconciled against that record, so none of them has to be im
 **"How it works today" named two different things** — a paragraph of plain words and a 3–4 row
 table — which are two fields, and the problem-only read carries the first and not the second. They
 are **"The system"** and **"Supporting table"** now, with a line saying why a table about today
-belongs in the Before flow rather than the second one. Seven slots were added for fields the record
+belongs in the Before flow rather than the second one. The retired name survives once more in
+this file, as the blind brief template's `## How it works today` heading, where it means the
+Before flow and nothing else — so a search for it finds a heading rather than a slot. Seven slots were added for fields the record
 requires and nothing produced: **The problem**, **Keys**, **For and against**, **What the pass was
 given**, the outside-the-diff column on **Parts**, the finding on **Choices** and
 **Disagreements**, and **Verdict**. And the verdict words are the record's — `fixed`, `partly`,

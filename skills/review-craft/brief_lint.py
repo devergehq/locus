@@ -67,17 +67,19 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
     ("box.note.words", "A flow box note", 14,
      "DEV-884, from the approved board of 10 Oct 2026, where the longest ran 11"),
     ("flow.before.rows", "Rows in the before flow", (4, 6),
-     "understand.md, Understand: 'Before ... 4-6 rows'. DEV-884's table said 8 rows and a "
+     "understand.md, Understand: 'Before ... 4–6 rows'. DEV-884's table said 8 rows and a "
      "floor of 3; understand.md owns the slot. The approved board ran 6"),
     ("flow.after.rows", "Rows in the after flow", (4, 7),
-     "understand.md, Understand: 'After ... 4-7 rows'. DEV-884's table said 8 rows and a "
+     "understand.md, Understand: 'After ... 4–7 rows'. DEV-884's table said 8 rows and a "
      "floor of 3; understand.md owns the slot. The approved board ran 6"),
     ("problems.count", "Numbered problems", (2, 4),
-     "understand.md, Understand: 'Problems ... 2-4, numbered'. DEV-884's table said 5; "
+     "understand.md, Understand: 'Problems ... 2–4, numbered'. DEV-884's table said 5; "
      "understand.md owns the slot. The approved board ran 3"),
     ("top.words", "The top layer in total, headline plus every was-wrong and now line", 150,
-     "DEV-884. The house target for a draft, against which the live session wrote 1,381. "
-     "The approved board of 10 Oct 2026 ran 85"),
+     "understand.md, the paragraph 'The whole top layer ... is 150 words'. DEV-884 brought the "
+     "number -- the house target for a draft, against which the live session wrote 1,381 -- and "
+     "put it in that file, which is where it is changed. The approved board of 10 Oct 2026 ran "
+     "85 of the 150"),
     ("top.semicolons", "Semicolons in one top-layer line", 1,
      "understand.md, rule 3: parallel things are a table, and the characteristic failure is "
      "one sentence of three clauses joined by semicolons. Two semicolons are three clauses"),
@@ -86,7 +88,7 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
      "the way the headline is, per Patrick's ruling of 10 Oct 2026. No board measurement for "
      "this slot; Review Desk's real-length brief runs 11 across eight options"),
     ("support.rows", "Rows in the supporting table", (3, 4),
-     "understand.md, Understand: 'Supporting table ... 3-4 rows' — the board's three questions, "
+     "understand.md, Understand: 'Supporting table ... 3–4 rows' — the board's three questions, "
      "each with one owner. It was 'How it works today' until DEV-883 split that slot in two, "
      "because the name covered both a paragraph of plain words and this table and they are "
      "different fields. Checked only when the brief holds a table: the contract serves null "
