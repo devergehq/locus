@@ -90,18 +90,26 @@ for line in doc.split("\n")[start + 2:]:
 
 # The trim cap, and the context the at-head branch takes. Both are numbers the brief states and
 # the builder needs; reading them is what puts the brief itself under test rather than a copy.
-cap = re.search(r"the cap is (\d+) entries", doc)
-at_head = re.search(r"Take the flagged line and \*\*three either side\*\*", doc)
+#
+# `flat` is the document with every run of whitespace collapsed, and every predicate below reads
+# THAT. A rule spelled across a line break is the same rule, so a predicate that pins the wrap
+# would fail on a reflowed paragraph and say nothing about the rule -- a check that reports a
+# fault where there is none is the same defect as one that reports none where there is.
+flat = re.sub(r"\s+", " ", doc)
+
+cap = re.search(r"the cap is (\d+) entries", flat)
+# Spelled as a word in the prose, because "three either side" reads and "3 either side" does not.
+WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6}
+at_head = re.search(r"Take the flagged line and \*\*(\w+) either side\*\*", flat)
 
 print(json.dumps({
     "context": int(context.group(1)) if context else None,
     "cap": int(cap.group(1)) if cap else None,
-    # Spelled as a word in the prose, so the number is pinned by the phrase rather than parsed.
-    "at_head_context": 3 if at_head else None,
-    "trim_from_far_end": "end is further from the\n  flagged line's entry" in doc,
-    "trim_keeps_flagged": "never the flagged\n  line's own entry" in doc,
-    "trim_moves_start_line": "add one\n  to `start_line`" in doc,
-    "three_branches": "there is no fourth" in doc,
+    "at_head_context": WORDS.get(at_head.group(1)) if at_head else None,
+    "trim_from_far_end": "end is further from the flagged line's entry" in flat,
+    "trim_keeps_flagged": "never the flagged line's own entry" in flat,
+    "trim_moves_start_line": "add one to `start_line`" in flat,
+    "three_branches": "there is no fourth" in flat,
     "markers": markers,
     "numbered": numbered,
     "rows": rows,
@@ -956,6 +964,32 @@ print(json.load(open('$work/badtrim.json'))['start_line'])")" 4
 ok "a trim that does not move start_line is caught"   "$(python3 "$work/against.py" \
     "$work/badtrim.txt" "$work/backoff-head.txt" | tr ',' ' ' | wc -w | tr -d ' ')" 20
 ok "  and the flagged line is not even drawn"         "$(grep -c '^26 ' "$work/badtrim.txt")" 0
+
+# Both numbers the brief states, reversed. Without these, "the harness reads the cap from the
+# brief" is a claim about a regex rather than about the builder: a reader that returned a
+# constant would pass every assertion in section B.
+sed 's/and the cap is 20 entries/and the cap is 12 entries/' "$brief" > "$work/smallcap.md"
+ok "the cap reversal changed one line"                "$(ask "d['cap']" "$work/smallcap.md")" 12
+python3 "$work/hunkspec.py" "$work/smallcap.md" > "$work/capspec.json"
+git -C "$fix" diff -U3 "$base" "$head" -- jobs/Backoff.php \
+  | python3 "$work/hunk.py" "$work/capspec.json" jobs/Backoff.php 16 > "$work/capped.json"
+ok "  and the builder trims to the brief's cap"       "$(python3 -c "
+import json
+print(len(json.load(open('$work/capped.json'))['lines']))")" 12
+python3 "$work/numbers.py" "$work/capspec.json" "$work/capped.json" > "$work/capped.txt"
+ok "  with its numbers still the checkout's"          "$(python3 "$work/against.py" \
+    "$work/capped.txt" "$work/backoff-head.txt")" none
+
+sed 's/Take the flagged line and \*\*three either side\*\*/Take the flagged line and **two either side**/' \
+    "$brief" > "$work/twoside.md"
+ok "the at-head reversal changed one line"            "$(ask "d['at_head_context']" "$work/twoside.md")" 2
+python3 "$work/hunkspec.py" "$work/twoside.md" > "$work/twospec.json"
+git -C "$fix" show "$head:jobs/DeliverWebhook.php" \
+  | python3 "$work/athead.py" "$work/twospec.json" jobs/DeliverWebhook.php 5 > "$work/twohunk.json"
+ok "  and the builder takes the brief's own span"     "$(python3 -c "
+import json
+h = json.load(open('$work/twohunk.json'))
+print(len(h['lines']), h['start_line'])")" "5 3"
 
 # The at-head branch, reversed: a wider `-U` instead of the checkout. The brief forbids it, and
 # this is why -- the lines come back marked as though the change had made them.
