@@ -69,7 +69,10 @@ cat > "$work/sectioned.md" <<'EOF'
 ### Problem fit
 The PR moves the reopen behind a preflight, which is the right shape: refusals now happen before anything changes at the payer.
 
-### 🟠 Should · S1 · a correction that throws after the reopen strands the invoice OPEN
+### Should · F1 · a correction that throws after the reopen strands the invoice OPEN
+
+**in diff** · `Open — needs a decision`
+
 The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, in [`ProcessInvoiceUpdatesAction.php:212`](https://github.com/o/r/blob/abc/app/Http/Actions/Invoices/ProcessInvoiceUpdatesAction.php#L212). If it throws for a reason the dry run missed, the invoice is left OPEN — the red path below. I'd wrap the reopen and the correction in one compensating step.
 
 ```mermaid
@@ -214,12 +217,51 @@ import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint a
 b = open('$work/agent.md').read()
 print([n for n in r.table_columns(b) if n > r.BODY_COLS])")" "[]"
 
-python3 -c "print('### 🟠 Should · S1 · long\n\n' + 'word ' * 200)" > "$work/longsec.md"
+python3 -c "print('### Should · F1 · long\n\n**in diff** · \`Open\`\n\n' + 'word ' * 200)" \
+    > "$work/longsec.md"
 { sed -n '1,7p' "$work/sectioned.md"; cat "$work/longsec.md"; } > "$work/over.md"
 fixture "[$(review 5 principal "$work/over.md")]" '[]'
 run >/dev/null
 ok "a section over a thread's budget fails"     "$(rule sections.budget)" yes
 ok "but not the index word count"               "$(rule index.length)" no
+
+# The status line, which moved out of the heading because a record composes the heading. Most of
+# what follows is controls rather than tests: `sections.status_line` is a new check and its first
+# two drafts were unfalsifiable, so each way of breaking it is pinned beside the pass.
+printf '\n%s\n' "The status line a composed heading cannot carry"
+fixture "[$(review 9001 principal "$work/sectioned.md")]" '[]'
+ok "the house section carries tag and chip"     "$(run)$(rule sections.status_line)" "0no"
+# A chip alone is matched by the `**What** ·` line below it in every well-formed finding, so
+# deleting the status line outright has to fail. On the first draft of the check it did not.
+sed '/^\*\*in diff\*\* · `Open — needs a decision`$/d' "$work/sectioned.md" > "$work/nostatus.md"
+ok "the status-line reversal removed one line"  "$(grep -c 'in diff' "$work/nostatus.md")" 0
+fixture "[$(review 9001 principal "$work/nostatus.md")]" '[]'
+ok "a section with no status line fails"        "$(run)$(rule sections.status_line)" "1yes"
+sed 's/^\*\*in diff\*\* · `Open — needs a decision`$/**in diff** · Open/' "$work/sectioned.md" \
+    > "$work/nochip.md"
+fixture "[$(review 9001 principal "$work/nochip.md")]" '[]'
+ok "a disposition that is not a code span fails" "$(run)$(rule sections.status_line)" "1yes"
+sed 's/^\*\*in diff\*\* · `Open — needs a decision`$/`Open — needs a decision`/' \
+    "$work/sectioned.md" > "$work/notag.md"
+fixture "[$(review 9001 principal "$work/notag.md")]" '[]'
+ok "a chip with no in-diff tag fails"           "$(run)$(rule sections.status_line)" "1yes"
+# The exemption, which is house style rather than laxity: a nit takes the lighter shape.
+python3 - "$work/sectioned.md" "$work/nitsection.md" <<'NIT'
+import pathlib, sys
+doc = pathlib.Path(sys.argv[1]).read_text()
+doc = doc.replace("### Should · F1 ·", "### Nit · F1 ·")
+doc = doc.replace("**in diff** · `Open — needs a decision`\n\n", "")
+doc = doc.replace("**1 Should · 1 open.**", "**1 Nit · 1 open.**")
+pathlib.Path(sys.argv[2]).write_text(doc)
+NIT
+fixture "[$(review 9001 principal "$work/nitsection.md")]" '[]'
+ok "a nit section is exempt, as on a thread"    "$(run)$(rule sections.status_line)" "0no"
+# And the severity a section's check reads comes from the HEADING, where the word is not bold.
+# Reading it with SEV (which requires bold) returned "" for every section and exempted them all.
+ok "a section severity is read without bold"    "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+head = '### Should · F1 · a title'
+print(bool(r.HEAD_SEV.search(head)), bool(r.SEV.search(head)))")" "True False"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

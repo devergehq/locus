@@ -35,6 +35,15 @@ matters most.
 default, and measured tools raise 1.1–3.4 findings per PR. Anything past three goes inline only,
 or into a collapsed "Also found" list. If everything is important, nothing is.
 
+**Both of those rules are about a body an agent writes whole. Where a record composes the body
+from blocks, every posted finding is a section in it, and the cap moves to the findings
+themselves.** It has to: a block is the unit a per-finding decision rewrites, and a finding
+written only as a thread has no block, so cutting or regrading it is refused outright. Hiding the
+fourth finding from the body would hide it from the developer's decision, which is the opposite
+of what the body is for there. So the lever on volume is the **Volume** rule at the bottom of this
+file — raise fewer findings, hold the rest back or suppress them with a reason — and not the
+body's shape. Nothing above is relaxed for a body you write yourself: three is still three.
+
 ## Whose name is on it
 
 - **Self-review on our own PR** — an agent pre-review, like Greptile's. It carries the
@@ -202,7 +211,9 @@ GitHub, so a reply there just doubles the comment count; fold the proof into the
 resolved nit threads is noise, and the Volume rule outranks "one thread per finding". **But never
 collapse threads that already carry a conversation**: an existing reply from the author is record,
 and grouping that destroys it costs more than the noise it saves. Grouping applies to threads you
-are about to create.
+are about to create. **And grouping is for threads only** — where a record holds the draft and a
+decision rewrites one section of it, each nit raised gets its own section. "Fit GitHub's column"
+has the argument.
 
 **Findings with nothing in the diff to anchor to go in one "Corrections and unanchored findings"
 comment** on the PR conversation — this is the one top-level comment the post-once rule allows
@@ -325,7 +336,9 @@ a long identifier or a URL as text. When a finding needs more than a line, write
 **After**:
 
 ````markdown
-### 🟠 Should · S1 · a correction that throws after the reopen strands the invoice OPEN
+### Should · F1 · a correction that throws after the reopen strands the invoice OPEN
+
+**in diff** · `Open — needs a decision`
 
 The real correction still runs after the reopen, in
 [`ProcessInvoiceUpdatesAction.php:212`](…). If it throws for a reason the dry run missed, the
@@ -342,6 +355,31 @@ sits under the finding it draws. The index table can stay, with a one-line claim
 section is where the argument goes. `review_lint.py` fails a table cell over 140 characters and
 an unbroken token over 40, and budgets each finding section the way it budgets a thread. It warns,
 without failing, on a body diagram that is not under a finding or Problem fit.
+
+**A section heading is `### {Severity} · {id} · {title}` and nothing else — no glyph.** The word
+already carries the severity — "Casing and formatting" below says so outright — and the glyph was
+the only thing in that heading a reader did not need. The id is **`F{seq}`**, the finding's number: where
+Review Desk holds the review that number is its identity across rounds, allocated once for the
+pull request, and the heading is **composed from the record** rather than typed. Where there is
+no Review Desk, keep your own id in the same slot. This heading used to read
+`### 🟠 Should · S1 · …`; the glyph and the invented `S1` both went, together, for that reason.
+
+**The `in diff` / `pre-existing` tag and the disposition chip go on the section's first line**, as
+in the example above — not in the heading, which a record composes and which therefore cannot
+carry a status that changes. On a thread they are on the title line, and that has not moved; the
+two layouts differ here because one heading is written and the other is derived.
+`review_lint.py`'s `sections.status_line` checks that line for **both**, exempting Nits exactly
+as `threads.disposition_top` does. Both halves, because a chip on its own is matched by the
+`**What** ·` line that follows it in every well-formed finding — so a chip-only check passed a
+body whose whole status line had been deleted. The tag is prose no other part of the shape
+carries.
+
+**Where a record holds the draft, each Nit raised gets its own section**, overriding "Nits group"
+above for this one case. Grouping was always a rule about *threads*, where five collapsed nits
+save a reader five scrolls. A section is not a thread: it is the unit a per-finding decision
+rewrites, so a nit folded into another finding's section cannot be cut, regraded or rewritten at
+all. Volume is still the right worry — the answer is to hold the nit back or suppress it with a
+reason, both of which are on the record, not to group it out of reach.
 
 **Four columns is the budget**: severity, Where, Finding, Disposition. Nothing beyond it earns the
 space, and the fifth column is the one that bites — fold an id into the severity cell

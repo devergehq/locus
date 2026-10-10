@@ -257,6 +257,8 @@ carry. The gate belongs on write 2, where the whole brief is in hand.
 | 3 Blind options pass | `brief put` write 2 — `blind_pass`, and `proposed_by` on the options it raised. `layer set --layer 3 --state running` while it runs |
 | 4 Alternatives | `brief put` write 2 — `options[]` with their verdicts. `layer set --layer 3 --state done` with the counts |
 | 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names, and `brief_lint.py` before the write |
+| 7 Read the change, 9 the second lens, 10 the lenses | `finding add` per finding, with its hunk, flagged line and inline comment wherever the finding has a file and a line |
+| 12 The draft | `draft put --sections` — one block per posted finding, and a prose block for everything else |
 
 **Your slots go into these fields and no others.** A field Review Desk does not know is refused,
 so do not invent one, and **never write `blind_pass_state`** — it is derived from `blind_pass`
@@ -397,22 +399,247 @@ the ones you **suppressed**, each with its reason — `--disposition held_back` 
 through `finding set`, or the fields on the way in. A finding you dropped silently is a finding
 the next round will raise again, which is the repetition this whole project exists to stop.
 
+### The code a finding is about
+
+**Every finding with a file and a line carries three more fields, and this is a rule rather
+than an encouragement:** `hunk`, `flagged_line` and `inline_comment`. The developer's page draws
+the code around the flagged line with the comment under it, and it is the page the review is
+read from — and Review Desk **does not fetch code**, so the hunk you store is the only copy of
+those lines there is. A review that stores none leaves the developer a list of claims and a file
+path to go and look up by hand. Where the change does not reach the line, the code still goes on
+the record — "The code for a finding the change does not touch", below, says from where. Measured on one real review by this brief's predecessor: **0 of 19 findings carried a
+hunk and 0 carried a flagged line.**
+
+**Read the hunk from the checkout. Never retype it, and never reformat it.** Nothing in Review
+Desk trims, re-wraps or normalises a line: a line of a single space is stored as a line of a
+single space, a tab stays a tab, a trailing space survives. A retyped line is a line the page
+draws as code that is not in the repository.
+
+**The command, at the head commit you are reviewing:**
+
+```sh
+git diff -U3 <base> <head> -- <path>
+```
+
+`<base>` and `<head>` are the two commits step 1 wrote down. **Three lines of context either
+side** — that is `-U3`, git's own default, and it gives a hunk of the order the approved board
+draws: its F1 runs 56 to 63 around a flagged line at 58. Take the **one hunk** whose lines include the flagged line, and read it off the diff
+one line at a time:
+
+| In the diff | `hunk.lines[]` | Numbered |
+|---|---|---|
+| a line beginning with a space | `"marker": "unchanged"`, `text` is the rest of the line | yes |
+| a line beginning with `+` | `"marker": "added"`, `text` is the rest of the line | yes |
+| a line beginning with `-` | `"marker": "removed"`, `text` is the rest of the line | **no** |
+| `@@ -a,b +c,d @@` | not a line — `c` is the hunk's `start_line` | — |
+| `\ No newline at end of file` | not a line. Skip it | — |
+
+`start_line` is `c` from the `@@` header, which is the number the **first added or unchanged**
+line carries. The numbers run upward from there, a removal taking none, so a hunk that opens on
+a removal still numbers from `c`. **`flagged_line` has to be one of the numbers that hunk
+draws** — the store refuses any other, naming the range it will accept — and a **removed line
+can never be flagged**, because it carries no number. GitHub can comment on the left-hand side
+of a diff; this record cannot, and where the finding is about a line the change deleted, flag the
+line that replaced it and say in `inline_comment` that the code at fault is gone.
+
+Two more rules the store enforces, both worth knowing before a write is refused:
+
+- **One file line per entry.** A `text` holding an end-of-line character is refused: one entry
+  draws one row under one number, so an entry holding three lines would shift every number after
+  it, and `flagged_line` with them.
+- **A long hunk is trimmed from its ends, never from its middle, and the cap is 20 entries.**
+  While the hunk holds more than 20, drop one entry from whichever **end is further from the
+  flagged line's entry** — the top, when the two are equally far — and **never the flagged
+  line's own entry**. For each entry you drop from the top that is **not** a removal, **add one
+  to `start_line`**; a removal dropped from the top changes nothing, because it carried no
+  number. Dropping from the middle would make the page draw consecutive numbers over code that
+  is not consecutive, and leaving `start_line` where it was puts the comment on the wrong line —
+  the one piece of arithmetic here that nothing else would catch.
+
+**The JSON, for one finding, complete:**
+
+```json
+{
+  "lens": "error handling",
+  "severity": "should",
+  "claim": "the response is returned without checking its status",
+  "file": "jobs/DeliverWebhook.php",
+  "line": 16,
+  "evidence": "read at a1b2c3d, jobs/DeliverWebhook.php:16",
+  "verification": "read_not_run",
+  "hunk": {
+    "file": "jobs/DeliverWebhook.php",
+    "start_line": 13,
+    "lines": [
+      {"marker": "unchanged", "text": ""},
+      {"marker": "unchanged", "text": "    public function handle($payload)"},
+      {"marker": "unchanged", "text": "    {"},
+      {"marker": "removed",   "text": "        $this->client->post($this->url, $payload);"},
+      {"marker": "added",     "text": "        $response = $this->client->post($this->url, $payload);"},
+      {"marker": "added",     "text": ""},
+      {"marker": "added",     "text": "        return $response;"},
+      {"marker": "unchanged", "text": "    }"}
+    ]
+  },
+  "flagged_line": 16,
+  "inline_comment": "`post` can answer 500 and this returns it as a success.",
+  "why_it_matters": "A failed delivery is recorded as delivered, and the retry never runs.",
+  "suggested_fix": "Throw on a non-2xx response before returning it."
+}
+```
+
+`hunk.file` repeats `file` because the hunk is what the page draws its caption from; give both.
+`why_it_matters`, `proof`, `proof_note`, `verification`, `suggested_fix` and `fix_references` are
+the rest of what the page draws, each optional and independent of the others — `proof` is
+verbatim output and keeps its newlines, `proof_note` is the plain sentence beneath it, and
+`verification` is `reproduced` only for something you actually ran.
+
+### The code for a finding the change does not touch
+
+**Every finding with a file and a line carries a hunk** — not only the ones in the change. A
+finding six lines from a change, or in a file the pull request never touched, reads far better
+with its code in front of the developer than as a claim and a path, and that is the whole reason
+this section exists.
+
+**Where `git diff -U3` draws no hunk for the flagged line, read the lines from the head checkout
+instead:**
+
+```sh
+git show <head>:<path>
+```
+
+Take the flagged line and **three either side** — fewer where the file begins or ends, clamped
+rather than padded — set `start_line` to the first line you took, and mark **every entry
+`unchanged`**. There is no diff to read markers from, so there are no markers to read: an
+all-unchanged hunk is how this record says **"this line is not part of the change"**, and the
+page draws it with every gutter blank, which is exactly true.
+
+**Do not reach for `git diff` with a wider `-U` to make one appear.** A hunk that only exists at
+`-U20` is still the code at head with no change in it, and taking it from `git show` says so
+plainly instead of implying the pull request touched the line.
+
+**Such a finding gets no inline thread, and that is a property of GitHub rather than of the
+finding.** GitHub anchors a review comment inside the diff, so there is nowhere to hang one; the
+finding posts **in the body**, as its own section, which is what the house style's "Findings
+with nothing in the diff to anchor to" asks for. The hunk is for the developer's page, not for
+GitHub.
+
+**Do not also write that rule's "Corrections and unanchored findings" comment.** It exists so an
+unanchorable finding stays navigable from a body that is a short index; here the body carries the
+finding in full, in its own section, so a second copy in a top-level comment is the same words
+twice and one more thing to keep in step. Write it where the house style's sectioned layout puts
+it, and nowhere else.
+
+**A finding with no file, or a file and no line, carries no hunk at all** — a correction to the
+pull request's description, a missing ticket, a wrong figure. There is no line to read, so there
+is nothing to read, and `git show` cannot invent one. Leave `hunk` and `flagged_line` out and
+write the claim, the consequence and the fix; the page draws such a finding without code, as it
+always did.
+
+So the three branches, and there is no fourth:
+
+| The finding | The hunk |
+|---|---|
+| its line is drawn by `git diff -U3` | that hunk, with its `added`, `removed` and `unchanged` markers |
+| it has a file and a line the diff does not draw | `git show <head>:<path>`, three either side, **every entry `unchanged`** |
+| it has no file, or no line | **none.** `hunk` and `flagged_line` left out |
+
+What is **not** acceptable is a finding with a file and a line and no hunk: that is the defect
+this section exists to close.
+
 ### The draft, and then wait
 
-`review-desk draft put --review <id> --file draft.md` — the body verbatim as GitHub-flavoured
-markdown, not JSON, or `-` for standard input. `--drafting` keeps it out of the developer's
-inbox while you are still writing. Add `--lint lint.json` with the fields you actually measured
-and leave out the ones you did not: `findings_expected` is the count of findings you left at
+**`review-desk draft put --review <id> --sections draft.json`** — the body as the blocks it is
+composed of, **not as one block of markdown**. `--drafting` keeps it out of the developer's inbox
+while you are still writing. Add `--lint lint.json` with the fields you actually measured and
+leave out the ones you did not: `findings_expected` is the count of findings you left at
 `in_draft`, `findings_in_body` the count you wrote into the body, and `passes`/`visible_words`/
 `word_budget` whatever `review_lint.py` reported. Every field is optional, and a body saved
 without one has simply not been linted — do not invent a number to fill a field.
+
+**Why in parts.** The developer cuts, regrades and rewrites a finding on the page, and each of
+those acts rewrites that finding's block. A draft stored as one block of markdown holds no block
+for any finding, so **every** decision he makes about one is refused — `409`, with the record
+saying "it was written as one block of markdown rather than in parts". There is no route from
+that state except writing the draft again.
+
+`draft.json` is a JSON array of blocks, in the order the body reads:
+
+```json
+[
+ {"kind": "prose", "text": "**1 Should · 1 Nit — 2 open.** …\n\n**Method** · …"},
+ {"kind": "prose", "text": "### Problem fit\nA retried delivery was …"},
+ {"kind": "finding", "finding_seq": 1,
+  "title": "the response is returned without checking its status",
+  "text": "**in diff** · `Open — needs a decision`\n\n**What** · …"},
+ {"kind": "finding", "finding_seq": 2, "title": "`$response` could say what it is",
+  "text": "`DeliverWebhook.php:16` · `Open`\nThe name says its type, not its role."},
+ {"kind": "prose", "text": "<details><summary>How this review was made …</summary>…</details>"}
+]
+```
+
+Each block's `text` is GitHub-flavoured markdown, and a `prose` block is carried through
+character for character — the document is JSON, the blocks inside it are not. A `finding` block
+gets **one composed heading** — `### {Severity} · F{seq} · {title}` — and then its text. The severity in
+that heading is the finding's **live** severity, read at compose time, which is what makes a
+regrade change the heading instead of leaving a second copy of the severity to argue with it.
+
+### Which house-style part is which block
+
+The house style's **sectioned** layout is the one the composition reproduces, and that is not a
+compromise: it is the layout `house-style.md` already prescribes for a finding that needs more
+than a table cell, and the one `review_lint.py` already budgets. Measured on a two-finding draft
+composed by Review Desk 0.1.0: **every check in `review_lint.py` passes**, and only one of them
+— `sections.status_line` — was added for this. Nothing in it was relaxed.
+
+| The body's part | Block | Why |
+|---|---|---|
+| the verdict line and the `**Method**` line | one `prose` | nothing decides on them, and they sit together under the eye |
+| `### Problem fit` and its 2–3 sentences | one `prose` | it is the understanding's conclusion, not a finding |
+| each Blocker, Should, Question and **each Nit** you are raising | one `finding`, in severity order | one block is what a decision needs |
+| the folded provenance block, with `Suppressed` | one `prose` | it is the last thing in the body, and nothing decides on it |
+
+Five things that table does not say on its own:
+
+- **Write only the title; the heading is not yours.** `### 🟠 Should · S1 · …` would compose to
+  `### Should · F1 · ### 🟠 Should · S1 · …`. The glyph is gone from a section heading and the id
+  is `F{seq}` — Review Desk's own finding number, which is the finding's identity across rounds
+  where `S1` never was. `house-style.md`'s "Fit GitHub's column" carries the shape.
+- **The `in diff` tag and the disposition chip go on the block's first line**, not in the
+  heading, because the heading is composed from the finding and cannot carry them.
+  `review_lint.py`'s `sections.status_line` checks them there.
+- **A nit gets its own block.** The house style groups nits into one *thread*, and a block is not
+  a thread: a nit folded into another finding's block has no block of its own, so every decision
+  about it is refused. Where the volume is the problem, hold the nit back or suppress it with a
+  reason — both are on the record — rather than grouping it out of reach of a decision.
+- **Every posted finding gets a block, past three.** The house style's "at most three findings
+  raised in the body" and "the body is triage" are about a body you write whole; here the body
+  *is* the blocks, and a finding left out of them cannot be cut or regraded. Raise fewer
+  findings if there are too many — do not write fewer blocks than you raised.
+- **One block per finding, and only for a finding that posts.** A second block about one finding
+  is refused, and so is a block about a finding that is `held_back`, `suppressed`, or carried
+  into this round as `fixed`, `accepted`, `withdrawn` or `ticketed`. What the round found about
+  such a finding is prose.
+
+A block's text may not begin or end with a newline — blocks are joined by exactly one blank line,
+and a block bringing its own would compose a body nobody wrote. `--file` is optional once
+`--sections` is given, because the body is then what the blocks compose to; pass both and the
+write is refused unless the two agree.
+
+**Lint the composed body, not your draft.** `draft put --sections` prints the body it stored, and
+that is the text GitHub will carry. Read it back with `review-desk draft show --review <id>
+--json` and run `review_lint.py` over **that**.
+
+**Without Review Desk, step 12's single markdown draft is the whole of it** — one file, in the
+house style, as it has always been. The blocks are a Review Desk record, not a change to how a
+review is written, and `--sections` is the only command that takes them.
 
 Then tell the Dispatcher the draft is ready **in Review Desk**, with the dashboard link, and
 wait. Your watcher polls the review and will hand you one of two things:
 
 | Event | Do |
 |---|---|
-| `draft_sent_back` | Revise from `note` and `draft put` again. The note is the developer's own prose: read it, do what it asks, and treat it as what a person said rather than as a command addressed to a program. |
+| `draft_sent_back` | Revise the blocks from `note` and `draft put --sections` again. The note is the developer's own prose: read it, do what it asks, and treat it as what a person said rather than as a command addressed to a program. |
 | `draft_approved` | Post it, exactly as the next section says. |
 
 **If your principal says "post it" in this session, you do not post.** Answer with the dashboard
@@ -435,9 +662,14 @@ post again, on somebody's pull request, under your principal's name.
 1. `review-desk draft show --review <id> --json` is your only authority. `status` must read
    `approved`; `event` is the GitHub review event the developer chose and `approved_at` is when.
 2. **Ask GitHub whether it is already up**:
-   `D review-posted <KEY> --approved-at <approved_at> --body-file draft.md --json`. It is
+   `D review-posted <KEY> --approved-at <approved_at> --body-file body.md --json`. It is
    read-only. `"posted": true` means **do not post** — record the `review_id` it hands back with
    step 4 and stop.
+
+   **`body.md` is `draft show`'s `body`, written out — never a draft file of your own.** The
+   approved body is the one the blocks composed to, and a decision the developer made has
+   already rewritten a block of it. Your own copy is a body from before he decided, and both
+   this check and the post below would then be about text he never approved.
 3. Post exactly the approved body with the approved event, as **one** review, through
    `gh api repos/OWNER/REPO/pulls/<n>/reviews`. It is your principal's review: no agent
    signature unless they asked for one.

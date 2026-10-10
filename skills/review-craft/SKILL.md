@@ -80,9 +80,11 @@ Everything below is argued in `house-style.md`. This is the part worth holding i
   sets `color:` — GitHub renders both themes. Free in a review; counted raw in a PR body.
 - **Fit GitHub's column.** A body renders about 760px wide, and a table that can't fit breaks its
   words between letters. Cells hold a severity, an id, a one-line claim or a bare line link, and
-  nothing longer. A finding that needs prose becomes a section: a heading with severity, id and
-  title, full-width prose beneath it with `file:line` linked inside a sentence, and its diagram
-  directly below.
+  nothing longer. A finding that needs prose becomes a section: `### {Severity} · {id} · {title}`
+  with no glyph, the `in diff` tag and the disposition chip on the line beneath it, full-width
+  prose with `file:line` linked inside a sentence, and its diagram directly below. The id is
+  `F{seq}` where a record holds the finding's number, and each nit raised gets its own section
+  there — a section is what a per-finding decision rewrites, and grouping puts one out of reach.
 
 ### Writing the PR description
 
@@ -202,6 +204,17 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**11 October 2026.** A finding's **section heading** is now `### {Severity} · {id} · {title}`
+with no severity glyph and the id `F{seq}`, and its `in diff` tag and disposition chip sit on the
+line beneath rather than in the heading. Both moved for one reason: where a record holds the
+draft it *composes* that heading from the finding's live severity and number, so a glyph nobody
+needed and a status that changes could not stay in it. `review_lint.py` gains
+`sections.status_line`, which checks that line for both the tag and the chip — nothing was
+relaxed, and the composed body passes every other check in it unchanged. Each nit raised gets its own
+section too: "Nits group" was always a rule about threads, and a nit folded into another
+finding's section cannot be cut, regraded or rewritten. Argued in `house-style.md` under "Fit
+GitHub's column".
 
 **10 October 2026 (second change).** `brief_lint.py` is new, and a brief is now checked rather
 than asked for. Nothing checked one before: on the review that forced `understand.md` the session
