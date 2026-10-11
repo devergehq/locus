@@ -89,6 +89,10 @@ esac
 # validation instead.
 case "$1" in
   brief|finding) exec python3 "$RDWORK/rd_brief.py" "$@" ;;
+  # `review` keeps the nit ticket's state, because what is under test is a LOOP: the developer's
+  # request is on the work list, the session reports what it filed, and the request leaves the
+  # list. A recorded document cannot answer the second half of that.
+  review) exec python3 "$RDWORK/rd_review.py" "$@" ;;
   # `harvest` and `draft show` answer from their own files, and from their own mode files, so a
   # harvest can fail while `work list` answers. A WHOLE install that is broken or absent is
   # $RDWORK/rd.mode above, and still governs both of these.
@@ -359,6 +363,95 @@ else:
     refuse("stand-in: unhandled call: %s" % " ".join(argv))
 RDBRIEF
 
+# ---- the stand-in's review -----------------------------------------------------------------
+# The nit ticket, which is a LOOP rather than an answer: the developer's request is on the work
+# list, the session reports the ticket it filed, and the request leaves the list. Review Desk is
+# level-triggered and derives `nits_to_ticket` from `nit_ticket_status == requested`
+# (`crates/store/src/entities/work.rs`), so reporting a filing has to remove the item here too —
+# a stand-in whose list never cleared would let a dispatcher that re-dispatched for ever pass.
+#
+# Read off review-desk at 2656e54:
+#
+#   review nit-ticket --review N --ticket X   records a filing. `--ticket` is REQUIRED and there
+#                                             is no form that asks for a ticket: clap refuses a
+#                                             missing one, which Review Desk remaps to exit 1.
+#                                             An empty one is `InvalidValue`, also exit 1.
+#   review show --review N --json             the whole review, including the four nit-ticket
+#                                             columns on `review` and `findings[].disposition`,
+#                                             which is where the held-back findings are. There is
+#                                             NO `finding list` subcommand in 0.1.0, which is why
+#                                             `workers/review.md` must not name one.
+
+cat > "$work/rd_review.py" <<'RDREVIEW'
+import json, os, pathlib, sys
+
+work = pathlib.Path(os.environ["RDWORK"])
+nit = work / "rd.nit"
+
+
+def refuse(code, message, status=1):
+    print(json.dumps({"error": {"code": code, "message": message}}))
+    sys.exit(status)
+
+
+def opt(argv, flag):
+    return argv[argv.index(flag) + 1] if flag in argv and len(argv) > argv.index(flag) + 1 else None
+
+
+def state():
+    if nit.exists():
+        return json.loads(nit.read_text())
+    return {"status": "none", "ticket_id": None}
+
+
+def held_back():
+    path = work / "rd.held"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def document(review):
+    held = held_back()
+    current = state()
+    return {
+        "review": {"id": int(review), "repo": "acme/portal", "pr": 412, "head_sha": "3f9c2ab",
+                   "round": 1, "title": "Retry failed webhook deliveries", "ticket_id": "ABC-231",
+                   "nit_ticket_status": current["status"], "nit_ticket_id": current["ticket_id"]},
+        "findings": held,
+    }
+
+
+argv = sys.argv[1:]
+review = opt(argv, "--review")
+if review is None:
+    refuse("missing_argument", "--review is required")
+
+if argv[:2] == ["review", "nit-ticket"]:
+    ticket = opt(argv, "--ticket")
+    if ticket is None:
+        # clap's own missing-required-argument, which Review Desk's README remaps to 1.
+        refuse("usage", "the following required arguments were not provided: --ticket")
+    if not ticket.strip():
+        refuse("invalid_value", "nit_ticket_id: expected the id of the ticket the nits were "
+                                "filed as")
+    nit.write_text(json.dumps({"status": "filed", "ticket_id": ticket.strip()}))
+    # Level-triggered, as above: the request is gone from the list the moment it is answered.
+    doc = work / "rd.work"
+    if doc.exists():
+        payload = json.loads(doc.read_text())
+        payload["work"] = [i for i in payload.get("work", []) if i.get("kind") != "nits_to_ticket"]
+        doc.write_text(json.dumps(payload))
+    seqs = [f["seq"] for f in held_back()]
+    print(json.dumps({"nit_ticket": {"review_id": int(review), "status": "filed",
+                                     "ticket_id": ticket.strip(), "finding_seqs": seqs,
+                                     "requested_at": 1791520400, "filed_at": 1791520500}}))
+elif argv[:2] == ["review", "show"]:
+    print(json.dumps(document(review)))
+else:
+    # Loud, not null: a call site this stand-in has never seen must not pass by being answered.
+    print("stand-in review: unhandled call: %s" % " ".join(argv), file=sys.stderr)
+    sys.exit(2)
+RDREVIEW
+
 # ---- the stand-in gh ------------------------------------------------------------------------
 # One case per call dispatcher.py actually makes. An unrecognised call exits 1 loudly rather
 # than echoing null, so a new call site cannot pass these tests by being silently answered.
@@ -430,6 +523,7 @@ PY
   rm -f "$work/rd.brief."*.json "$work/rd.findings."* "$work/rd.state."* "$work/rd.layer2."*
   rm -f "$work/rd.parts"
   rm -f "$work/rd.harvest" "$work/rd.harvest.mode" "$work/rd.draft.mode"
+  rm -f "$work/rd.nit" "$work/rd.held"
   echo drafting > "$work/rd.draft.status"
 }
 
@@ -462,10 +556,15 @@ kind, rid, repo, pr = sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5
 entered = int(sys.argv[6]) if len(sys.argv) > 6 and sys.argv[6] else 1791520282
 ledger = sys.argv[7] if len(sys.argv) > 7 and sys.argv[7] else None
 note = sys.argv[8] if len(sys.argv) > 8 and sys.argv[8] else None
+# The last two are the nit ticket's, and they are on every item rather than on the one kind that
+# is about them: `work list`'s own `document()` puts them on all thirteen fields' worth, because
+# an approved draft can carry a request for a ticket nobody has filed.
 dest.write_text(json.dumps({"work": [{
     "kind": kind, "review_id": rid, "repo": repo, "pr": pr, "head_sha": "3f9c2ab", "round": 1,
     "sign_off": None if kind == "review_requested" else "developer",
-    "session_id": None, "ledger_id": ledger, "entered_at": entered, "note": note}]}))
+    "session_id": None, "ledger_id": ledger, "entered_at": entered, "note": note,
+    "nit_ticket_status": "requested" if kind == "nits_to_ticket" else "none",
+    "nit_ticket_requested_at": entered if kind == "nits_to_ticket" else None}]}))
 PY
 }
 
@@ -556,6 +655,12 @@ elif scenario == "rd_run":
     state, _, detail = m.review_desk_run(m.review_desk_cfg(m.load_config()), *rest[1:],
                                          timeout=int(rest[0]))
     print(json.dumps({"state": state, "detail": detail}))
+
+elif scenario == "kinds":
+    # The three tuples, so the crossing below is against the source rather than against a grep.
+    print(json.dumps({"kinds": list(m.REVIEW_DESK_KINDS),
+                      "ignored": list(m.REVIEW_DESK_IGNORED_KINDS),
+                      "watch": list(m.REVIEW_DESK_WATCH_KINDS)}))
 
 elif scenario == "cfg":
     print(json.dumps(m.review_desk_cfg(json.loads(rest[0]))))
@@ -710,8 +815,8 @@ ok "the template's OWNER/REPO placeholder is not asked" "$(grep -c -- '--repo' "
 # the placeholder must reach neither.
 ok "  so an unedited instance says nothing"            "$(count review_desk)" 0
 
-printf '\n  the three kinds that resume, and the one that does not\n'
-for kind in brief_settled draft_sent_back draft_approved; do
+printf '\n  the four kinds that resume, and the one that does not\n'
+for kind in brief_settled draft_sent_back draft_approved nits_to_ticket; do
   instance '{"mode":"auto"}'
   work_doc "$kind" 3 acme/portal 414 1791520339 "" "F2 is the same point as F1"
   rc=$(run "$disp" poll 1)
@@ -719,6 +824,11 @@ for kind in brief_settled draft_sent_back draft_approved; do
   ok "  naming the kind"                               "$(says "\"kind\": \"$kind\"")" yes
   ok "  with the draft link"                           "$(says 'reviews/3/draft')" yes
 done
+# Driven on the kind it is about, rather than read off whatever the loop happened to end on:
+# `work_doc` writes a note for every kind, so these two passed against any of the four.
+instance '{"mode":"auto"}'
+work_doc draft_sent_back 3 acme/portal 414 1791520339 "" "F2 is the same point as F1"
+rc=$(run "$disp" poll 1)
 ok "draft_sent_back carries the developer's note"      "$(says 'F2 is the same point as F1')" yes
 ok "  and how layer 2 was settled"                     "$(says '"sign_off": "developer"')" yes
 
@@ -990,7 +1100,7 @@ print(int(re.search(r'^HARVEST_TIMEOUT = (\d+)', src, re.M).group(1))
       > int(re.search(r'^REVIEW_DESK_TIMEOUT = (\d+)', src, re.M).group(1)))")" True
 
 # =============================================================================================
-printf '\nThe watcher -- the developer'"'"'s two acts, relayed to the session waiting\n'
+printf '\nThe watcher -- the developer'"'"'s dashboard acts, relayed to the session waiting\n'
 
 instance '{"mode":"auto"}'
 put gh-portal-412 mode=review status=active --by test
@@ -1006,7 +1116,7 @@ ok "  and emits draft_approved"                        "$(count '"event": "draft
 ok "  on the first tick, not the second"               "$(says '"tick": 1')" yes
 ok "  with the draft link to approve at"               "$(says 'reviews/7/draft')" yes
 
-for kind in brief_settled draft_sent_back draft_approved; do
+for kind in brief_settled draft_sent_back draft_approved nits_to_ticket; do
   instance '{"mode":"auto"}'
   put gh-portal-412 mode=review status=active review_desk_id=7 --by test
   work_doc "$kind" 7 acme/portal 412 1791520339 "" "cut one of them"
@@ -1014,6 +1124,11 @@ for kind in brief_settled draft_sent_back draft_approved; do
   ok "$kind is emitted once over three ticks"          "$(count "\"event\": \"$kind\"")" 1
   ok "  identified by kind, review and time"           "$(says "$kind|7|1791520339")" yes
 done
+# Driven on the kind it is about, for the reason the poller's pair above is.
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+work_doc draft_sent_back 7 acme/portal 412 1791520339 "" "cut one of them"
+rc=$(run "$disp" watch gh-portal-412 1)
 ok "draft_sent_back relays the developer's note"       "$(says 'cut one of them')" yes
 
 instance '{"mode":"auto"}'
@@ -1052,7 +1167,188 @@ ok "off relays nothing, even with a review id"         "$(count review_desk)" 0
 ok "  and emits no draft_approved"                     "$(count draft_approved)" 0
 
 # =============================================================================================
-printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n'
+printf '\nThe fifth kind -- one ticket for the findings held back (DEV-934)\n'
+# `work list` answers with FIVE kinds and this file knew four, so the developer's "File as one
+# ticket for an agent" reached no session and said nothing about itself. Three things are under
+# test: the item reaches somebody, the command `workers/review.md` tells that somebody to run
+# clears it, and a SIXTH kind is named rather than dropped in the same silence.
+
+worker_md="$root/skills/dispatcher/workers/review.md"
+skill_md="$root/skills/dispatcher/SKILL.md"
+# desk_rc: one stand-in call, for its exit code. `rc` further down is the same thing; this
+# section runs before that definition.
+desk_rc () { set +e; review-desk "$@" > "$work/out" 2>"$work/err"; echo $?; set -e; }
+# held: the findings the developer kept out of the draft, as `review show` reports them.
+held () {
+  python3 - "$work/rd.held" <<'HELD'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps([
+    {"seq": 4, "key": "F4", "severity": "nit", "file": "app/Jobs/Deliver.php", "line": 58,
+     "claim": "The retry count is read twice", "disposition": "held_back",
+     "disposition_reason": "not worth a round trip"},
+    {"seq": 5, "key": "F5", "severity": "nit", "file": "app/Jobs/Deliver.php", "line": 71,
+     "claim": "The log line names the old field", "disposition": "held_back",
+     "disposition_reason": None}]))
+HELD
+}
+# button <review>: the text the draft page puts on its one held-back button. The three-way
+# expression is copied from review-desk's web/app/pages/reviews/[id]/draft.vue at 2656e54; the
+# status it reads comes back through the command line, which is the surface Locus has. The
+# dashboard reads the same two columns over HTTP.
+button () {
+  review-desk review show --review "$1" --json > "$work/show.json" 2>/dev/null
+  python3 - "$work/show.json" <<'BUTTON'
+import json, pathlib, sys
+r = json.loads(pathlib.Path(sys.argv[1]).read_text())["review"]
+status, ticket = r["nit_ticket_status"], r["nit_ticket_id"]
+print("File as one ticket for an agent" if status == "none"
+      else "Queued as one ticket" if status == "requested"
+      else "Filed as %s" % ticket)
+BUTTON
+}
+
+printf '\n  the item reaches the session that owns the review\n'
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+work_doc nits_to_ticket 7 acme/portal 412 1791520400
+rc=$(run "$disp" watch gh-portal-412 1)
+ok "the watcher relays nits_to_ticket"                 "$(count '"event": "nits_to_ticket"')" 1
+ok "  carrying the ticket's status"                    "$(says '"nit_ticket_status": "requested"')" yes
+ok "  and the page it was asked on"                    "$(says 'reviews/7/draft')" yes
+ok "  and the tick exits clean"                        "$rc" 0
+
+printf '\n  an approved draft carries a ticket asked for in the same click\n'
+# "Ticket what is left, and approve" is ONE button: the draft is approved and a ticket is
+# requested, and Review Desk reports the approval first -- the ticket becomes an item of its own
+# only once the posting is reported. So `draft_approved` has to carry the request or the session
+# cannot know there is one.
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+work_doc draft_approved 7 acme/portal 412 1791520400
+python3 - "$work/rd.work" <<'REQUESTED'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text())
+d["work"][0]["nit_ticket_status"] = "requested"
+p.write_text(json.dumps(d))
+REQUESTED
+rc=$(run "$disp" watch gh-portal-412 1)
+ok "draft_approved says a ticket is queued too"        "$(count '"event": "draft_approved"')" 1
+ok "  by carrying the request's status"                "$(says '"nit_ticket_status": "requested"')" yes
+
+printf '\n  the poller sends a replacement when the session is gone\n'
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=dead-1 --by test
+rc=$(run "$disp" poll 1)
+ok "a nits_to_ticket with no live session resumes"     "$(count '"event": "review_desk_resume"')" 1
+ok "  naming the kind"                                 "$(says '"kind": "nits_to_ticket"')" yes
+ok "  and the status of the ticket asked for"          "$(says '"nit_ticket_status": "requested"')" yes
+ok "  on the key Review Desk was linked to"            "$(says '"key": "gh-portal-418"')" yes
+session dead-1
+rc=$(run "$disp" poll 1)
+ok "a live session owns its own nits_to_ticket"        "$(count review_desk)" 0
+no_sessions
+
+printf '\n  the request leaves the list once the ticket is reported\n'
+# The loop end to end, through the stand-in: the button says queued, the command review.md names
+# is accepted, the button says filed, and `work list` stops reporting the request. A dispatcher
+# that re-dispatched for ever would pass every assertion above and fail the last one.
+instance '{"mode":"auto"}'
+held
+echo '{"status":"requested","ticket_id":null}' > "$work/rd.nit"
+work_doc nits_to_ticket 7 acme/portal 412 1791520400
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+ok "the draft page's button reads"                     "$(button 7)" "Queued as one ticket"
+ok "  over the two findings it covers"                 "$(python3 -c "
+import json
+print(len([f for f in json.load(open('$work/show.json'))['findings']
+           if f['disposition'] == 'held_back']))")" 2
+ok "the command review.md names is accepted"           "$(desk_rc review nit-ticket --review 7 --ticket ABC-246 --json)" 0
+ok "  it reports the filing back"                      "$(grep -c '"status": "filed"' "$work/out")" 1
+ok "  the button then reads"                           "$(button 7)" "Filed as ABC-246"
+rc=$(run "$disp" watch gh-portal-412 1)
+ok "  and the request has left the work list"          "$(count '"event": "nits_to_ticket"')" 0
+ok "  so nothing is relayed twice"                     "$rc" 0
+ok "a report with no --ticket is refused"              "$(desk_rc review nit-ticket --review 7)" 1
+ok "  and an empty one is refused too"                 "$(desk_rc review nit-ticket --review 7 --ticket '')" 1
+
+printf '\n  what the worker file says to write, where, and how to report it\n'
+ok "review.md has the event"                           "$(grep -c '| .nits_to_ticket. |' "$worker_md")" 1
+ok "  and a section of its own"                        "$(grep -c '^### Filing the held-back findings as one ticket$' "$worker_md")" 1
+ok "  it says the findings are at held_back"           "$(grep -c '"disposition": "held_back"' "$worker_md")" 1
+ok "  read through review show"                        "$(grep -c '^1\. \*\*Check it is not already filed\.\*\* .review-desk review show' "$worker_md")" 1
+# Review Desk's own `work list` help names `finding list` and 0.1.0 has no such subcommand, so a
+# worker that followed the help would exit 1 holding nothing. The file has to say so.
+ok "  and warns off the command that does not exist"   "$(grep -c 'Not .finding list' "$worker_md")" 1
+ok "  it never tells a worker to run one"              "$(grep -c 'review-desk finding list' "$worker_md")" 0
+ok "  it names the command that reports the id"        "$(grep -c 'review nit-ticket --review <id> --ticket <NEW-ID>' "$worker_md")" 1
+ok "  and the style the ticket is written in"          "$(grep -c 'issue-craft. skill' "$worker_md")" 1
+ok "  one ticket, not one per finding"                 "$(grep -c 'never one per finding' "$worker_md")" 1
+ok "  the team comes from the review's own ticket"     "$(grep -c 'ticket_id. is null, ask the' "$worker_md")" 1
+ok "  and it checks for a filing before filing"        "$(grep -c 'review.nit_ticket_status' "$worker_md")" 1
+# The one thing here that must not be got wrong: a session reading any dashboard click as
+# permission to post. Said in the row and again in the section.
+ok "  filing is not a sign-off, said twice"            "$(grep -c 'not a sign-off' "$worker_md")" 2
+ok "  and the button text the report moves"            "$(grep -c 'Queued as one ticket' "$worker_md")" 1
+ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1
+ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
+
+printf '\n  a kind this file cannot place is named, once per interval\n'
+instance '{"mode":"auto"}'
+work_doc rubric_settled 11 acme/portal 420
+rc=$(run "$disp" poll 3)
+ok "an unknown kind is one loud event over three ticks" "$(count '"event": "review_desk_unknown_kind"')" 1
+ok "  naming it"                                       "$(says '"kind": "rubric_settled"')" yes
+ok "  and the five it does know"                       "$(says '"nits_to_ticket"')" yes
+ok "  it dispatches nothing"                           "$(count '"event": "review_desk_resume"')" 0
+ok "  nor as a fresh review"                           "$(count '"event": "review_desk_requested"')" 0
+ok "  and the tick exits clean -- loud never blocks"   "$rc" 0
+ok "  it never read the pull request for it"           "$(grep -c 'pr view' "$work/gh.calls")" 0
+
+# The claim that lets the watcher stay silent: the poller tests the kind BEFORE it tests
+# liveness, so an unknown kind is named even for a review somebody is working.
+instance '{"mode":"auto"}'
+work_doc rubric_settled 11 acme/portal 420 1791520282 gh-portal-420
+put gh-portal-420 mode=review status=active repo=acme/portal number=420 session_id=live-9 --by test
+session live-9
+rc=$(run "$disp" poll 1)
+ok "it is named even when a session owns that review"  "$(count '"event": "review_desk_unknown_kind"')" 1
+no_sessions
+
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+work_doc rubric_settled 7 acme/portal 412
+rc=$(run "$disp" watch gh-portal-412 3)
+ok "the watcher relays an unknown kind to nobody"      "$(count rubric_settled)" 0
+ok "  and says nothing, because the poller does"       "$(count unknown_kind)" 0
+ok "  and keeps ticking"                               "$rc" 0
+
+instance '{"mode":"auto"}'
+echo '{"work":[{"review_id":12,"repo":"acme/portal","pr":421}]}' > "$work/rd.work"
+rc=$(run "$disp" poll 1)
+ok "an item with no kind at all says nothing"          "$(count review_desk)" 0
+ok "  and is not an error"                             "$rc" 0
+
+printf '\n  the contract and this file name the same five kinds\n'
+# Every `WorkKind` Review Desk 0.1.0 publishes, read off `crates/store/src/model.rs` at 2656e54
+# and agreeing with `crates/cli/src/commands/work.rs`'s own help. **When Review Desk adds a
+# sixth, add it to this line first.** The assertion then fails until `dispatcher.py` either
+# handles it in `REVIEW_DESK_KINDS` or names it in `REVIEW_DESK_IGNORED_KINDS` -- which is the
+# only way a kind gets left alone on purpose rather than by nobody noticing, and the gap this
+# whole section is about went five weeks with no line anywhere to grep for.
+CONTRACT_KINDS='["brief_settled", "draft_approved", "draft_sent_back", "nits_to_ticket", "review_requested"]'
+# placed <expr> [source]: one question about the three tuples, as the source under test holds them.
+placed () { run "${2:-$disp}" kinds > /dev/null; python3 -c "
+import json
+d = json.load(open('$work/out'))
+print($1)"; }
+ok "every kind the contract lists is handled or ignored" "$(placed "json.dumps(sorted(d['kinds'] + d['ignored']))")" "$CONTRACT_KINDS"
+ok "  and nothing is handled the contract does not list" "$(placed "json.dumps(sorted(d['kinds']))")" "$CONTRACT_KINDS"
+ok "  the watcher relays only kinds this file places"  "$(placed "set(d['watch']) <= set(d['kinds'])")" True
+ok "  and relays all but the one it must not"          "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))")" '["review_requested"]'
+
+# =============================================================================================
+printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n
 # The sign-off that posted 4m28s late was behind one `time.sleep(watch_interval_secs)`. What is
 # under test is which interval the watcher sleeps, and -- just as much -- what a fast pass is
 # allowed to ask: a shorter interval that also shortened `pull_request` would be 720 GitHub
@@ -2403,6 +2699,51 @@ sed 's/^| \*\*Before\*\* | `flow_before\[\]\[\]`, with `flow_before_caption` | \
     "$brief_md" > "$work/badwrite.md"
 ok "the write-column reversal changed one line"        "$(grep -c '^| \*\*Before\*\* | .flow_before\[\]\[\]., with .flow_before_caption. | 2 |' "$work/badwrite.md")" 1
 ok "a problem-half field moved to write 2 is caught"   "$(ask "d['write1'] == d['served_expected']" "$work/badwrite.md")" False
+
+# The four controls for DEV-934. The gap this ticket closes was a tuple with four names in it,
+# which is the cheapest possible thing to get wrong and the cheapest possible thing to assert
+# without actually asserting -- so each half of the fix is shown failing.
+
+sed 's/^        if kind not in REVIEW_DESK_KINDS:$/        if False:  # KIND GUARD REVERSED/' \
+    "$disp" > "$work/nokind.py"
+ok "the kind-guard reversal changed one line"          "$(grep -c 'KIND GUARD REVERSED' "$work/nokind.py")" 1
+instance '{"mode":"auto"}'
+work_doc rubric_settled 11 acme/portal 420
+rc=$(run "$work/nokind.py" poll 1)
+ok "no kind guard: an unknown kind is dispatched"      "$(count '"event": "review_desk_resume"')" 1
+ok "  as work nobody knows what to do with"            "$(says '"kind": "rubric_settled"')" yes
+
+sed 's/^        if not self\.due(f"review_desk|unknown_kind|{kind}", every):$/        if False:  # UNKNOWN RATE LIMIT REVERSED/' \
+    "$disp" > "$work/noloud.py"
+ok "the unknown rate-limit reversal changed one line"  "$(grep -c 'UNKNOWN RATE LIMIT REVERSED' "$work/noloud.py")" 1
+instance '{"mode":"auto"}'
+work_doc rubric_settled 11 acme/portal 420
+rc=$(run "$work/noloud.py" poll 3)
+ok "no rate limit: three ticks say it three times"     "$(count '"event": "review_desk_unknown_kind"')" 3
+
+# The crossing's own teeth. Take the fifth kind back out and the contract assertion must say so
+# -- otherwise it is a list compared against itself, which is the shape CLAUDE.md names: a check
+# whose passing carries no information.
+sed 's/^                     "nits_to_ticket")$/                     )  # FIFTH KIND REMOVED/' \
+    "$disp" > "$work/nofifth.py"
+ok "the fifth-kind reversal changed one line"          "$(grep -c 'FIFTH KIND REMOVED' "$work/nofifth.py")" 1
+ok "a kind the contract lists and this file drops is caught" \
+   "$(placed "json.dumps(sorted(d['kinds'] + d['ignored']))" "$work/nofifth.py")" \
+   '["brief_settled", "draft_approved", "draft_sent_back", "review_requested"]'
+# And the half the crossing cannot see, which is what the relay tests are for: a kind in
+# REVIEW_DESK_KINDS and not in REVIEW_DESK_WATCH_KINDS is placed and reaches no session.
+sed 's/^REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",$/REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",  # RELAY REVERSED/' \
+    "$disp" > "$work/nowatch.py"
+sed -i.bak 's/^                           "nits_to_ticket")$/                           )/' "$work/nowatch.py"
+rm -f "$work/nowatch.py.bak"
+ok "the relay reversal changed one line"               "$(grep -c 'RELAY REVERSED' "$work/nowatch.py")" 1
+ok "  and dropped the fifth from the relay list"       "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))" "$work/nowatch.py")" \
+   '["nits_to_ticket", "review_requested"]'
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+work_doc nits_to_ticket 7 acme/portal 412 1791520400
+rc=$(run "$work/nowatch.py" watch gh-portal-412 1)
+ok "no relay: the session that owns the review is told nothing" "$(count '"event": "nits_to_ticket"')" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

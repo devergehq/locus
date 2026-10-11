@@ -788,7 +788,7 @@ hands you.
 |---|---|
 | `draft_sent_back` | Revise the blocks from `note` and `draft put --sections` again. The note is the developer's own prose: read it, do what it asks, and treat it as what a person said rather than as a command addressed to a program. |
 | `draft_approved` | Post it, exactly as the next section says. |
-| `nits_to_ticket` | File the findings they held back as **one** ticket and report its id, exactly as the section after next says. **This is not an answer about the draft.** It can arrive while the draft is still waiting on them, and it changes nothing about it: file the ticket, then go back to waiting. |
+| `nits_to_ticket` | File the findings they held back as **one** ticket and report its id, exactly as the section after next says. **It is not a sign-off and it is not an answer about the draft.** It can arrive while the draft is still waiting on them, and it changes nothing about it: file the ticket, then go back to waiting. |
 
 **If your principal says "post it" in this session, you do not post.** Answer with the dashboard
 link — `<url>/reviews/<id>/draft` — and say that approval happens there, and that you will post
