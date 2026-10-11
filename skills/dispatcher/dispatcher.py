@@ -285,6 +285,29 @@ def clip(text: str | None) -> str:
     return text if len(text) <= BODY_LIMIT else text[:BODY_LIMIT] + " …(truncated — read the full text at the url)"
 
 
+def positive_secs(value, fallback: int) -> int:
+    """A seconds setting as a positive int, or the code default when it is not one.
+
+    Total by design, where most of this file would rather raise. Both callers sit inside a loop
+    whose host restarts it — the poller under `Monitor`, a worker's watcher under a persistent
+    one — so a value that threw would not fail once. It would fail, respawn, run a full tick and
+    fail again with no sleep in between, which is the one shape that turns a typo in a config
+    into a hot loop against GitHub. A string, a null, a zero and a negative all therefore read
+    as "not set", and the code default is what a setting nobody has written means anyway.
+    """
+    try:
+        secs = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return secs if secs > 0 else fallback
+
+
+def harvest_interval(cfg: dict) -> int:
+    """`limits.harvest_interval_secs`, defaulted here so no existing instance needs an edit."""
+    return positive_secs((cfg.get("limits") or {}).get("harvest_interval_secs"),
+                         HARVEST_INTERVAL_SECS)
+
+
 def pr_key(repo: str, number: int) -> str:
     return f"gh-{repo.split('/')[-1]}-{number}"
 
@@ -381,6 +404,39 @@ REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved")
 # SQLite file on a laptop, and short enough that a hung binary cannot stall a poll tick.
 REVIEW_DESK_TIMEOUT = 30
 
+# `harvest` gets its own, and the reason is that it is the one Review Desk command that is not a
+# local read: it asks GitHub for every open pull request a posted review is waiting on, so its
+# duration is a function of the network and of how many reviews a repository has, where every
+# other call here is a SQLite query. Sized against the budget it has to fit inside rather than
+# against a measurement nobody has: ONE harvest runs per poll tick (see `Poller.harvest`), so the
+# worst case a tick can absorb is this number, and 120s sits inside the shipped
+# `poll_interval_secs` of 300 with room for the rest of the tick.
+#
+# A harvest killed at the timeout is reported broken and retried on the next interval, and that
+# is safe rather than merely tolerable: Review Desk's own README has it recording nothing twice,
+# so a half-finished harvest is a harvest that recorded less, never one that recorded wrongly.
+HARVEST_TIMEOUT = 120
+
+# How often one repository is harvested, when `limits.harvest_interval_secs` does not say.
+# A harvest records what became of findings on a review that is already posted — a reply, a
+# resolved thread, a line changed since — so nothing is waiting on it the way a session waits on
+# a sign-off. Fifteen minutes is `reemit_after_secs`, which is the cadence everything else in
+# this file that is "soon enough" already uses.
+HARVEST_INTERVAL_SECS = 900
+
+# How often a review session's watcher reads Review Desk while its review's draft is waiting on
+# the developer, when `limits.draft_watch_interval_secs` does not say. The first sign-off posted
+# for real waited 4m28s behind a 300s `watch_interval_secs`; twenty seconds is short enough that
+# the wait reads as the click taking effect, and long enough that the two local reads it costs
+# are nothing. It is never read as LONGER than `watch_interval_secs` — see `watch_interval`.
+DRAFT_WATCH_INTERVAL_SECS = 20
+
+# The draft status that means the developer, and nobody else, is what the review is waiting for.
+# Review Desk stores five — `drafting`, `ready`, `approved`, `sent_back`, `posted`
+# (`crates/store/src/migrations.rs`) — and only this one is a draft the session has finished and
+# handed over. `drafting` is the session still writing; the other three are all answered.
+DRAFT_WAITING = "ready"
+
 
 def review_desk_cfg(cfg: dict) -> dict:
     """The `review_desk` block with every key defaulted.
@@ -434,7 +490,8 @@ def review_desk_detail(text: str) -> str:
     return f"{code}: {message}" if code and message else (message or "")
 
 
-def review_desk_run(rd: dict, *args: str, json_out: bool = True) -> tuple[str, object, str]:
+def review_desk_run(rd: dict, *args: str, json_out: bool = True,
+                    timeout: int = REVIEW_DESK_TIMEOUT) -> tuple[str, object, str]:
     """Run one Review Desk command. Never raises, and never blocks a review.
 
     Returns `(state, payload, detail)`, where state is one of:
@@ -455,11 +512,11 @@ def review_desk_run(rd: dict, *args: str, json_out: bool = True) -> tuple[str, o
     argv = [rd.get("command") or REVIEW_DESK_DEFAULTS["command"], *args]
     said = " ".join(args[:2]) or argv[0]
     try:
-        done = subprocess.run(argv, capture_output=True, text=True, timeout=REVIEW_DESK_TIMEOUT)
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     except (FileNotFoundError, NotADirectoryError):
         return "absent", None, f"{argv[0]} is not on PATH"
     except subprocess.TimeoutExpired:
-        return "broken", None, f"{argv[0]} {said} did not answer in {REVIEW_DESK_TIMEOUT}s"
+        return "broken", None, f"{argv[0]} {said} did not answer in {timeout}s"
     except OSError as exc:
         # Installed and unusable — not executable, wrong architecture. A broken install, which is
         # loud in every mode, and emphatically not the silent `absent`.
@@ -906,8 +963,12 @@ class Poller:
         # merged on the second. One `gh pr view` per Review Desk item would otherwise be one per
         # item per tick, and the answer cannot change inside a tick.
         self.pr_states = {}
+        # `harvest` is LAST, and deliberately. It is the only section that makes a call off this
+        # machine to anything but an API — it asks GitHub about every review a repository has
+        # posted — so a slow one delays nothing but the heartbeat, and every event a human might
+        # act on has already been emitted by the time it starts.
         for section in (self.linear_triggers, self.review_requests, self.review_desk,
-                        self.liveness):
+                        self.liveness, self.harvest):
             try:
                 section(cfg, ledger, backlog)
             except Exception as exc:  # one failing source must never kill the poller
@@ -1266,6 +1327,114 @@ class Poller:
         emit("review_desk_resume", kind=kind, note=item.get("note"),
              sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True), **common)
 
+    def harvest(self, cfg: dict, ledger: dict, backlog: bool) -> None:
+        """Read posted reviews' outcomes back from GitHub, one repository a tick.
+
+        `review-desk harvest` has existed since DEV-859 and **nothing called it**, so layer 7 of
+        every posted review read `pending` for ever and `workers/review.md` said of it "nothing
+        you do". That sentence was true of the session and nobody had been given the job. The
+        poller is where it belongs because of what a harvest reads: a reply to a finding, a
+        thread the author resolved, a line changed since the review was posted. Those arrive
+        hours or days after the session that wrote the review is gone, and this is the one
+        process in the dispatcher that outlives every review.
+
+        **The first call in this file that WRITES to Review Desk**, and three properties are
+        what make that safe to do from a poll tick:
+
+          * It cannot sign off. A harvest records what GitHub already says; approving a draft
+            and posting a review are not on its surface at all, so the rule that only the
+            developer signs off is untouched by it.
+          * Running it twice records nothing twice — Review Desk's own README — so a harvest
+            killed at the timeout, or run twice by two instances serving one repository, is one
+            that recorded LESS rather than one that recorded wrongly. There is no lease and
+            nothing here invents one.
+          * It commits nothing of the POLLER's own, so `trust_empty` has nothing to guard here,
+            for the same reason it has nothing to guard in `review_desk`.
+
+        An attempt is counted whatever it answers, which is why a failure returns as well as a
+        success: the attempt that has to be bounded is the SLOW one, and a timeout is the slow
+        one. A repository whose harvest fails is retried on the next interval, not on the next
+        tick, and the repositories after it in the sweep take the following ticks.
+
+        **One harvest ATTEMPT per tick, and the arithmetic is the point rather than a
+        detail.** A
+        harvest is the only Review Desk call that goes to the network, so N repositories at
+        `HARVEST_TIMEOUT` each would be N x 120s added to a tick whose interval is 300s —
+        starving `liveness` and the heartbeat while the per-section try/except reported nothing
+        wrong. Stopping after the first repository that actually ran bounds a tick at one
+        timeout, and the per-repository markers then rotate on their own: with N repositories, a
+        poll interval of P and a harvest interval of I, each repository is harvested every
+        `max(I, N x P)`. Three repositories at the shipped 300s and 900s is 900s. Past that the
+        effective interval stretches, which is the stated cost of refusing to let one tick hold
+        N network calls.
+
+        **The interval is a floor, not a clock, and the production host is why that matters.**
+        Nothing here wakes itself up: `due()` only refuses to run again too soon. Under a host
+        that leaves `poll` running the floor is the cadence, and under the one the principal
+        actually drives — `poll --once` in the foreground, see the note in `__init__` — a
+        harvest happens when they poll. Both are strictly more than the nothing that ran before.
+        """
+        rd = review_desk_cfg(cfg)
+        if review_desk_off(rd):
+            return
+        repos = review_desk_repos(cfg, ledger)
+        if not repos:
+            # Same silence as `review_desk`: an instance with an unedited `repo_project_map` and
+            # no reviews in its ledger has nothing to harvest and says nothing about harvesting.
+            return
+        every = harvest_interval(cfg)
+        for repo in repos:
+            if not self.due(f"harvest|{repo}", every):
+                continue
+            state, payload, detail = review_desk_run(rd, "harvest", "--repo", repo, "--json",
+                                                     timeout=HARVEST_TIMEOUT)
+            if state == "absent":
+                # One answer for every repository, and silent under `auto` — absent is silent is
+                # the whole contract, and a dispatcher that has never heard of Review Desk must
+                # not start talking about harvests. Under `on` the principal has said they
+                # expect it to be there, so it is said once per interval.
+                if review_desk_loud_when_absent(rd) and self.due("harvest|absent", every):
+                    emit("harvest_failed", state="absent", mode=rd["mode"], repo=repo,
+                         command=rd["command"], detail=detail)
+                return
+            if state != "ok":
+                # Loud in every mode but `off`, once per interval per reason. The signature
+                # carries the repository AND the detail, because `review_desk_run` builds its
+                # own message from the first two arguments — "harvest --repo" for every
+                # repository alike — so a signature without them would let one repository's
+                # failure silence another's.
+                if self.due(f"harvest|{state}|{repo}|{detail[:60]}", every):
+                    emit("harvest_failed", state=state, mode=rd["mode"], repo=repo,
+                         command=rd["command"], detail=detail)
+                return
+            self.harvested(repo, payload)
+            # One attempt a tick. See the docstring: this `return` is the bound on how long a
+            # tick can take, not a shortcut.
+            return
+
+    @staticmethod
+    def harvested(repo: str, payload) -> None:
+        """Say what a harvest recorded, and say nothing when it recorded nothing.
+
+        A quiet harvest is the normal case — it is run on a cadence rather than because
+        something happened — so emitting per run would put a line in the Dispatcher's inbox
+        every fifteen minutes saying that GitHub had no news. Emitting only when something was
+        recorded is what makes layer 7 observable without making it noise: the one event says a
+        posted review has replies, resolutions or changed lines in the record that were not
+        there before, which is a thing a human may want to read and nothing anybody dispatches.
+        """
+        reviews = [r for r in ((payload or {}).get("harvest") or {}).get("reviews") or []
+                   if isinstance(r, dict)]
+        # `isinstance(..., int)` rather than `int(...)`: a field whose type Review Desk changed
+        # should leave this counting the others, not raise a section error that reads as the
+        # harvest having failed when it ran and recorded.
+        counts = {field: sum(r[field] for r in reviews if isinstance(r.get(field), int))
+                  for field in ("replies_recorded", "threads_resolved_recorded",
+                                "code_changed_recorded")}
+        if not any(counts.values()):
+            return
+        emit("harvest_recorded", repo=repo, reviews=len(reviews), **counts)
+
     def pr_state(self, repo: str, number: int) -> str | None:
         """`merged`, `open`, `closed`, or None when GitHub could not be asked.
 
@@ -1397,9 +1566,25 @@ class Watcher:
         elif "pr" not in self.state and entry.get("repo") and entry.get("number"):
             self.state["pr"] = {"repo": entry["repo"], "number": int(entry["number"])}
 
-    def tick(self) -> None:
+    def tick(self, full: bool = True) -> None:
+        """One pass. `full` is False on the cheap passes between two full ones.
+
+        **The two cadences are the whole of DEV-931's second half, and the split is what keeps
+        it from being a rate-limit incident.** `issue` asks Linear and `pull_request` makes four
+        GitHub REST calls; `review_desk` and `draft_wait` are two local SQLite reads through
+        `review-desk`. Running the lot every 20 seconds while a draft waits on the developer
+        would be 720 GitHub calls an hour per watcher, against a 5,000/hr token the poller
+        shares — for as long as a human leaves a draft `ready`, which can be a weekend, and
+        near-silently, because `watch_error` only speaks when its signature changes.
+
+        So a fast pass reads Review Desk and nothing else, and GitHub and Linear are asked
+        exactly as often as they were before this existed. `cmd_watch` owns the clock; `full`
+        defaults to True so `--once`, a test and any other host see the behaviour unchanged.
+        """
         cfg = load_config()
-        for section in (self.issue, self.pull_request, self.review_desk):
+        sections = ((self.issue, self.pull_request, self.review_desk, self.draft_wait) if full
+                    else (self.review_desk, self.draft_wait))
+        for section in sections:
             try:
                 section(cfg)
             except Exception as exc:
@@ -1576,6 +1761,64 @@ class Watcher:
                  draft=review_desk_link(rd, rid, draft=True))
         self.state["rd_seen"] = sorted(seen)[-200:]
 
+    def draft_wait(self, cfg: dict) -> None:
+        """Record whether this review's draft is waiting on the developer, for the sleep to read.
+
+        **This is the only question `work list` cannot answer**, and the reason is in its own
+        help: "A review waiting on the *developer* is absent: this is what an agent is to do".
+        Two red-team sessions both proposed deriving the answer from the empty `work list
+        --review` the tick already makes, and it does not work — an empty list is equally the
+        session being mid-review and the review being posted and finished, so a watcher reading
+        it that way would poll fast through the whole review and then for ever after the post.
+        One more local read is what buys an answer that is actually about the draft.
+
+        **The status, and nothing else, is taken from the answer.** `draft show` also carries the
+        event the developer chose and `approved_at`, and the thing that may act on an approval is
+        the `draft_approved` work item `review_desk` relays above — Review Desk reporting the
+        draft approved. This writes a cursor field a `time.sleep` reads. It emits nothing.
+
+        **Silent on every failure, where `review_desk` above is loud.** It is an optimisation,
+        not a signal: the `work list` call in the same tick has already raised a `watch_error`
+        for a broken or absent binary, and saying it twice per tick at the fast cadence would be
+        the noisiest possible way to report one install. A refusal is also the ordinary answer
+        for most of a review's life — there is no draft to show until `draft put` has run — and
+        every one of those cases means the same thing here: nobody is waiting, poll normally.
+        """
+        rd = review_desk_cfg(cfg)
+        rid = (ledger_get(self.key) or {}).get("review_desk_id")
+        if review_desk_off(rd) or rid is None:
+            self.state.pop("draft_status", None)
+            return
+        state, payload, _ = review_desk_run(rd, "draft", "show", "--review", str(rid), "--json")
+        status = ((payload or {}).get("draft") or {}).get("status") if state == "ok" else None
+        if isinstance(status, str):
+            self.state["draft_status"] = status
+        else:
+            # Popped rather than set to None, because absent means "not established" and a
+            # present null would read, to anyone looking at the cursor, as a draft with no
+            # status. Either way `watch_interval` sleeps the ordinary interval.
+            self.state.pop("draft_status", None)
+
+
+def watch_interval(cfg: dict, state: dict) -> int:
+    """How long to sleep before the next pass: shorter while the draft waits on the developer.
+
+    `min(quick, normal)`, because a "shorter interval" that is longer than the one it replaces is
+    a setting that lies — and an instance that lengthened `watch_interval_secs` to spare an API
+    budget must not have a new key quietly undo it.
+
+    `watch_interval_secs` is still read the way every other `limits` key in this file is read,
+    and raises on a config that does not have it. The new key is NOT, and the asymmetry is
+    deliberate: `positive_secs` says why a key no config has written yet may not throw inside
+    this loop.
+    """
+    normal = int(cfg["limits"]["watch_interval_secs"])
+    if state.get("draft_status") != DRAFT_WAITING:
+        return normal
+    quick = positive_secs((cfg.get("limits") or {}).get("draft_watch_interval_secs"),
+                          DRAFT_WATCH_INTERVAL_SECS)
+    return min(quick, normal)
+
 
 def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, str] | None:
     """Why this watcher should stop, from local files only. `None` means carry on.
@@ -1661,6 +1904,11 @@ def cmd_watch(args) -> None:
         emit("watch_unknown_key", key=args.key,
              detail=f"no ledger entry for '{args.key}'; watching anyway until the ceiling")
     ticks = 0
+    # The clock for `Watcher.tick`'s two cadences. Zero so the first pass is always a full one:
+    # `issue` and `pull_request` suppress their history on their first run, and a process whose
+    # first pass skipped them would have nothing to suppress and would report a ticket's whole
+    # backlog the first time it did run them.
+    last_full = 0.0
     while True:
         stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
         if stop:
@@ -1668,7 +1916,11 @@ def cmd_watch(args) -> None:
             emit("watch_stopped", key=args.key, reason="ledger", status=status, ticks=ticks,
                  cursor_removed=from_ledger and watcher.forget(), detail=why)
             return
-        watcher.tick()
+        cfg = load_config()
+        full = time.time() - last_full >= int(cfg["limits"]["watch_interval_secs"])
+        if full:
+            last_full = time.time()
+        watcher.tick(full=full)
         ticks += 1
         if args.once:
             return
@@ -1683,7 +1935,11 @@ def cmd_watch(args) -> None:
                         f"the key is not finished, so the cursor is kept and the same command "
                         f"resumes from it")
             return
-        time.sleep(load_config()["limits"]["watch_interval_secs"])
+        # Re-read, rather than reusing the `cfg` above: the sleep has always taken the config
+        # as it is NOW, so that an interval edited under a long-running watcher takes effect
+        # without a restart. `watcher.state` is what the pass just wrote, so a draft that went
+        # `ready` in this pass is polled at the shorter interval from this sleep onwards.
+        time.sleep(watch_interval(load_config(), watcher.state))
 
 
 # --------------------------------------------------------------------------- label / comment
@@ -2823,7 +3079,17 @@ def cmd_init(args) -> None:
                # Six. `review` qualifies on the same rule: one boolean with a real default and
                # nothing for anybody to edit. `review_cfg` defaults it in code as well, so this is
                # how an older instance comes to SHOW the setting it was already getting.
-               + fill_absent("review", cfg.setdefault("review", {}), template["review"]))
+               + fill_absent("review", cfg.setdefault("review", {}), template["review"])
+               # Seven, and this one needs its rule checked rather than assumed, because `limits`
+               # is the block whose values an instance is most likely to have TUNED —
+               # `tc-portal` runs `watch_interval_secs` 300 against the template's 90. It
+               # qualifies anyway: `fill_absent` adds only keys the config has never heard of and
+               # never touches one it has, so a tuned value is not at risk, and every key here is
+               # a number with a real default rather than a placeholder somebody must edit. What
+               # it buys is that `draft_watch_interval_secs` and `harvest_interval_secs` become
+               # VISIBLE on an instance that predates them, instead of being defaults in code
+               # that nobody can find to change.
+               + fill_absent("limits", cfg.setdefault("limits", {}), template["limits"]))
     if learned:
         print(f"new in this version: {', '.join(learned)}")
 

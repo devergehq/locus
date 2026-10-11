@@ -635,8 +635,8 @@ ok "  carrying the Review Desk review id"              "$(says '"review_desk_id"
 ok "  the head commit as recorded"                     "$(says '"head_sha": "3f9c2ab"')" yes
 ok "  the pull request's state"                        "$(says '"pr_state": "open"')" yes
 ok "  and the dashboard link"                          "$(says 'reviews/1')" yes
-ok "  and it asked per repository served"              "$(grep -c -- '--repo acme/portal' "$work/rd.calls")" 1
-ok "  and nothing else"                                "$(grep -c -- '--repo' "$work/rd.calls")" 1
+ok "  and it asked per repository served"              "$(grep -c '^work list .*--repo acme/portal' "$work/rd.calls")" 1
+ok "  and nothing else"                                "$(grep -c '^work list .*--repo' "$work/rd.calls")" 1
 ok "  the tick exits clean"                            "$rc" 0
 
 # Two repositories: the config's map and one learned from a ledger entry.
@@ -644,8 +644,8 @@ instance '{"mode":"auto"}'
 put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
 work_doc review_requested 1 acme/portal 412
 rc=$(run "$disp" poll 1)
-ok "a repo from the ledger is polled too"              "$(grep -c -- '--repo acme/billing' "$work/rd.calls")" 1
-ok "  alongside the one from the config"               "$(grep -c -- '--repo acme/portal' "$work/rd.calls")" 1
+ok "a repo from the ledger is polled too"              "$(grep -c '^work list .*--repo acme/billing' "$work/rd.calls")" 1
+ok "  alongside the one from the config"               "$(grep -c '^work list .*--repo acme/portal' "$work/rd.calls")" 1
 
 instance '{"mode":"auto"}'
 python3 - "$inst/config.json" <<'PY'
@@ -656,6 +656,8 @@ p.write_text(json.dumps(c, indent=2))
 PY
 rc=$(run "$disp" poll 1)
 ok "the template's OWNER/REPO placeholder is not asked" "$(grep -c -- '--repo' "$work/rd.calls")" 0
+# Both calls that take one, named: `work list` and the harvest below ask per repository, and
+# the placeholder must reach neither.
 ok "  so an unedited instance says nothing"            "$(count review_desk)" 0
 
 printf '\n  the three kinds that resume, and the one that does not\n'
@@ -800,7 +802,7 @@ ok "  and emits nothing"                               "$(count draft_approved)"
 
 put gh-portal-412 review_desk_id=7 --by test
 rc=$(run "$disp" watch gh-portal-412 1)
-ok "an entry with a review id polls its own review"    "$(grep -c -- '--review 7' "$work/rd.calls")" 1
+ok "an entry with a review id polls its own review"    "$(grep -c '^work list .*--review 7' "$work/rd.calls")" 1
 ok "  and emits draft_approved"                        "$(count '"event": "draft_approved"')" 1
 ok "  on the first tick, not the second"               "$(says '"tick": 1')" yes
 ok "  with the draft link to approve at"               "$(says 'reviews/7/draft')" yes
