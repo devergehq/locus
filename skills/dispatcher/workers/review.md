@@ -1098,9 +1098,10 @@ post again, on somebody's pull request, under your principal's name.
    it back verbatim, and it renders as nothing to a reader: the join is carried by the thing
    being joined.
 
-   Measured on review-desk `bae4f5e`, on a blocker, a should and a nit: **as Review Desk hands
-   it over**, the body's last line is the marker, the line before it is blank, and it sits
-   outside the alert rail — a nit, which has no rail, carries it the same way. "Last" is true of
+   Measured on review-desk `bae4f5e` and again on `c17d335`, on a blocker, a should and a nit:
+   **as Review Desk hands it over**, the body's last line is the marker, the line before it is
+   blank, and it sits outside the alert rail — a nit, which has no rail, carries it the same
+   way. "Last" is true of
    what you are handed; if you sign your comments, see below for what goes after it.
 
    **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
