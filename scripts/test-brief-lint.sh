@@ -302,6 +302,31 @@ json.dump({"review": {"id": 7}, "brief": b, "sources": [
     {"position": 1, "kind": "description", "label": "The pull request description"}]},
     open(sys.argv[2], "w"))
 ' "$work/base.json" "$work/case.json"; case_run)" 0
+# TWO places, because the two documents a worker may hand this disagree. `review show --json`
+# merges the provenance under a key of its own, so a source is at `provenance.sources`; the HTTP
+# response and the contract example carry `sources` at the top level. Reading only one of them
+# reported "no sources in this document" about a review that held three.
+ok "sources under provenance are read too"         "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "note": " ".join(["word"]*13)}]}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 1
+ok "  and measured, not merely found"              "$(says 'source 1 tells us 13 words')" yes
+ok "  a passing note under provenance passes"      "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "note": "asks for a one-hour link"}]}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 0
+ok "  and the pass says how many it read"          "$(says 'longest of 1 source note(s): 5 words of 12')" yes
+ok "a provenance holding no sources reads as none" "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"criteria": []}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run >/dev/null
+says 'no sources in this document')" yes
+
 ok "a long label is not measured"                 "$(python3 -c '
 import json, sys
 b = json.load(open(sys.argv[1]))
@@ -437,6 +462,17 @@ import json; json.dump({"review": {"id": 7}, "brief": json.load(open("'"$work/ba
                        open("'"$work/show.json"'", "w"))'
 ok "the saved brief is read and passes"           "$(FIX="$work/show.json" PATH="$work/bin:$PATH" run --review 7)" 0
 ok "and the header names the review"              "$(says 'brief-craft lint: review 7')" yes
+# The shape the real binary actually prints: `FullReview` with the provenance merged in. This is
+# the path `--review N` takes, so it is the one that has to see a source note.
+python3 -c '
+import json, sys
+json.dump({"review": {"id": 7}, "brief": json.load(open(sys.argv[1])),
+           "provenance": {"sources": [
+               {"position": 1, "kind": "ticket", "label": "ABC-231",
+                "note": " ".join(["word"]*13)}]}},
+          open(sys.argv[2], "w"))' "$work/base.json" "$work/showprov.json"
+ok "--review reads a source under provenance"     "$(FIX="$work/showprov.json" PATH="$work/bin:$PATH" run --review 7)" 1
+ok "  and fails it on the note's length"          "$(rule sources.note)" yes
 ok "a review holding no brief is 2, not 1"        "$(echo '{"review":{"id":9},"brief":null}' > "$work/none.json"; FIX="$work/none.json" PATH="$work/bin:$PATH" run --review 9)" 2
 ok "review-desk failing is 2, not 1"              "$(FAKE_FAIL=1 FIX="$work/show.json" PATH="$work/bin:$PATH" run --review 99)" 2
 ok "and its own words are passed on"              "$(shouts 'no review 99')" yes

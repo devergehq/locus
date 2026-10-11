@@ -69,7 +69,7 @@ it is the one who will not see it.
 | **Questions** | What the blind session needed to know and was not told. These are often the best questions in the review |
 | **What the pass was given** | The filled brief you handed the blind session, **verbatim**. Not a description of it |
 | **Looked up** | What the blind session says it read beyond the brief — the word "nothing", or an honest list |
-| **Counts** | How many options each source had, how many are on both, and how many only one side raised |
+| **Counts** | How many options each source had, how many are on both, and how many only one side raised. These are the alternatives step's facts, one count each, not one sentence of four |
 | **Provenance** | Where the problem statement came from: the ticket, the description, and the code at the base sha |
 
 ### The blind options pass
@@ -351,7 +351,7 @@ line number.
 | **The blind pass would pick** | **C**, the same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
 | **Given** | The poured problem half, verbatim — the fold below is the whole of it. |
 | **Looked up** | Nothing. |
-| **Counts** | 4 options on the ticket, 6 from the blind pass, 3 on both; 3 not on the ticket and 1 the blind pass never raised. |
+| **Counts** | Options · `4 ticket, 6 blind` · On both · `3` · Only the ticket · `1` · Only the blind pass · `3` |
 | **Provenance** | The ticket, the description, and the code at `a1b2c3d` — an export with no history in it. |
 
 <details><summary>What the pass was given, verbatim</summary>

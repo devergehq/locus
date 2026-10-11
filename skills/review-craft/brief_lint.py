@@ -644,6 +644,21 @@ def shaped(brief: dict, sources: list | None = None) -> None:
             text(s.get("note"), f"sources[{i}].note")
 
 
+def sources_of(doc: dict):
+    """The sources a whole review document carries, from either of the two places they live.
+
+    `review-desk review show --json` prints the store's `FullReview` and **merges the provenance
+    in under a key of its own**, so a source is at `provenance.sources` there. The HTTP
+    `getReview` response, and the contract example written from it, carry `sources` at the top
+    level beside `brief`. Both are documents a worker may hand this linter, and reading only one
+    of them is how `--review N` came to report "no sources in this document" about a review that
+    held three. Returns None when the document carries neither, which is a brief on its own."""
+    prov = doc.get("provenance")
+    if isinstance(prov, dict) and prov.get("sources") is not None:
+        return prov["sources"]
+    return doc.get("sources")
+
+
 def read_file(path: str) -> tuple[dict, list | None]:
     """A brief, and its sources where the document has them, from disk or standard input.
 
@@ -662,13 +677,13 @@ def read_file(path: str) -> tuple[dict, list | None]:
         die(f"{path}: the document is a {type(doc).__name__}, not a brief.")
     if isinstance(doc.get("brief"), dict):
         # a whole `review show` or `getReview` document, which carries the sources too
-        return doc["brief"], doc.get("sources")
+        return doc["brief"], sources_of(doc)
     if "brief" in doc and doc["brief"] is None:
         die(f"{path}: that review holds no brief. Nothing to lint.")
     if not any(k in doc for k in BRIEF_KEYS):
         die(f"{path}: this does not look like a brief — no `problem`, `headline`, `flow_before` "
             "or `problems`. Nothing was checked.")
-    return doc, doc.get("sources")
+    return doc, sources_of(doc)
 
 
 def read_review(review_id: int) -> tuple[dict, list | None]:
@@ -704,7 +719,7 @@ def read_review(review_id: int) -> tuple[dict, list | None]:
     brief = doc.get("brief") if isinstance(doc, dict) else None
     if not isinstance(brief, dict):
         die(f"review {review_id} holds no brief. Nothing to lint.")
-    return brief, doc.get("sources")
+    return brief, sources_of(doc)
 
 
 def print_limits() -> None:

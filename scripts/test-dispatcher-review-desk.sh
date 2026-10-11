@@ -1319,6 +1319,49 @@ print(json.dumps({
 }, sort_keys=True))
 LAYERS
 
+cat > "$work/workedexample.py" <<'WORKED'
+"""Measure `understand.md`'s worked example against `brief_lint.py`'s own limits.
+
+The example is markdown, so no linter reads it -- and an example that breaks the rule it sits
+beside teaches the breach. This reads the two tables the new rules touch (the problems' labels,
+and the Solution parts' summaries) and measures them with the linter's own `words` and
+`code_names`, so the numbers cannot drift apart from the ones it enforces.
+"""
+import importlib.util, json, pathlib, sys
+
+spec = importlib.util.spec_from_file_location("brief_lint", sys.argv[2])
+bl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bl)
+
+lines = pathlib.Path(sys.argv[1]).read_text().split("\n")
+
+
+def table(header, column):
+    start = next((i for i, l in enumerate(lines) if l.startswith(header)), None)
+    if start is None:
+        return None
+    out = []
+    for line in lines[start + 2:]:
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) > column:
+            out.append(cells[column])
+    return out
+
+
+labels = table("| | Label | Marked on |", 1)
+summaries = table("| Part | Summary | Fixes | Files |", 1)
+print(json.dumps({
+    "labels": labels,
+    "labels_over_3": [l for l in labels or [] if bl.words(l) > bl.LIMIT["problem.label.words"]],
+    "parts": len(summaries or []),
+    "summaries_over_30": [t for t in summaries or []
+                          if bl.words(t) > bl.LIMIT["part.summary.words"]],
+    "summaries_with_names": [t for t in summaries or [] if bl.code_names(t)],
+}, sort_keys=True))
+WORKED
+
 brief_md="$root/skills/dispatcher/workers/review.md"
 understand_md="$root/skills/review-craft/understand.md"
 house_md="$root/skills/review-craft/house-style.md"
@@ -1397,6 +1440,16 @@ ok "  and says flow order is not sufficient"        "$(grep -c 'Flow order is ne
 ok "rule 6 is the part's summary"                   "$(grep -c "^\*\*6 · A part's summary is one plain line" "$understand_md")" 1
 ok "the worked example labels every problem"        "$(grep -c '^| 1 | One transaction | the second row |' "$understand_md")" 1
 ok "  and gives every part a summary"               "$(grep -c '^| Part | Summary | Fixes | Files |' "$understand_md")" 1
+# Measured against the linter's own limits, not grepped. An example that breaks the rule it sits
+# beside teaches the breach, and nothing reads the example because it is markdown.
+worked () { python3 "$work/workedexample.py" "$understand_md" \
+    "$root/skills/review-craft/brief_lint.py" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print($1)"; }
+ok "  three labels, every one inside its limit"     "$(worked "[len(d['labels']), d['labels_over_3']]")" "[3, []]"
+ok "  seven part summaries, every one inside its"   "$(worked "[d['parts'], d['summaries_over_30']]")" "[7, []]"
+ok "  and not one of them naming code"              "$(worked "d['summaries_with_names']")" "[]"
 
 printf '\n  the two rules house-style.md owns\n'
 ok "a finding's title is at most 12 words"          "$(grep -c '\*\*A title is at most 12 words, and it is not the claim' "$house_md")" 1

@@ -328,7 +328,7 @@ put --help`, which is complete: read it rather than guessing at a nesting.
 | **Questions** | `blind_pass.questions[]` | 2 |
 | **What the pass was given** | `blind_pass.given` | 2 |
 | **Looked up** | `blind_pass.looked_up` | 2 |
-| **Counts** | **no brief field.** They are layer 3's --detail | 2 |
+| **Counts** | **no brief field.** The one that fits goes in layer 3's --detail; the rest are that layer's facts | 2 |
 | **Provenance** | `provenance` | 2 |
 | **Parts** | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
 | **Choices** | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket`, `.finding_seq` | 2 |
@@ -453,8 +453,8 @@ scaffolding from a real waiver.
 **It is one short clause, and the whole of it is one line.** The field is drawn beside the brief's
 own state, where a paragraph pushes the state off the screen — and there is nothing to explain:
 the brief is half written, which is a fact about the brief rather than a judgement about the
-developer. `problem half only — the full brief follows at step 5` is ten words and is the whole
-reason. Write that.
+developer. `problem half only — the full brief follows at step 5` is ten words and a dash, and is
+the whole reason. Write that.
 
 | | |
 |---|---|
