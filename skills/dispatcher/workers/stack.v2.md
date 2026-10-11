@@ -867,12 +867,21 @@ Then, per child:
 
 ```
 D ledger put <CHILD> mode=<mode> status=claimed title="…" url=… project=<project> \
-  parent=<KEY> "why=child of <KEY>, dispatched by coordinator" --by coordinator
+  parent=<KEY> group=<your own group> "why=child of <KEY>, dispatched by coordinator" --by coordinator
 D label <CHILD> <working label> --state "In Progress" --by coordinator
-D brief <CHILD>   →   allele_sessions_create(project, name: "<CHILD> · <mode>", prompt: <brief + appendix>)
+D brief <CHILD>   →   allele_sessions_create(project, name: "<CHILD> · <mode>", prompt: <brief + appendix>, group: <your own group>)
 allele_sessions_status(<session_id>)    # your requested name, dispatched: true, past provisioning
 D ledger put <CHILD> session_id=… session_name=… reply_to=… status=active --by coordinator
 ```
+
+`group=<your own group>` is the **Allele group** line from your own dispatch block, and it goes on
+the claim rather than the later put for a reason of its own: `D brief` reads it back, so the child
+is told it belongs to your group and puts its own reviewer there too. A stack then sits together
+in the sidebar instead of scattering one session per child across a flat list. `group=""` is how
+you say ungrouped on purpose; a child whose claim carries no group at all falls back to the group
+its own mode would have had, which on a differently-configured instance is not yours. And the
+`group` parameter is passed on the create **only if your `allele_sessions_create` lists it** —
+`_common.md`'s **Independent help** has the rule and the reason.
 
 `parent=<KEY>` is load-bearing — it is what section 0 queries. Set it on the `claimed` put,
 before the create, so a coordinator that dies mid-create still leaves a findable child.

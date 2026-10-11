@@ -13,6 +13,33 @@ refuses to build when they disagree.
 
 ### Added
 
+- **Every session the dispatcher starts says which allele group it belongs in.** On 12 October
+  2026 the `tc-portal` project held 56 sessions in one flat list, and finding "the review of PR
+  9586" meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,
+  built alongside this), and `allele.groups` in the instance config says which group each mode
+  goes in: `linear` for the four modes a Linear label triggers, `review` for a review request.
+  Defaulted in code, so no instance needs an edit; `init` adds the block on a re-run so a mode
+  can be turned off, and a mode set to `null` or `""` dispatches ungrouped. `D brief` names the
+  group in its **Allele group** line, which is the whole mechanism: the session about to be
+  created is named a group by the prompt it is already holding, and the worker reads the same
+  line as the group for helpers of its own — a worker can read no config, so the brief is the
+  only channel. A coordinator writes its own group on a child's claim and `D brief` prefers
+  that, so a stack and a review's blind pass sit with the session that dispatched them rather
+  than scattering. The ledger records the group the session was sent with. **`group` is passed
+  only when the `allele_sessions_create` tool a session has been given lists it** — an allele
+  that predates named groups refuses an unknown parameter, and a create that fails after the
+  claim is the half-claimed ticket `SKILL.md` exists not to leave behind; when it is absent,
+  dispatch is exactly what it was and nothing is said about it. A group over allele's 40
+  characters, or one that is not a string, is read as ungrouped and crossed by a new `allele
+  groups` line in `D doctor` — unlike the `intervals` line, which only reports, because a
+  rejected group silently returns every session of that mode to the flat list. The dispatcher
+  session itself is human-started, so `SKILL.md` asks its human for the group `dispatcher`;
+  nothing in Locus can group a session it did not create. 70 assertions in
+  `scripts/test-dispatcher-groups.sh` with five reversals, and two Rust pins in `bundled.rs`:
+  `allele.groups` is a fifth per-mode config site, and the omit-when-the-tool-lacks-it rule is
+  pinned in the three files that dispatch. **The real end-to-end run is owed** — the installed
+  allele has no `group` parameter yet. (DEV-938)
+
 - **The dispatcher's poller runs the harvest, and a draft waiting on the developer is read every
   20 seconds.** Two waits nobody had set. `review-desk harvest` had existed since DEV-859 with
   nothing calling it, so layer 7 of every posted review read `pending` for ever and

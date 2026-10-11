@@ -85,6 +85,16 @@ For a second opinion (self-review, a blind reviewer, an investigation branch), c
 session with `allele_sessions_create`, composing its prompt with `locus agent compose` using
 different traits from your own. That is the vehicle for a helper. Call it first, every time.
 
+**A helper goes in your group.** Your dispatch block's **Allele group** line names it; pass
+`group: "<that group>"` on the create so your helper sits beside you in the sidebar instead of
+in the flat list. Two rules about it, both of which decide what you type:
+
+- **Only if your `allele_sessions_create` lists a `group` parameter.** Read your tool's schema.
+  An allele that predates named groups refuses a parameter it has never heard of, which would
+  cost you the helper; when it is absent, create the session without `group` and say nothing.
+- **Your group, not a new one.** A line that says `Allele group: none` means create with no
+  `group` argument at all. Never invent a name, and never pick one from the ticket.
+
 Helpers count against the global session cap, and that is why you **discard your helper**
 (`allele_sessions_discard`) as soon as you have its report. It is never a reason to skip allele.
 Guessing the cap is near, or "sparing a slot", is not a refusal. Economising in advance moves the

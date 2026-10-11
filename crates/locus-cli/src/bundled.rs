@@ -780,11 +780,16 @@ mod drift_tests {
     /// release and this suite was green throughout, because no test knew a mode is
     /// a tuple rather than a file.
     ///
-    /// The four sites, and what each one breaks on its own:
+    /// The five sites, and what each one breaks on its own:
     ///   `traits.<mode>`               — `cmd_brief` does `cfg["traits"][mode]`
     ///   `allele.orchestration.<mode>` — `SKILL.md` passes it to sessions_create
+    ///   `allele.groups.<mode>`        — the group `cmd_brief` names and dispatch passes
     ///   `modes.<mode>.trigger`        — `linear_triggers` indexes `labels[...]`
     ///   `modes.<mode>.working`        — what `D label` is handed at claim time
+    ///
+    /// `allele.groups` is crossed over `traits` rather than over `modes`, because `review` is
+    /// dispatched and has no trigger label: a template that grouped the four Linear modes and
+    /// left reviews out would read as complete and leave every review in the flat list.
     #[test]
     fn every_dispatcher_mode_has_its_labels_traits_and_brief() {
         let root = repo_root();
@@ -825,6 +830,7 @@ mod drift_tests {
         // Every mode with traits needs a brief for `D brief` to name. `review` is
         // deliberately in `traits` and NOT in `modes`: it is raised by a GitHub
         // review request, never by a Linear label, so it has no trigger to name.
+        let groups = cfg["allele"]["groups"].as_object().expect("allele.groups");
         for mode in traits.keys() {
             if !root
                 .join(format!("skills/dispatcher/workers/{mode}.md"))
@@ -833,6 +839,26 @@ mod drift_tests {
                 broken.push(format!(
                     "traits.{mode} has no workers/{mode}.md for `D brief` to name"
                 ));
+            }
+            // `null` is a legitimate value — one mode dispatched ungrouped on
+            // purpose — so what is checked is that the mode is NAMED. A mode
+            // absent from the block falls back to `GROUP_DEFAULTS` in code, and a
+            // reader of this file cannot tell that from an oversight.
+            if !groups.contains_key(mode) {
+                broken.push(format!(
+                    "allele.groups.{mode} missing — the group is defaulted in code and invisible here"
+                ));
+            }
+            // A value past allele's limit is refused at `sessions_create`, and
+            // `group_for` reads it as ungrouped, so the template would ship a
+            // group that silently does nothing.
+            if let Some(name) = groups.get(mode).and_then(|v| v.as_str()) {
+                if name.trim().len() > 40 {
+                    broken.push(format!(
+                        "allele.groups.{mode} is {} characters; allele refuses anything over 40",
+                        name.trim().len()
+                    ));
+                }
             }
         }
 
@@ -920,6 +946,91 @@ mod drift_tests {
             "workers/stack.md should be a short signpost pointing at stack.v2.md, not a \
              second coordinator protocol ({} bytes)",
             v1.len()
+        );
+    }
+
+    /// Three files dispatch a session, and each has to say two things about
+    /// `group`: pass it, and pass it only when the tool lists the parameter.
+    ///
+    /// The second half is the one a grep has to defend, because it is the half
+    /// with no failing test anywhere else. `group` arrived in allele under
+    /// DEV-853 while this was written, so the dispatcher's own allele does not
+    /// have it yet: a skill that passed it unconditionally would refuse every
+    /// create with an unknown-parameter error, after the claim — the
+    /// half-claimed ticket `SKILL.md` calls the one state it must not leave
+    /// behind. Nothing in this repository executes these instructions, so
+    /// "the sentence is there" is the only check this rule can have.
+    ///
+    /// `review.md` is NOT in the list on purpose: its blind options pass
+    /// dispatches through `_common.md`'s **Independent help**, which carries
+    /// the rule once. Requiring it there too would pin a copy, and a rule
+    /// written twice is a rule that can disagree with itself.
+    #[test]
+    fn every_dispatch_site_passes_a_group_only_when_the_tool_has_one() {
+        let root = repo_root().join("skills/dispatcher");
+        let workers = root.join("workers");
+
+        // `owns_reason` is false for the file that POINTS at the rule rather
+        // than carrying it: stack.v2.md names the condition and sends the
+        // reader to _common.md for why, and requiring the reason in both would
+        // pin two copies that can drift apart.
+        for (file, what, passes, owns_reason) in [
+            (
+                root.join("SKILL.md"),
+                "SKILL.md's dispatch steps",
+                "group: <the brief's group>",
+                true,
+            ),
+            (
+                workers.join("_common.md"),
+                "_common.md's Independent help",
+                "group: \"<that group>\"",
+                true,
+            ),
+            (
+                workers.join("stack.v2.md"),
+                "stack.v2.md's per-child dispatch",
+                "group: <your own group>",
+                false,
+            ),
+        ] {
+            let text = std::fs::read_to_string(&file).expect("dispatch file missing");
+            assert!(
+                text.contains(passes),
+                "{what} does not pass `{passes}` at its create, so the sessions it starts land \
+                 in the flat list this setting exists to get them out of"
+            );
+            // Lowercased, because the same sentence is a bullet heading in one
+            // file and mid-sentence in another, and a test that pinned the
+            // capital would be pinning the layout.
+            let lower = text.to_lowercase();
+            let conditional = lower.contains("only if your `allele_sessions_create` lists it")
+                || lower
+                    .contains("only if your `allele_sessions_create` lists a `group` parameter")
+                || lower.contains(
+                    "only when the `allele_sessions_create` tool you have been given lists it",
+                );
+            assert!(
+                conditional,
+                "{what} does not say to pass `group` ONLY when the tool lists the parameter. An \
+                 allele without it refuses an unknown parameter, and the create that fails is \
+                 the one issued after the claim."
+            );
+            assert!(
+                !owns_reason || text.contains("refuses"),
+                "{what} states the rule without the reason it exists (an older allele REFUSES \
+                 an unknown parameter). A rule with no reason is the first one dropped."
+            );
+        }
+
+        // The dispatcher session is the one session Locus cannot group: it is
+        // human-started, and `sessions_create` is never called for it. If the
+        // skill does not ask its human for this, nothing else will.
+        let skill = std::fs::read_to_string(root.join("SKILL.md")).expect("SKILL.md missing");
+        assert!(
+            skill.contains("group `dispatcher`"),
+            "SKILL.md's start-up section does not tell the human to put the dispatcher session \
+             in the group `dispatcher`, so the long-lived session sits among its own workers"
         );
     }
 }

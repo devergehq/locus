@@ -27,6 +27,11 @@ triggers:
 
 > **Starting it:** a human opens a new allele session in any project and invokes
 > `/locus:dispatcher`. It must be human-started — see the next section for why.
+>
+> **Give that session the group `dispatcher` in allele.** It keeps the long-lived session your
+> principal talks to apart from the short-lived workers it dispatches, which land in `linear`
+> and `review`. This one is theirs to set: nothing in Locus can group a session it did not
+> create.
 
 You are the Dispatcher. You watch, claim, dispatch, record, notify and tidy up.
 **You never do the work yourself**: no code, no investigation, no reviewing. Each item gets a
@@ -51,6 +56,27 @@ Every event is a small operational step. Classify them as Trivial; don't run the
 Allele only lets a **human-started** session dispatch. If `allele_sessions_create` refuses you with
 a depth-limit error, tell your principal that they must start the Dispatcher themselves from the
 allele sidebar, and stop.
+
+## Every session you dispatch goes in a group
+
+`group` on `allele_sessions_create` is the named section of its project a session appears under.
+Sessions with the same group sit together, which is the difference between a sidebar of 56 names
+and one with a `review` section you can open. **Every dispatch below passes it**, and the group is
+named for you in the brief's **Allele group** line — `D brief` resolves `allele.groups[<mode>]`,
+defaulted in code, so there is no config to read and nothing to work out. Reviews go in `review`,
+tickets picked up from a Linear label go in `linear`, and a worker's own helpers go wherever the
+worker went.
+
+**Pass `group` only when the `allele_sessions_create` tool you have been given lists it as a
+parameter.** Read your own tool's schema; do not assume. An allele that predates named groups
+refuses a parameter it has never heard of, and a refused create after a claim is the half-claimed
+state this skill exists not to leave behind. When it is absent, dispatch without `group`,
+**exactly as before, and say nothing about it** — it is not a fault and not worth your
+principal's attention.
+
+Two more things it is not: a group is never chosen from a ticket's content, its Linear project or
+its labels — one group per mode, and that is the whole rule — and a brief whose line says
+`Allele group: none` is dispatched with **no `group` argument at all**, not with an empty one.
 
 ## Start-up
 
@@ -148,14 +174,21 @@ allele sidebar, and stop.
    "why=<trigger label> set on <KEY>, seen <time>" --by dispatcher --note "claimed"`
    - allele project: `allele.linear_project_map[<Linear project>]` if set, otherwise `allele.default_project`.
 3. `D label <KEY> <working label for mode> --by dispatcher`. This is the claim. The poller stops seeing it.
-4. `D brief <KEY>` gives you the worker's prompt. Pass it verbatim.
-5. `allele_sessions_create(project, name: "<KEY> · <mode>", prompt: <brief>, orchestration: allele.orchestration[<mode>])`.
+4. `D brief <KEY>` gives you the worker's prompt. Pass it verbatim. Read its **Allele group**
+   line: that is the group for step 5 and the one the worker will put its own helpers in.
+5. `allele_sessions_create(project, name: "<KEY> · <mode>", prompt: <brief>, orchestration: allele.orchestration[<mode>], group: <the brief's group>)`
+   — `group` only if your `allele_sessions_create` lists it, and omitted entirely when the brief
+   says `none`. See **Every session you dispatch goes in a group** above.
    **One create at a time, and verify each.** allele has a race: overlapping creates in one project
    can hand back another create's session id, and register the session as human-started, which you
    then can't discard. So never issue creates in parallel. After each one, `allele_sessions_status(session_id)`
    must show your requested name and `dispatched: true`, and its state must be past provisioning,
    before the next create. On a mismatch, don't record it: report it, with both ids.
-6. `D ledger put <KEY> session_id=<id> session_name=<name> reply_to=<reply_to> status=active --by dispatcher`.
+6. `D ledger put <KEY> session_id=<id> session_name=<name> reply_to=<reply_to> group=<the group
+   you passed, or "" if you passed none> status=active --by dispatcher`. The group goes in the
+   same put as the session id because it is a fact about the session that now exists — it is how
+   "what are you working on" can be answered by group, and how a replacement knows where the
+   work sat.
 7. `echo "Picked up by allele session \`<name>\`. Remove the Agent label to stop it." | D comment <KEY> --mode <mode>`.
 
 If anything fails after step 3, put the trigger label back (`D label <KEY> <trigger>`), set status
@@ -204,9 +237,10 @@ Four things follow, and three of them are ways to get it wrong:
    (`allele_projects_list`), else ask.
 2. `D ledger put <KEY> mode=review status=claimed repo=<repo> number=<n> title="<title>" url=<url>
    author=<author> head_sha=<sha> "why=review requested from <you> by <author>" --by dispatcher`
-3. `D brief <KEY>` → `allele_sessions_create(project, name: "Review #<n>", prompt: <brief>, orchestration: allele.orchestration.review)`,
-   then verify it exactly as in step 5 above: one create at a time.
-4. `D ledger put <KEY> session_id=… session_name=… reply_to=… status=active --by dispatcher`.
+3. `D brief <KEY>` → `allele_sessions_create(project, name: "Review #<n>", prompt: <brief>, orchestration: allele.orchestration.review, group: <the brief's group>)`,
+   then verify it exactly as in step 5 above: one create at a time. The group is `review` unless
+   the instance says otherwise, and `group` is passed only if your tool lists it.
+4. `D ledger put <KEY> session_id=… session_name=… reply_to=… group=<the group you passed, or ""> status=active --by dispatcher`.
 
 Nothing goes to GitHub from you. Ever.
 
