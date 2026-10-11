@@ -700,11 +700,15 @@ ok "  nor a double-quoted one"                         "$(grep -c "^[[:space:]]*
 sed "s/^printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n'\$/printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n/" \
     "$0" > "$work/noquote.sh"
 ok "  and the reversal of one is caught"               "$(grep -c "^[[:space:]]*printf '[^']*$" "$work/noquote.sh")" 1
-# Indented, which the first version of this anchor could not see and this file has five live
-# instances of.
-sed "s/^  printf '\\\\n    harvested \\\\n'\$/  printf '\\\\n    harvested \\\\n/" \
-    "$0" > "$work/noquote2.sh"
-ok "  including an indented one"                       "$(grep -c "^[[:space:]]*printf '[^']*$" "$work/noquote2.sh")" 0
+# Indented, which the anchor this replaced could not see and which this file has five live
+# instances of. The first version of THIS control named a line the file does not contain, so it
+# matched nothing and counted 0 either way -- the third no-information check found in this
+# change, and the one that was written while fixing the other two.
+cp "$0" "$work/noquote2.sh"
+printf '  printf "\\nbroken\\n\n' >> "$work/noquote2.sh"
+printf '  printf %s\\nalso broken\\n\n' "'" >> "$work/noquote2.sh"
+ok "the indented reversal added two headings"          "$(diff "$0" "$work/noquote2.sh" | grep -c '^>')" 2
+ok "  and both are caught, either quote"               "$(( $(grep -c "^[[:space:]]*printf '[^']*$" "$work/noquote2.sh") + $(grep -c "^[[:space:]]*printf \"[^\"]*$" "$work/noquote2.sh") ))" 2
 
 # =============================================================================================
 printf '\nSilence -- no review_desk block, no review-desk on PATH\n'
@@ -2965,6 +2969,22 @@ echo '[]' > "$inst/runtime/watch/gh-portal-418.json"
 echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$work/nocursor2.py" poll 1)
 ok "  and a half-written one raises inside the tick"   "$(count '"event": "error"')" 1
+no_sessions
+
+# The last line of the gate, which nothing above reverses: a cursor that EXISTS and has not
+# concluded must keep the item, and an unconditional yes would hand every one of them away.
+sed 's/^        return cursor\.get("pr_status") in PR_CLOSED$/        return True  # CURSOR TEST REVERSED/' \
+    "$disp" > "$work/nocursortest.py"
+ok "the cursor-test reversal changed one line"         "$(grep -c 'CURSOR TEST REVERSED' "$work/nocursortest.py")" 1
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"open","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+rc=$(run "$work/nocursortest.py" poll 1)
+ok "no cursor test: a listening watcher loses the item" "$(count '"event": "review_desk_resume"')" 1
 no_sessions
 
 # The KIND half on its own, which the reversal above cannot isolate: it turns the whole
