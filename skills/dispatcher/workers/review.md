@@ -159,10 +159,10 @@ API can approve a draft, and reaching for it would be signing off in your princi
    code, or an address with no id reads as an address that is not `https` and the report says
    the wrong thing about the developer's ticket.
 
-   **Both of those exit 1, not 2**, and that is measured on the built binary rather than
-   assumed: this command line reserves 2 for being unable to run, and a flag it will not take is
-   a refused request. So branch on `error.code` and never on the exit code, which cannot tell
-   these two from each other or from anything else refused.
+   **All three exit 1, not 2**, and that is measured on the built binary rather than assumed:
+   this command line reserves 2 for being unable to run, and a request it will not take is a
+   refused one. So branch on `error.code` and the field its message names, never on the exit
+   code — which cannot tell these three from each other, or from anything else refused.
 
    **`--ticket` stays.** The id is the field the record has always had and the thing the nit
    ticket's team is read from; only the address comes off. And the retry is safe because a
