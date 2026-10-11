@@ -1025,14 +1025,23 @@ post again, on somebody's pull request, under your principal's name.
    Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
    posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with nothing
    it could have linked — which is why it is spelled out rather than implied.
-5. **Link each comment GitHub made back to its finding, by `path` and `line`.** `threads[]`
-   carries `finding_seq` for the same pair, and that is the join — never the comment's position
-   in the array, which nothing promises.
-
-   Read the comments back rather than looking for them in the answer to the `reviews` call:
+5. **Link each comment GitHub made back to its finding.** Read the comments back rather than
+   looking for them in the answer to the `reviews` call:
    `gh api "repos/$REPO/pulls/$PR/comments" --paginate`, keeping the ones whose
    `pull_request_review_id` is the review you just created. That is the same route
    `review_lint.py` takes to find a review's threads.
+
+   **Pair on `path` and `line` — and where two threads sit on one line, on the `F{seq}` in the
+   comment's own text.** Two findings on one line is ordinary: a Should about what the line does
+   and a Nit about what it is called. Measured on review-desk `13a78ee`, two such threads come
+   back carrying one `path` and one `line` between them, so pairing on those alone has nothing
+   to choose with and would hand `finding link` the wrong comment for the wrong finding —
+   silently, because both calls succeed. Every composed thread names its own finding as
+   `**{Severity} · F{seq}**`, and GitHub returns that text, so read the number out of the
+   comment's body. **Not from its first line**: an alert marker sits above the title on every
+   Blocker, Should and Question.
+
+   Never pair on a comment's position in the array, which nothing promises.
 
    Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
    for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.
@@ -1065,12 +1074,11 @@ post again, on somebody's pull request, under your principal's name.
 **If `draft handover` is not there** — `error.code` is `usage` and the message reads
 `unrecognized subcommand 'handover'`, measured on Review Desk 0.1.0, or `review-desk draft
 --help` does not list it — **you post `draft show`'s `body` and no threads at all**, and step
-3's `body.md` is that same body. That is what
-every session did before the hand-over existed, and it is still a review: the body is the
-approved body, step 1 established that, and nothing about the sign-off changes. What is lost
-is the shape. An older Review Desk composes no thread text and stores a body that is the
-blocks joined end to end, so the pull request gets one long body, no index, and no finding on
-the line it concerns.
+3's `body.md` is that same body. That is what every session did before the hand-over existed,
+and it is still a review: the body is the approved body, step 1 established that, and nothing
+about the sign-off changes. What is lost is the shape. An older Review Desk composes no thread
+text and stores a body that is the blocks joined end to end, so the pull request gets one long
+body, no index, and no finding on the line it concerns.
 
 **Say so, loudly, in three places**: to the Dispatcher, in the ledger, and in what you report
 when you are done. Name it as the install it is — *"posted the body with no inline threads:
