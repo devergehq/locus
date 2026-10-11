@@ -119,10 +119,47 @@ API can approve a draft, and reaching for it would be signing off in your princi
 ### Open it, link it, and write the id down
 
 1. `review-desk review open --repo OWNER/REPO --pr <n> --head <sha>` prints the review id and
-   nothing else, so keep it in a variable. Pass `--title`, `--ticket` and `--changed-lines`
-   while you have them. A head commit already reviewed hands the same id back; a **new** head
-   commit starts the next round, so read the previous round first with
+   nothing else, so keep it in a variable. Pass `--title`, `--ticket`, `--ticket-url` and
+   `--changed-lines` while you have them. A head commit already reviewed hands the same id back;
+   a **new** head commit starts the next round, so read the previous round first with
    `review-desk review show --review <id> --json` and say in your draft what moved.
+
+   **`--ticket-url` is the ticket's address, and you are the only one who can supply it.**
+   Review Desk cannot work an address out from an id: the tracker and its workspace are your
+   dispatch's knowledge, not the record's. So every page of the review links to the ticket when
+   you pass it and prints the id as plain text when you do not. Build it from what your dispatch
+   block already names — for Linear, the workspace and the id:
+   `https://linear.app/<workspace>/issue/<TICKET-ID>`. It must start `https://`. **If you cannot
+   build an address you are sure of, leave the flag off**: a guessed address is a link to
+   somebody else's ticket, and the id as text is the honest rendering of a ticket nobody located.
+
+   **Read the flag's name from the command, not from this file.** `review-desk review open
+   --help` lists `--ticket-url <URL>` where it exists. Checking at run time is what lets this
+   instruction outlive a rename, and it is cheaper than a refusal.
+
+   **If it is refused, drop that one flag and run it again — once.** Pass `--json` so the
+   refusal is a document on standard output rather than prose on standard error, and read
+   `error.code`:
+
+   | `error.code` | What it means | What you do |
+   |---|---|---|
+   | `usage` — "unexpected argument '--ticket-url'" | this Review Desk is older than the flag | drop **only** `--ticket-url` and retry once |
+   | `invalid_value`, naming `ticket_url` | the address was refused; it is not `https` | drop **only** `--ticket-url` and retry once, and say the address was rejected |
+
+   **Both of those exit 1, not 2**, and that is measured on the built binary rather than
+   assumed: this command line reserves 2 for being unable to run, and a flag it will not take is
+   a refused request. So branch on `error.code` and never on the exit code, which cannot tell
+   these two from each other or from anything else refused.
+
+   **`--ticket` stays.** The id is the field the record has always had and the thing the nit
+   ticket's team is read from; only the address comes off. And the retry is safe because a
+   refused call writes nothing — measured: after a refused `--ticket-url` the store held zero
+   reviews, and the retry created the review as a first round. Retry **once**: a second refusal
+   of a command line with no `--ticket-url` in it is a different problem, and looping on it
+   would spend the round on a flag.
+
+   With `--json` the id is `.review.id` rather than the whole of standard output, and `.created`
+   says whether this opened a review or handed an existing one back.
 2. `review-desk review link --review <id> --session <your allele session id> --ledger <KEY>`.
 3. `D ledger put <KEY> review_desk_id=<id> --by worker --note "recorded as Review Desk <id>"`.
    **Before you record anything else.** This one field is what makes your watcher poll the
