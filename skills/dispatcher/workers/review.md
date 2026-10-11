@@ -120,7 +120,8 @@ API can approve a draft, and reaching for it would be signing off in your princi
 
 1. `review-desk review open --repo OWNER/REPO --pr <n> --head <sha>` prints the review id and
    nothing else, so keep it in a variable. Pass `--title`, `--ticket`, `--ticket-url` and
-   `--changed-lines` while you have them. A head commit already reviewed hands the same id back;
+   `--changed-lines` while you have them — **the address only ever goes with the id**, for the
+   reason below. A head commit already reviewed hands the same id back;
    a **new** head commit starts the next round, so read the previous round first with
    `review-desk review show --review <id> --json` and say in your draft what moved.
 
@@ -133,6 +134,12 @@ API can approve a draft, and reaching for it would be signing off in your princi
    build an address you are sure of, leave the flag off**: a guessed address is a link to
    somebody else's ticket, and the id as text is the honest rendering of a ticket nobody located.
 
+   **Pass it only in a call that also passes `--ticket`**, unless you know the record already
+   holds the id from an earlier round. The page draws the address *as* the id, so an address
+   with no id to draw has nothing to be — and Review Desk refuses that call rather than storing
+   a link nothing can render. Measured on review-desk `a64f8a9`: an address alone is refused
+   with `invalid_value` naming **`ticket_id`**, and the store held zero reviews afterwards.
+
    **Read the flag's name from the command, not from this file.** `review-desk review open
    --help` lists `--ticket-url <URL>` where it exists. Checking at run time is what lets this
    instruction outlive a rename, and it is cheaper than a refusal.
@@ -144,7 +151,13 @@ API can approve a draft, and reaching for it would be signing off in your princi
    | `error.code` | What it means | What you do |
    |---|---|---|
    | `usage` — "unexpected argument '--ticket-url'" | this Review Desk is older than the flag | drop **only** `--ticket-url` and retry once |
-   | `invalid_value`, naming `ticket_url` | the address was refused; it is not `https` | drop **only** `--ticket-url` and retry once, and say the address was rejected |
+   | `invalid_value`, naming **`ticket_url`** | the address was refused; it is not `https` | drop **only** `--ticket-url` and retry once, and say the address was rejected |
+   | `invalid_value`, naming **`ticket_id`** | an address with no id — this call passed no `--ticket` and the record holds none | drop **only** `--ticket-url` and retry once; the review opens with no ticket at all, so say that too |
+
+   **Two refusals share the code `invalid_value` and are told apart by the field the message
+   names.** Both are measured, and the second one is the newer: read the field, not just the
+   code, or an address with no id reads as an address that is not `https` and the report says
+   the wrong thing about the developer's ticket.
 
    **Both of those exit 1, not 2**, and that is measured on the built binary rather than
    assumed: this command line reserves 2 for being unable to run, and a flag it will not take is
