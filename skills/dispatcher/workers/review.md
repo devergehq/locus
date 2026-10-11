@@ -708,9 +708,12 @@ GitHub.
 
 **Do not also write that rule's "Corrections and unanchored findings" comment.** It exists so an
 unanchorable finding stays navigable from a body that is a short index, and the composed body is
-that index — with a row for this finding that links to its own section a few lines below. A
-second copy in a top-level comment is the same words twice, one more thing to keep in step, and
-a thread the developer never decided on. Write the block, and nothing else.
+that index: this finding gets a row of its own, pointing at the line at the head commit — or at
+the pull request where it has no file at all — and a section below. The row does **not** link to
+the section, because an anchor into a review body never resolves and `review_lint.py`'s
+`index.no_dead_anchors` forbids one. A second copy in a top-level comment is the same words
+twice, one more thing to keep in step, and a comment the developer never decided on. Write the
+block, and nothing else.
 
 **A finding with no file, or a file and no line, carries no hunk at all** — a correction to the
 pull request's description, a missing ticket, a wrong figure. There is no line to read, so there
@@ -773,8 +776,10 @@ rather than its whole.** Review Desk builds the index from the findings themselv
 finding with a line inside the diff to GitHub as its own thread in the alert its live severity
 picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the body
 it composes for a six-finding draft with four of them anchored, on review-desk `13a78ee`:
-**27 of 27 checks in `review_lint.py` pass.** Nothing in the house style is relaxed here, and
-nothing in it is overridden here.
+**27 of 27 checks in this repository's `review_lint.py` pass.** Nothing in the house style is
+relaxed here, and nothing in it is overridden here. The linter needed one fix of its own to get
+there — a finding with both a row and a section was counted twice — so an older copy of it
+reports two failures on a body that is correct.
 
 **You do not write the index, and you do not write the threads.** Both are composed from the
 blocks and the findings' live severities, which is what makes a regrade or a cut move them. What
@@ -809,13 +814,14 @@ Seven things that table does not say on its own:
   raising fewer and holding the rest back or suppressing them with a reason. **Never write fewer
   blocks than you raised**: a finding with no block cannot be cut or regraded, and hiding it from
   the developer's decision is worse than a long body.
-- **A Blocker, a Should and a Question carry the four parts in the block.** `**What**`,
-  `**Why it matters**` and `**What I'd do**` are read off the composed thread by
-  `review_lint.py`'s `threads.four_parts`, and the only text it has to read is your block's.
-  Review Desk writes the title line above them; you write the parts beneath it.
-- **A nit stays light, in its block as on a thread.** A nit carrying all four labels trips
-  `threads.nit_light`, which is a warning rather than a failure and is still the house style
-  telling you that weight should track severity. One line of claim is a nit's whole shape.
+- **A Blocker, a Should and a Question carry three labels in the block**: `**What**`,
+  `**Why it matters**` and `**What I'd do**`. `review_lint.py` reads them off the **composed
+  thread**, and the only text it has to read there is your block's. The check is called
+  `threads.four_parts` because the fourth part is the claim, and that one is the title line
+  Review Desk composes above them — so writing it yourself would compose it twice.
+- **A nit stays light, in its block as on a thread.** A nit whose block carries all three of
+  those labels trips `threads.nit_light` — a warning rather than a failure, and still the house
+  style saying weight should track severity. One line of claim is a nit's whole shape.
 - **One block per finding, and only for a finding that posts.** A second block about one finding
   is refused, and so is a block about a finding that is `held_back`, `suppressed`, or carried
   into this round as `fixed`, `accepted`, `withdrawn` or `ticketed`. What the round found about
@@ -938,8 +944,9 @@ post again, on somebody's pull request, under your principal's name.
    post at all**. `status` must read `approved`; `event` is the GitHub review event the
    developer chose and `approved_at` is when. Nothing else establishes approval — not a
    hand-over that answered, not a message in this session, not the absence of an error.
-2. **`review-desk draft handover --review <id> --json` is what you post.** One read, and it is
-   the only thing you post from:
+2. **`review-desk draft handover --review <id> --json` is what you post.** One read — write it
+   out to a file, because steps 3, 4 and 5 all work from it — and it is the only thing you post
+   from:
 
    | What it hands you | What it is |
    |---|---|
@@ -960,7 +967,7 @@ post again, on somebody's pull request, under your principal's name.
    | `error.code` | What it means | What you do |
    |---|---|---|
    | `draft_status` | the draft is **not approved** | **do not post.** Go back to waiting, and say what it said |
-   | `usage`, or `draft --help` does not list `handover` | this Review Desk is older than the hand-over | **the fallback below** |
+   | `usage` — "unrecognized subcommand 'handover'" | this Review Desk is older than the hand-over | **the fallback below** |
 
    Telling them apart by the code and never by the bare fact that the command failed is the
    whole of this step. A `draft_status` refusal read as an old Review Desk would post a body
@@ -988,9 +995,11 @@ post again, on somebody's pull request, under your principal's name.
    call. It is your principal's review: no agent signature unless they asked for one.
 
    ```sh
-   review-desk draft handover --review "$REVIEW" --json \
-     | jq '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
-            body: .body, comments: [.threads[] | {path, line, side, body}]}' > review.json
+   review-desk draft handover --review "$REVIEW" --json > handover.json   # step 2
+   jq -r .body handover.json > body.md                                    # step 3's body.md
+   jq '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
+        body: .body, comments: [.threads[] | {path, line, side, body}]}' \
+     handover.json > review.json
    gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
    ```
 
@@ -1053,8 +1062,10 @@ post again, on somebody's pull request, under your principal's name.
 
 ### An older Review Desk, with no hand-over
 
-**If `draft handover` is not there** — `error.code` is `usage`, or `review-desk draft --help`
-does not list it — **you post `draft show`'s `body` and no threads at all.** That is what
+**If `draft handover` is not there** — `error.code` is `usage` and the message reads
+`unrecognized subcommand 'handover'`, measured on Review Desk 0.1.0, or `review-desk draft
+--help` does not list it — **you post `draft show`'s `body` and no threads at all**, and step
+3's `body.md` is that same body. That is what
 every session did before the hand-over existed, and it is still a review: the body is the
 approved body, step 1 established that, and nothing about the sign-off changes. What is lost
 is the shape. An older Review Desk composes no thread text and stores a body that is the
