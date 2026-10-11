@@ -362,6 +362,82 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
     return live, archived
 
 
+# ----------------------------------------------------------------------------- session groups
+
+# Which named allele group each mode's sessions land in. On 12 October 2026 the `tc-portal`
+# project held 56 sessions in one flat list, and finding "the review of PR 9586" meant reading
+# every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session under a named
+# section of its project instead.
+#
+# One group per mode, and nothing else decides it: not the ticket, not its Linear project, not
+# its labels. Four modes share `linear` because what a person is looking for is "the agents
+# working my tickets" rather than which pass each one is on, and a review lands in `review`
+# because a review is the thing most often hunted for by name.
+#
+# Defaulted here rather than only in `config.example.json`, like every other setting in this
+# file, so an instance whose config has never heard of `allele.groups` gets these with no edit.
+GROUP_DEFAULTS = {"implement": "linear", "investigate": "linear", "decompose": "linear",
+                  "decide": "linear", "review": "review"}
+
+# allele refuses a longer one with an error, so a value over this never reaches a create: the
+# dispatch site reads it as ungrouped and `doctor` crosses it. Passing it through would fail
+# every create for that mode, and a create that fails after the claim is the one state
+# `SKILL.md` says must never be left behind.
+MAX_GROUP_LEN = 40
+
+
+def groups_cfg(cfg: dict) -> dict:
+    """The `allele.groups` block with every mode defaulted.
+
+    **`None` is a VALUE here, not an absence**, which is where this differs from `review_cfg`
+    and `review_desk_cfg` and why it does not share their one-liner. `"implement": null` is how
+    an operator says "dispatch this mode ungrouped", and filtering nulls out the way those two
+    do would hand that mode `linear` and quietly ignore the edit.
+    """
+    block = dict(GROUP_DEFAULTS)
+    block.update((cfg.get("allele") or {}).get("groups") or {})
+    return block
+
+
+def group_for(cfg: dict, mode: str) -> str | None:
+    """The group a `mode` session is dispatched into, or `None` for ungrouped.
+
+    Trimmed, because allele trims before it matches and a value with a stray space would
+    otherwise read as a second group in `doctor`'s line while landing in the first.
+
+    Anything that is not a usable string — a number, a list, a value past `MAX_GROUP_LEN` — is
+    read as ungrouped, which is the non-blocking direction, and crossed by `doctor`. That split
+    is this file's existing doctrine for a setting somebody can mistype: read it in a way that
+    cannot stop a dispatch, and fail in the one command whose job is to fail.
+    """
+    value = groups_cfg(cfg).get(mode)
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > MAX_GROUP_LEN:
+        return None
+    return value
+
+
+def group_problems(cfg: dict) -> list[str]:
+    """Every `allele.groups` value that cannot be dispatched as written. For `doctor`.
+
+    Reads the raw block rather than `groups_cfg`, because a default is never a problem and a
+    mode nobody has configured must not be reported as one.
+    """
+    said = []
+    for mode, value in sorted(((cfg.get("allele") or {}).get("groups") or {}).items()):
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            said.append(f"allele.groups.{mode} is {value!r}, not a string — it is being read as "
+                        f"ungrouped; use null to mean that on purpose")
+        elif len(value.strip()) > MAX_GROUP_LEN:
+            said.append(f"allele.groups.{mode} is {len(value.strip())} characters, and allele "
+                        f"refuses anything over {MAX_GROUP_LEN} — it is being read as ungrouped")
+    return said
+
+
 # ------------------------------------------------------------------------------- review mode
 
 # How a review worker works, independently of Review Desk. `blind_options_pass` is the step that
@@ -2268,6 +2344,35 @@ def cmd_brief(args) -> None:
     # is the wrong directory, or none, whenever DISPATCHER_HOME is set here.
     tool = f"python3 {CODE_DIR / 'dispatcher.py'} --instance {instance()}"
     extra = []
+    # The allele group, named in every brief, for two readers at once. Whoever is about to
+    # create this session reads it off the brief it is already holding — which is why there is
+    # no second command to run at dispatch time and why a config with no `allele.groups` block
+    # still dispatches into one — and the session itself reads it as the group its own helpers
+    # go in. A worker can read no config, so the brief is the only channel either way.
+    #
+    # The ledger wins over the mode's default when it carries one, and that is the whole of
+    # inheritance: a coordinator writes `group=<its own group>` on a child's claim, so the
+    # child's brief names the group the coordinator was dispatched with rather than the group
+    # its own mode would have had.
+    #
+    # A recorded string is the answer, the empty one included: `group=""` on a claim is a
+    # coordinator saying ungrouped, and falling back to the mode's default there would override
+    # the session that actually knows.
+    recorded = entry.get("group")
+    if isinstance(recorded, str):
+        group = recorded.strip() or None
+        if group and len(group) > MAX_GROUP_LEN:
+            group = None
+    else:
+        group = group_for(cfg, mode)
+    if group:
+        extra.append(f"- Allele group: `{group}`. Pass `group: \"{group}\"` on every "
+                     f"`allele_sessions_create` you issue, so your helpers sit with you in the "
+                     f"sidebar — **only if the tool you have been given lists a `group` "
+                     f"parameter**. An allele that predates it refuses an unknown parameter, so "
+                     f"when it is absent, dispatch without it and say nothing.")
+    else:
+        extra.append("- Allele group: none. Dispatch your helpers with no `group` argument.")
     production_mcp = (cfg.get("tools") or {}).get("production_mcp")
     if production_mcp:
         extra.append(f"- Production reads: the `{production_mcp}` MCP, read-only, aggregates and ids only.")
@@ -3090,6 +3195,31 @@ def cmd_doctor(args) -> None:
         where = "config" if raw is not None else "default"
         return f"blind options pass {'on' if on else 'off'} ({where})"
 
+    def groups_check():
+        """Which allele group each mode is dispatched into, and a cross for one that cannot be.
+
+        **It fails, where `intervals` only reports**, and the difference is what the value does
+        when it is wrong. A rejected interval changes nothing — the default is already in force.
+        A group past allele's 40 characters, or a number where a name belongs, silently moves
+        every session of that mode back into the flat list this setting exists to get them out
+        of, and the operator who typed it has no other way to find out.
+
+        A mode mapped to `null` is not a fault and is named as `ungrouped`: it is the documented
+        way to dispatch one mode into no group at all.
+        """
+        problems = group_problems(cfg)
+        if problems:
+            raise RuntimeError(" · ".join(problems))
+        raw = (cfg.get("allele") or {}).get("groups") or {}
+        # Per mode, and each one says whether the answer came from the config or from this file,
+        # which is `review mode`'s idiom and is the question an operator asks of a group they did
+        # not expect to see. `ungrouped` is spelled out rather than left blank: a mode with no
+        # group and a mode whose line is missing are different facts.
+        return " · ".join(
+            f"{mode} → {group_for(cfg, mode) or 'ungrouped'}"
+            f"{' (config)' if mode in raw else ' (default)'}"
+            for mode in sorted(groups_cfg(cfg)))
+
     def intervals_check():
         """The two intervals DEV-931 adds, and a line when one of them is being ignored.
 
@@ -3147,6 +3277,7 @@ def cmd_doctor(args) -> None:
     # and the fourth check, so swapping them makes its prose wrong rather than its logic.
     check("review desk", review_desk_check)
     check("review mode", review_check)
+    check("allele groups", groups_check)
     check("intervals", intervals_check)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
@@ -3359,7 +3490,14 @@ def cmd_init(args) -> None:
                # it buys is that `draft_watch_interval_secs` and `harvest_interval_secs` become
                # VISIBLE on an instance that predates them, instead of being defaults in code
                # that nobody can find to change.
-               + fill_absent("limits", cfg.setdefault("limits", {}), template["limits"]))
+               + fill_absent("limits", cfg.setdefault("limits", {}), template["limits"])
+               # Eight, and the same rule again: five mode names with a real default each and
+               # nothing for anybody to edit. `group_for` defaults them in code, so this is how
+               # an instance that predates `allele.groups` comes to SHOW the groups it is
+               # already dispatching into — and `null` against a mode is how an operator turns
+               # one off, which they cannot do to a setting they cannot see.
+               + fill_absent("groups", cfg.setdefault("allele", {}).setdefault("groups", {}),
+                             template["allele"]["groups"]))
     if learned:
         print(f"new in this version: {', '.join(learned)}")
 

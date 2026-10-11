@@ -41,8 +41,11 @@
     "default_project": "your-project",
     "linear_project_map": {},
     "repo_project_map": { "OWNER/REPO": "your-project" },
-    "orchestration": { "implement": "nothing", "investigate": "nothing", "decompose": "nothing", "decide": "nothing", "review": "nothing" }
+    "orchestration": { "implement": "nothing", "investigate": "nothing", "decompose": "nothing", "decide": "nothing", "review": "nothing" },
+    "groups": { "implement": "linear", "investigate": "linear", "decompose": "linear", "decide": "linear", "review": "review" }
   },
+
+  "_comment_groups": "`groups` is the named allele section each mode's sessions land in — `group` on `allele_sessions_create`, which a dispatcher passes ONLY when the tool it has been given lists it, because an older allele refuses an unknown parameter. One group per mode and nothing else decides it: not the ticket, not its Linear project, not its labels. A mode set to null or \"\" dispatches ungrouped. allele trims the value, matches it ignoring case, displays the first spelling a project saw, and refuses anything over 40 characters — so a longer one, or a value that is not a string, is read here as ungrouped and crossed by `doctor`. Every mode is defaulted in code, so an instance with no `groups` block dispatches into these without an edit; `init` adds the block on a re-run so a mode can be turned off. A session a worker dispatches carries the worker's own group, which travels on the child's ledger entry. The dispatcher session itself is human-started: give it the group `dispatcher` in allele by hand, because nothing in Locus can set it.",
 
   "traits": {
     "implement":   { "traits": "implementation,pragmatic,systematic",        "role": "Implementing engineer" },

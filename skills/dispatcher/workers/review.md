@@ -36,7 +36,10 @@ are written to, the blind pass's brief, and a worked example. Read it before you
    Desk" says which fields and why in that order.
 3. **Blind options pass.** Dispatch one session through **"Independent help"** in `_common.md`,
    with traits different from your own, and give it the numbered problems and an export of the base
-   commit and **nothing else**: not the ticket, not this pull request, not the branch. The brief
+   commit and **nothing else**: not the ticket, not this pull request, not the branch. It carries
+   **your** allele group — the **Allele group** line in your dispatch block, usually `review` — so
+   the blind session sits with the review it belongs to; `_common.md` has the rule about passing
+   `group` only when your tool lists it. The brief
    template, the export command and the leak rule are in `understand.md`; with Review Desk the
    template's problem sections are poured from its problem-only read rather than retyped.
    **Reclaim it the moment it reports** (`allele_sessions_discard`). If it cannot run — a
