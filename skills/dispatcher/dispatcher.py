@@ -1410,25 +1410,51 @@ class Poller:
           4. The developer clicks "File as one ticket for an agent", and `review_desk_live`
              answers True about a session whose eyes are shut.
 
-        Read from the WATCHER'S OWN CURSOR, which is where `watch_stop_reason` reads it, so the
-        two agree by construction and this costs one local file and no GitHub call. An absent
-        cursor, or one with no `pr_status`, means no watcher has concluded anything yet and
-        liveness stands — which is also the answer for a worker that passed `--as`, whose cursor
-        is under another name. Being wrong in that direction costs a quiet interval; being wrong
-        in the other puts two sessions on one review.
+        Read from the WATCHER'S OWN CURSOR, for one local file and no GitHub call. **An absent
+        cursor means the watcher has been and gone, not that it has yet to start**, and getting
+        that the wrong way round is how the first version of this shipped the very bug above:
+        `cmd_watch` deletes the cursor on three of `watch_stop_reason`'s four stop paths, and
+        `--exit-on-done` — which SKILL.md tells the Dispatcher to offer the principal — is one
+        of them. Only `Watcher.tick` ever writes a cursor, so once it has exited nothing will
+        write that file again; the absence is permanent, and reading it as "not yet" left the
+        request reaching nobody for ever on a documented path.
 
-        The event still carries `session_id` and `ledger_status`, so the Dispatcher can message
-        the session that is sitting there rather than dispatch a replacement. SKILL.md says so.
+        What makes the rule safe rather than merely safer is that the cursor's presence tracks
+        the stop paths almost exactly:
+
+          | How the watcher stopped | Cursor afterwards | Read as |
+          |---|---|---|
+          | `WATCH_DEAD` status, `--exit-on-done`, or no pull request | deleted | cannot be told |
+          | `done` with a merged or closed pull request | kept, `pr_status` closed | cannot be told |
+          | `ceiling` or `max_ticks` | kept, `pr_status` as it was | still listening |
+
+        The last row is the one that must stay as it is: `_common.md` tells a worker to re-arm
+        the Monitor after a ceiling, so a cursor with an open `pr_status` is a watcher that is
+        coming back. A cursor that exists with NO `pr_status` is one that has armed and not yet
+        read the pull request, which is also a watcher that is listening.
+
+        **The hole left, named rather than implied:** a watcher killed by a signal leaves its
+        cursor with an open `pr_status` and does not come back, so this reads it as listening.
+        Nothing local can tell that from a ceiling, and the ceiling case is the common one.
+
+        A worker that passed `--as` keeps its cursor under another name, so this finds none and
+        reads it as deaf. That is the right direction for the same reason the default is: a
+        replacement files a ticket somebody asked for, and `review.md`'s first step has it check
+        for a filing before it makes one, where the other direction is a request nobody answers.
+
+        The event still carries `session_id` and `ledger_status`, so the Dispatcher can try the
+        session that is sitting there before it dispatches a replacement. SKILL.md says so.
         """
         if kind != "nits_to_ticket" or entry.get("status") != "done":
             return False
-        # `isinstance` for the same reason the ids above are type-tested: a cursor is a file on
-        # disk that another process writes, and `.get` on a half-written one that parsed as a
-        # list is an AttributeError in the middle of a poll tick. A cursor that will not parse
-        # at all is the exposure every other `read_json` in this file has and is caught by
-        # `tick`'s per-section guard — loud, and it never stops the poller.
+        # A cursor that is not a populated object is a cursor no watcher is using — deleted,
+        # empty, or half-written by a process that died over it. `isinstance` rather than trust
+        # for the same reason the ids above are type-tested: `.get` on something that parsed as
+        # a list is an AttributeError in the middle of a poll tick.
         cursor = read_json(watch_dir() / f"{key}.json", {})
-        return isinstance(cursor, dict) and cursor.get("pr_status") in PR_CLOSED
+        if not isinstance(cursor, dict) or not cursor:
+            return True
+        return cursor.get("pr_status") in PR_CLOSED
 
     def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
         """Name, once per interval, a kind of work this file cannot place. Blocks nothing.

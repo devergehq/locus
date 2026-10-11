@@ -687,12 +687,24 @@ printf '\nThis file runs every assertion it contains\n'
 # that loses its closing quote is still valid shell -- `sh -n` passes -- and the lines after it
 # are taken as string content and PRINTED rather than run. It has happened three times in this
 # file's history: once hiding 2 assertions and once about 37, including the end-to-end filing
-# loop, while the suite went on reporting "0 failed". The guard sat at the bottom when it was
-# written, which is the one place a defect that eats the rest of the file could eat the guard too.
-ok "no heading in this harness is missing its quote"   "$(grep -c "^printf '[^']*$" "$0")" 0
+# loop, while the suite went on reporting "0 failed". Running first does not make the guard
+# unloseable -- several hundred lines of quote-bearing shell still precede it -- but it does put
+# it ahead of every assertion it is guarding.
+#
+# **What it catches is one shape**: a `printf` whose opening quote is there and whose closing
+# one is not, single- or double-quoted, indented or not. A lost OPENING quote swallows just as
+# well and is not caught; neither is an unbalanced quote in any other command. The shape checked
+# is the shape that has actually occurred here, three times.
+ok "no heading in this harness is missing its quote"   "$(grep -c "^[[:space:]]*printf '[^']*$" "$0")" 0
+ok "  nor a double-quoted one"                         "$(grep -c "^[[:space:]]*printf \"[^\"]*$" "$0")" 0
 sed "s/^printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n'\$/printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n/" \
     "$0" > "$work/noquote.sh"
-ok "  and the reversal of one is caught"               "$(grep -c "^printf '[^']*$" "$work/noquote.sh")" 1
+ok "  and the reversal of one is caught"               "$(grep -c "^[[:space:]]*printf '[^']*$" "$work/noquote.sh")" 1
+# Indented, which the first version of this anchor could not see and this file has five live
+# instances of.
+sed "s/^  printf '\\\\n    harvested \\\\n'\$/  printf '\\\\n    harvested \\\\n/" \
+    "$0" > "$work/noquote2.sh"
+ok "  including an indented one"                       "$(grep -c "^[[:space:]]*printf '[^']*$" "$work/noquote2.sh")" 0
 
 # =============================================================================================
 printf '\nSilence -- no review_desk block, no review-desk on PATH\n'
@@ -1310,8 +1322,12 @@ rc=$(run "$disp" poll 1)
 ok "a done key whose PR merged no longer owns the ticket" "$(count '"event": "review_desk_resume"')" 1
 ok "  and the event names the session to message"      "$(says '"session_id": "live-7"')" yes
 ok "  with the status that says its watcher is shut"   "$(says '"ledger_status": "done"')" yes
-# The cursor is what decides, and these two are why it is read at all: the same live session
-# with no cursor, and with a cursor whose pull request is open, both keep the item.
+# **An absent cursor is a watcher that has been and gone, not one that has yet to start**, and
+# the first version of this section asserted the opposite. `cmd_watch` DELETES the cursor on
+# three of `watch_stop_reason`'s four stop paths — a `WATCH_DEAD` status, `--exit-on-done` which
+# SKILL.md tells the Dispatcher to offer the principal, and a `done` key with no pull request —
+# and only `Watcher.tick` ever writes one, so the absence is permanent. Read as "not yet", the
+# request reached nobody for ever on a documented path, and this assertion pinned it as correct.
 instance '{"mode":"auto"}'
 work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
 put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
@@ -1319,7 +1335,11 @@ no_sessions
 session live-7
 echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$disp" poll 1)
-ok "  no cursor yet, so liveness stands"               "$(count review_desk)" 0
+ok "a deleted cursor is a watcher that has gone"       "$(count '"event": "review_desk_resume"')" 1
+ok "  and the tick exits clean"                        "$rc" 0
+# What still keeps the item with its session: a cursor that EXISTS and has not concluded. One
+# with an open pull request is a watcher reading; `ceiling` and `max_ticks` leave exactly this,
+# and `_common.md` tells the worker to re-arm after them.
 instance '{"mode":"auto"}'
 work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
 put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
@@ -1329,19 +1349,46 @@ echo '{"pr_status":"open","pr":{"repo":"acme/portal","number":418}}' \
   > "$inst/runtime/watch/gh-portal-418.json"
 rc=$(run "$disp" poll 1)
 ok "  an open pull request keeps it with its session"  "$(count review_desk)" 0
-# A cursor another process was half-way through writing. `.get` on a list is an AttributeError
-# inside a poll tick, so the type is tested rather than trusted.
+# One armed and not yet past `pull_request`, which is also a watcher that is listening.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr":{"repo":"acme/portal","number":418}}' > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "  a cursor with no pr_status keeps it too"         "$(count review_desk)" 0
+# A cursor another process was half-way through writing. Asserted on the ERROR event and not on
+# `count review_desk`, which matches `"section": "review_desk"` inside the error this would
+# raise -- so the loose count flipped for the wrong reason and `rc` was 0 either way.
 instance '{"mode":"auto"}'
 work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
 put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
 no_sessions
 session live-7
 echo '[]' > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$disp" poll 1)
-ok "  a cursor that is not an object keeps it too"     "$(count review_desk)" 0
+ok "a cursor that is not an object raises nothing"     "$(count '"event": "error"')" 0
+ok "  and is read as a watcher nobody is using"        "$(count '"event": "review_desk_resume"')" 1
 ok "  and the tick exits clean"                        "$rc" 0
-# And no other kind gets the bypass: a draft_approved on the same dead-eared session stays put,
-# because nothing about a draft can arrive after the merge.
+# **And no other kind gets the bypass — on an OPEN pull request, which is the whole point of
+# this fixture.** The first version of this pair said MERGED, where a `draft_approved` that took
+# the bypass is dropped a few lines later by the merge exemption anyway: the assertion read 0
+# off a different guard and passed with the kind half of the gate deleted. Contrived on purpose
+# — a cursor saying merged while GitHub says open — because that is the only state in which the
+# kind half is the only thing deciding.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"OPEN"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "the bypass is the cursor's doing, not the merge's" "$(count '"event": "review_desk_resume"')" 1
 instance '{"mode":"auto"}'
 work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
 put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
@@ -1349,9 +1396,9 @@ no_sessions
 session live-7
 echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
   > "$inst/runtime/watch/gh-portal-418.json"
-echo '{"state":"MERGED"}' > "$work/pr.418.json"
+echo '{"state":"OPEN"}' > "$work/pr.418.json"
 rc=$(run "$disp" poll 1)
-ok "  and no other kind gained the bypass"             "$(count review_desk)" 0
+ok "  and no other kind gained it"                     "$(count review_desk)" 0
 no_sessions
 
 printf '\n  the request leaves the list once the ticket is reported\n'
@@ -1364,6 +1411,9 @@ echo '{"status":"requested","ticket_id":null}' > "$work/rd.nit"
 work_doc nits_to_ticket 7 acme/portal 412 1791520400
 put gh-portal-412 mode=review status=active review_desk_id=7 --by test
 ok "the draft page's button reads"                     "$(button 7)" "Queued as one ticket"
+# This crosses the FIXTURE against itself -- the stand-in returns `rd.held` verbatim -- so it
+# checks that the number review.md sends a worker for is the held-back ones and not the
+# review's. No Locus code can make it fail; `review show`'s own filtering is Review Desk's.
 ok "  over the two held back out of three"             "$(python3 -c "
 import json
 d = json.load(open('$work/show.json'))['findings']
@@ -2889,6 +2939,49 @@ echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
 echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$work/nodeaf.py" poll 1)
 ok "no bypass: a shut watcher still owns the ticket"   "$(count review_desk)" 0
+no_sessions
+
+# The ABSENT-CURSOR half on its own. The reversal above turns the whole condition off, so it
+# says nothing about which way a missing cursor is read -- and reading it the wrong way is the
+# defect this commit exists to fix.
+sed 's/^        if not isinstance(cursor, dict) or not cursor:$/        if False:  # ABSENT CURSOR REVERSED/' \
+    "$disp" > "$work/nocursor2.py"
+ok "the absent-cursor reversal changed one line"       "$(grep -c 'ABSENT CURSOR REVERSED' "$work/nocursor2.py")" 1
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$work/nocursor2.py" poll 1)
+ok "read as 'not yet': a deleted cursor loses the ticket" "$(count review_desk)" 0
+# And the same reversal on a cursor that is not an object, which is where it raises.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '[]' > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$work/nocursor2.py" poll 1)
+ok "  and a half-written one raises inside the tick"   "$(count '"event": "error"')" 1
+no_sessions
+
+# The KIND half on its own, which the reversal above cannot isolate: it turns the whole
+# condition off, where this deletes only the test that keeps the bypass to one kind.
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if entry.get("status") != "done":  # KIND HALF REMOVED/' \
+    "$disp" > "$work/nokindhalf.py"
+ok "the kind-half reversal changed one line"           "$(grep -c 'KIND HALF REMOVED' "$work/nokindhalf.py")" 1
+instance '{"mode":"auto"}'
+work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"OPEN"}' > "$work/pr.418.json"
+rc=$(run "$work/nokindhalf.py" poll 1)
+ok "no kind half: draft_approved takes the bypass too" "$(count '"event": "review_desk_resume"')" 1
 no_sessions
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

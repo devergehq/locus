@@ -108,13 +108,13 @@ about Review Desk may stop you preparing a review.
 
 Review Desk owns the record: the brief, the options, the findings, what became of each one, and
 the draft. The acts in it that are the developer's and nobody else's all happen **in the
-dashboard**: **confirming the brief**, **approving or sending back the draft**, and **asking for
-the findings they held back to be filed as one ticket**. The first two are sign-offs and the
-third is not — filing is work they have handed you, and it is dealt with under "Filing the
-held-back findings as one ticket". Review Desk's command line has no command for a sign-off, the
-store refuses any actor but the developer, and this brief gives you no route to one. Do not look
-for one: the dashboard's HTTP API can approve a draft, and reaching for it would be signing off in
-your principal's name.
+dashboard**: **confirming the brief**, **deciding the draft** — approving it or sending it
+back — and **asking for the findings they held back to be filed as one ticket**. The first two
+are the decisions only they may make. The third is not a decision about the draft at all: it is
+work they have handed you, dealt with under "Filing the held-back findings as one ticket".
+Review Desk's command line has no command for a decision, the store refuses any actor but the
+developer, and this brief gives you no route to one. Do not look for one: the dashboard's HTTP
+API can approve a draft, and reaching for it would be signing off in your principal's name.
 
 ### Open it, link it, and write the id down
 

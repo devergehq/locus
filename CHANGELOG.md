@@ -97,9 +97,9 @@ refuses to build when they disagree.
   working, which is what lets the watcher stay silent instead of repeating it every 20 seconds.
   `REVIEW_DESK_IGNORED_KINDS` is empty and load-bearing empty: it is the only way to say "read,
   and deliberately not ours" as against "never heard of it", and the fifth kind was in neither
-  list for five weeks with no line anywhere to grep for. 89 new assertions in
-  `scripts/test-dispatcher-review-desk.sh` (496 to 585), including a crossing that fails if Review
-  Desk's contract lists a kind this file neither handles nor names as ignored, and seven reversals
+  list for five weeks with no line anywhere to grep for. 100 new assertions in
+  `scripts/test-dispatcher-review-desk.sh` (496 to 596), including a crossing that fails if Review
+  Desk's contract lists a kind this file neither handles nor names as ignored, and ten reversals
   — one showing that the crossing cannot see a kind missing from the *relay* list, which is why
   the relay test exists beside it, and one showing that a `nits_to_ticket` is dispatched on a
   **merged** pull request where no other kind is: the request becomes an item only once the draft
