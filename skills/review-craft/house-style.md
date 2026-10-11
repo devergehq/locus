@@ -503,7 +503,7 @@ would build instead.
   one reads as a typing slip. Stated here once, for every field, because a rule repeated per field
   is a rule that drifts per field. ✗ a note that writes staged_prices bare · ✓ one that writes
   it as `staged_prices`. The fields that carry **no** name at all are a shorter list and
-  `understand.md` holds it: a brief's top layer, and a part's summary.
+  `understand.md` holds it: a brief's top layer, and both of a part's two lines.
 - Numbers, not adjectives: "1 in 81 draws", not "quite likely".
 - No emoji beyond the four severity glyphs and the 🤖 header. **The word carries the severity, not
   the glyph** — emoji-only schemes (Devin) and image badges (Greptile) can't be searched, filtered or

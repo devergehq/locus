@@ -136,6 +136,19 @@ ACCEPTED = {
     "flow_after", "problems", "support_table", "blind_pass", "parts", "open_choices",
     "disagreements",
 }
+# A PART's own members, read off master's `BriefPart`, which carries `deny_unknown_fields`:
+# `title`, `summary`, `fixes`, `files`. `one_line` is DEV-919's and is in flight, so both sides
+# of it are kept here -- a worker has to write against an install either side, and the refusal
+# for the field is itself the behaviour under test. `$RDWORK/rd.parts` holding `pre919` is an
+# install from before the field; anything else, including the file's absence, is one with it.
+#
+# A LIST and not a set, in DECLARATION order, because serde names the members in the order the
+# struct declares them and the order is the half of the message a worker reads past. Measured
+# 11 October 2026 against a binary built from DEV-919 at cc85cf0, which prints
+# `expected one of `title`, `summary`, `one_line`, `fixes`, `files``. A sorted stand-in would
+# have pinned an order nothing ever prints.
+PART_ACCEPTED = ["title", "summary", "fixes", "files"]
+PART_WITH_ONE_LINE = ["title", "summary", "one_line", "fixes", "files"]
 # What `brief problem-statement` serves, and the whole of it. Built by naming what belongs in
 # it, never by subtracting, which is the contract's own argument: a read that subtracts grows
 # a leak every time the brief grows a field.
@@ -215,7 +228,17 @@ def put(argv, review):
             if verdict.get("verdict") != "not_assessed" and not verdict.get("why"):
                 refuse("options[].verdicts[].why is required for every verdict but not_assessed")
 
+    pre919 = (work / "rd.parts").read_text().strip() == "pre919" \
+        if (work / "rd.parts").exists() else False
+    members = PART_ACCEPTED if pre919 else PART_WITH_ONE_LINE
     for part in doc.get("parts", []):
+        unknown = [key for key in part if key not in members]
+        if unknown:
+            # The nested shape of the refusal: the object's OWN members named, in the order the
+            # struct declares them, which is what `workers/review.md` tells a worker to read it
+            # for.
+            refuse("cannot use the JSON: unknown field `%s`, expected one of %s"
+                   % (unknown[0], ", ".join("`%s`" % m for m in members)))
         for fixes in part.get("fixes", []):
             if fixes not in numbers:
                 refuse("parts[].fixes names problem %s, which this brief does not carry" % fixes)
@@ -383,6 +406,7 @@ PY
   echo '{"work":[]}' > "$work/rd.work"
   rm -f "$work/rd.work."* "$work/pr."*.json "$work/reviews.json"
   rm -f "$work/rd.brief."*.json "$work/rd.findings."* "$work/rd.state."* "$work/rd.layer2."*
+  rm -f "$work/rd.parts"
 }
 
 D () { python3 "$disp" --instance "$inst" "$@"; }
@@ -1057,7 +1081,7 @@ REQUIRED = [
     "flow_after_caption", "problems[].number", ".was_wrong", ".now_fixed", ".detail_title",
     ".detail_before", ".detail_after", "support_table", "options[].key", "options[].verdicts",
     ".proposed_by", ".argument_for", ".argument_against", ".chosen", "blind_pass.given",
-    ".pick_key", ".pick_why", ".questions", ".looked_up", "parts[]", ".in_diff",
+    ".pick_key", ".pick_why", ".questions", ".looked_up", "parts[]", ".one_line", ".in_diff",
     "open_choices[]", "disagreements[]", ".finding_seq", "approach_verdict", "provenance",
 ]
 
@@ -1170,6 +1194,11 @@ TABLE
 
 # The top-level keys of a JSON document, optionally dropping a prefix. A helper rather than an
 # inline python because its one-liner would need a set literal. See the brace note above.
+cat > "$work/partkeys.py" <<'PARTKEYS'
+import json, sys
+print(sorted(json.load(open(sys.argv[1]))["parts"][0]))
+PARTKEYS
+
 cat > "$work/keys.py" <<'KEYS'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -1351,7 +1380,11 @@ def table(header, column):
 
 
 labels = table("| | Label | Marked on |", 1)
-summaries = table("| Part | Summary | Fixes | Files |", 1)
+# The Solution table draws a part as its title, the one line the row shows, and the summary
+# behind it -- so the one line is column 1 and the summary column 2. Both are measured: an
+# example whose two columns say the same thing teaches that one of them is spare.
+one_lines = table("| Part | One line | Summary | Fixes | Files |", 1)
+summaries = table("| Part | One line | Summary | Fixes | Files |", 2)
 print(json.dumps({
     "labels": labels,
     "labels_over_3": [l for l in labels or [] if bl.words(l) > bl.LIMIT["problem.label.words"]],
@@ -1359,6 +1392,13 @@ print(json.dumps({
     "summaries_over_30": [t for t in summaries or []
                           if bl.words(t) > bl.LIMIT["part.summary.words"]],
     "summaries_with_names": [t for t in summaries or [] if bl.code_names(t)],
+    "one_lines": len(one_lines or []),
+    "one_lines_over_12": [t for t in one_lines or []
+                          if bl.words(t) > bl.LIMIT["part.one_line.words"]],
+    "one_lines_with_names": [t for t in one_lines or [] if bl.code_names(t)],
+    # A one line that is the summary's own opening clause has cost the reader the second half.
+    "one_lines_repeating_summary": [o for o, s in zip(one_lines or [], summaries or [])
+                                    if bl.flat(o).strip() in bl.flat(s)],
 }, sort_keys=True))
 WORKED
 
@@ -1446,14 +1486,18 @@ ok "the Problems slot says in flow order"           "$(grep -c '^| \*\*Problems\
 ok "  and Label is a slot of its own"               "$(grep -c '^| \*\*Label\*\* |' "$understand_md")" 1
 ok "  with its number in the slot"                  "$(grep -c 'At most 3 words' "$understand_md")" 1
 ok "the Parts slot carries the summary's cap"       "$(grep -c 'at most 30 words carrying no class name, path or `::`' "$understand_md")" 1
+ok "  and the one-line form's, beside it"           "$(grep -c 'a `one_line` of at most 12 plain words' "$understand_md")" 1
 ok "rule 5 is the numbering and the label"          "$(grep -c '^\*\*5 · A problem is numbered where the before flow first meets it' "$understand_md")" 1
 ok "  and says flow order is not sufficient"        "$(grep -c 'Flow order is necessary and is not sufficient' "$understand_md")" 1
 ok "rule 6 is the part's summary"                   "$(grep -c "^\*\*6 · A part's summary is one plain line" "$understand_md")" 1
+ok "rule 7 is the part's one-line form"             "$(grep -c '^\*\*7 · Every part also carries a one-line form' "$understand_md")" 1
+ok "  saying it is not the summary shortened"       "$(grep -c 'It is not the summary shortened' "$understand_md")" 1
+ok "  and sending the names where rule 6 does"      "$(grep -c 'the names go where rule 6 already' "$understand_md")" 1
 ok "the worked example labels every problem"        "$(grep -c '^| 1 | One transaction | the second row |' "$understand_md")" 1
-ok "  and gives every part a summary"               "$(grep -c '^| Part | Summary | Fixes | Files |' "$understand_md")" 1
+ok "  and gives every part both its lines"          "$(grep -c '^| Part | One line | Summary | Fixes | Files |' "$understand_md")" 1
 # Measured against the linter's own limits, not grepped. An example that breaks the rule it sits
 # beside teaches the breach, and nothing reads the example because it is markdown.
-worked () { python3 "$work/workedexample.py" "$understand_md" \
+worked () { python3 "$work/workedexample.py" "${2:-$understand_md}" \
     "$root/skills/review-craft/brief_lint.py" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -1461,6 +1505,9 @@ print($1)"; }
 ok "  three labels, every one inside its limit"     "$(worked "[len(d['labels']), d['labels_over_3']]")" "[3, []]"
 ok "  seven part summaries, every one inside its"   "$(worked "[d['parts'], d['summaries_over_30']]")" "[7, []]"
 ok "  and not one of them naming code"              "$(worked "d['summaries_with_names']")" "[]"
+ok "  seven one-line forms, every one inside its"   "$(worked "[d['one_lines'], d['one_lines_over_12']]")" "[7, []]"
+ok "  and not one of those naming code either"      "$(worked "d['one_lines_with_names']")" "[]"
+ok "  nor repeating the summary beside it"          "$(worked "d['one_lines_repeating_summary']")" "[]"
 
 printf '\n  the two rules house-style.md owns\n'
 ok "a finding's title is at most 12 words"          "$(grep -c '\*\*A title is at most 12 words, and it is not the claim' "$house_md")" 1
@@ -1470,7 +1517,7 @@ t = 'a correction that throws after the reopen strands the invoice OPEN'
 doc = open('$house_md').read()
 print(len(t.split()) <= 12 and doc.count(t) == 3)")" True
 ok "backticks hold in every prose field"            "$(grep -c 'This holds in every prose field a session writes' "$house_md")" 1
-ok "  and the fields that carry no name are named"  "$(grep -c "a brief's top layer, and a part's summary" "$house_md")" 1
+ok "  and the fields that carry no name are named"  "$(grep -c "a brief's top layer, and both of a part's two lines" "$house_md")" 1
 
 printf '\n  the fields the brief names are ones Review Desk accepts, and cover the pages\n'
 ok "no field named is one the store would refuse"   "$(ask "d['unknown_roots']")" "[]"
@@ -1600,7 +1647,11 @@ doc.update({
                    "questions": ["Does the receiver already drop a repeat?"]},
     "approach_verdict": "The right shape for the problem.",
     "provenance": "from the ticket, the description and the code at a1b2c3d",
-    "parts": [{"title": "The key, stored per event", "summary": "one key, reused on a retry",
+    "parts": [{"title": "The key, stored per event",
+               "one_line": "A retry reuses the key the first delivery carried.",
+               "summary": "The event gets a key when it is first posted, and every retry of it "
+                          "carries the same one, so the receiver can tell a repeat from a new "
+                          "order.",
                "fixes": [1, 2],
                "files": [{"path": "jobs/DeliverWebhook.php", "lines_added": 96,
                           "lines_removed": 22, "in_diff": True},
@@ -1756,6 +1807,32 @@ ok "  with the list read for the field's own level" "$(grep -c 'the list for the
 ok "  both refusal shapes quoted, nested and top"  "$(grep -c 'unknown field .blind_pass_state., expected one of' "$brief_md")" 1
 ok "  with the measured example that forced it"     "$(grep -c 'dropping .label. from the' "$brief_md")" 1
 
+# `parts[].one_line` is the live example of that table's FIRST row, and the one a worker now
+# meets at step 5 rather than at write 1. The stand-in's part member list is master's, so
+# `pre919` is a Review Desk from before DEV-919 and the default is one with it. This is not a
+# second reading of the refusal: it is the same reading, driven over a part.
+echo '{"lens":"l","severity":"should","claim":"c"}' \
+  | review-desk finding add --review 6 --file - > /dev/null
+echo pre919 > "$work/rd.parts"
+ok "a part field an older install lacks is refused"  "$(rc brief put --review 6 --file "$work/full.json")" 1
+ok "  naming the part's own members and no others"   "$(grep -c "unknown field .one_line., expected one of .title., .summary., .fixes., .files." "$work/err")" 1
+ok "  so it is not read as the brief being older"    "$(grep -c 'flow_before' "$work/err")" 0
+python3 - "$work/full.json" "$work/nooneline.json" <<'DROP'
+import json, pathlib, sys
+doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
+for part in doc["parts"]:
+    part.pop("one_line")
+pathlib.Path(sys.argv[2]).write_text(json.dumps(doc))
+DROP
+ok "  and the same document without it is accepted"  "$(rc brief put --review 6 --file "$work/nooneline.json")" 0
+ok "  with every other field of the part kept"       "$(python3 "$work/partkeys.py" "$work/rd.brief.6.json")" "['files', 'fixes', 'summary', 'title']"
+ok "  which is what the brief says to do"            "$(grep -c 'drop .one_line. from every part and' "$brief_md")" 1
+ok "  and it says to keep writing the field"         "$(grep -c 'Write the field$' "$brief_md")" 1
+rm -f "$work/rd.parts"
+ok "an install that has the field stores it whole"   "$(rc brief put --review 6 --file "$work/full.json")" 0
+ok "  one line on the part, beside its summary"      "$(python3 "$work/partkeys.py" "$work/rd.brief.6.json")" "['files', 'fixes', 'one_line', 'summary', 'title']"
+ok "  and the brief names the field in its table"    "$(grep -c '| \*\*Parts\*\* | `parts\[\].title`, `.one_line`, `.summary`' "$brief_md")" 1
+
 printf '\n  the brief is linted before it is sent, and never before that\n'
 # The first two assertions RUN the linter over the two documents this harness built, which is
 # the whole point: review.md tells a worker to write a brief that passes it, and the document
@@ -1771,7 +1848,7 @@ ok "the problem half does NOT pass it"              "$(lint "$work/half.json")" 
 ok "  failing the four the brief names, and no more" "$(grep -c '^FAIL  [a-z]' "$work/lint")" 4
 ok "  which are the change half, every one"         "$(grep '^FAIL  [a-z]' "$work/lint" | awk '{print $2}' | sort | tr '\n' ' ')" "headline.present picture.after problems.marked_after problems.now_line "
 ok "every quotation --limits makes of understand.md is in it" "$(python3 "$work/limitslots.py" \
-    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "10 checked; none missing"
+    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "11 checked; none missing"
 ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
 ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
 ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
@@ -1779,7 +1856,7 @@ ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint writ
 # The number in the prose, crossed against the run three assertions above. The first version
 # pinned 6, a count off a malformed fixture that the sentence's own list contradicted; it is 4,
 # and now a document that drifts fails the run rather than only the grep.
-ok "  with the count it would fail by"              "$(grep -c '4 of its 22 checks fail' "$brief_md")" 1
+ok "  with the count it would fail by"              "$(grep -c '4 of its 24 checks fail' "$brief_md")" 1
 ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
 ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
 ok "an absent linter is a broken install, said loudly" "$(grep -c 'brief_lint.py. that is not there is a broken install' "$brief_md")" 1
@@ -1909,9 +1986,18 @@ sed "s/'Options \.\.\. a title of at most 12 words'/'Options ... a title under 1
     "$root/skills/review-craft/brief_lint.py" > "$work/badquote.py"
 ok "the reworded-quotation reversal changed one line"  "$(grep -c "a title under 12 words" "$work/badquote.py")" 1
 ok "a citation reworded where the slot stayed is caught" "$(python3 "$work/limitslots.py" \
-    "$work/badquote.py" "$understand_md")" "10 checked; a title under 12 words"
+    "$work/badquote.py" "$understand_md")" "11 checked; a title under 12 words"
 ok "a limit citing a slot that is gone is caught"      "$(python3 "$work/limitslots.py" \
-    "$work/badlimits.py" "$understand_md")" "10 checked; How it works today (not a slot)"
+    "$work/badlimits.py" "$understand_md")" "11 checked; How it works today (not a slot)"
+
+# The control for the worked example's one-line column. The example is markdown, nothing but
+# this arithmetic reads it, and an example that breaks the rule it sits beside teaches the
+# breach -- so the arithmetic has to be shown catching one.
+sed 's/| Each file is carried and retried on its own. |/| Each file is carried on its own and retried on its own, three times over. |/' \
+    "$understand_md" > "$work/badexample.md"
+ok "the one-line reversal changed one line"            "$(grep -c 'three times over' "$work/badexample.md")" 1
+ok "a one-line form over twelve words is caught"       "$(worked "len(d['one_lines_over_12'])" "$work/badexample.md")" 1
+ok "  and it is named, so the fix is findable"         "$(worked "d['one_lines_over_12'][0][:20]" "$work/badexample.md")" "Each file is carried"
 
 sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
     "$brief_md" > "$work/badslot.md"

@@ -19,9 +19,10 @@ line. Detail behind a click — `problems[].detail_before`, `.detail_after`, an 
 the blind pass's answer — is never length-checked, here or anywhere. Depth is allowed. It is the
 top that is budgeted.
 
-**A part's summary is the one exception, and it is deliberate.** Seven of them are read down a
-single column at once, so a summary is scanned rather than clicked into: it is capped at 30 words
-and held to the same plain-English rule as the top layer. Nothing else behind a fold is measured.
+**A part's two lines are the one exception, and it is deliberate.** Seven of them are read down a
+single column at once, so they are scanned rather than clicked into: the `one_line` the row shows
+is capped at 12 words, the summary behind it at 30, and both are held to the same plain-English
+rule as the top layer. Nothing else behind a fold is measured.
 
 **There is no limit keyed on the size of the diff**, and there is not to be one: Patrick ruled on
 9 October 2026 that the brief gate is `never | always` and not a function of how many lines a pull
@@ -109,6 +110,11 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
      "words and carried class names; Review Desk's real-length brief runs 13 across six parts. "
      "It is the one slot behind the top layer that is length-checked, because seven of them are "
      "read down one column at once"),
+    ("part.one_line.words", "A solution part's one-line form", 12,
+     "understand.md, Solution: 'Parts ... a `one_line` of at most 12 plain words'. "
+     "Measured 11 October 2026 from a real review, whose eight parts carried no one-line form at "
+     "all and whose summaries ran 33 to 52 words; the Solution page draws each part as one row "
+     "and the row's line never wraps, so a summary put there is cut off mid-sentence"),
     ("source.note.words", "What a source tells us", 12,
      "workers/review.md, 'Where the understanding came from': the table's `note` row. Measured "
      "11 October 2026 from a second real review, where each source was a sentence of up to 24 "
@@ -438,11 +444,37 @@ def lint(brief: dict, sources: list | None = None) -> int:
                     f"{max([words(o.get('title') or '') for o in brief.get('options') or []] or [0])}"
                     f" words of {LIMIT['option.title.words']}")
 
-    # ---- a part's summary: the one thing behind a fold that is measured
+    # ---- a part's two lines: the one thing behind a fold that is measured
     #
     # Length and plainness are separate rules, because one is fixed by cutting and the other by
     # moving a name into the part's files, which are listed beside the summary already.
+    #
+    # Three rules over two fields, and the one-line form needs two of them for the reason the
+    # label does: a part with NO one-line form and one that runs long fail differently and are
+    # fixed by different edits -- and the first is the one the page cannot work around. The row
+    # it draws is a single line that never wraps, so with nothing to draw there it falls back to
+    # the summary cut off mid-sentence.
     parts = brief.get("parts") or []
+    no_one_line = [i for i, p in enumerate(parts, 1) if not (p.get("one_line") or "").strip()]
+    L.check(not no_one_line, "parts.one_line",
+            f"part{'s' if len(no_one_line) > 1 else ''} "
+            f"{', '.join(str(i) for i in no_one_line)} carr"
+            + ("y" if len(no_one_line) > 1 else "ies")
+            + " no `one_line`. The Solution page draws the parts as a table, one row each, and "
+              "that row shows this line and not the summary: with nothing here it falls back to "
+              "the summary cut off mid-sentence. Say what the part does, in at most "
+              f"{LIMIT['part.one_line.words']} plain words",
+            measure=f"{len(parts) - len(no_one_line)} of {len(parts)} part(s) carry one")
+    over_one_line = [f"part {i}'s one-line form runs {words(p.get('one_line'))} words"
+                     for i, p in enumerate(parts, 1)
+                     if words(p.get("one_line")) > LIMIT["part.one_line.words"]]
+    L.check(not over_one_line, "parts.one_line_length",
+            "; ".join(over_one_line[:3]) + f" against {LIMIT['part.one_line.words']}. The row is "
+            "a single line and it never wraps: say what the part does, and leave the longer text "
+            "to the `summary` the reader opens the row to see",
+            measure=f"longest of {len(parts)} part(s): "
+                    f"{max([words(p.get('one_line')) for p in parts] or [0])} words of "
+                    f"{LIMIT['part.one_line.words']}")
     over_parts = [f"part {i} runs {words(p.get('summary'))} words"
                   for i, p in enumerate(parts, 1)
                   if words(p.get("summary")) > LIMIT["part.summary.words"]]
@@ -453,16 +485,20 @@ def lint(brief: dict, sources: list | None = None) -> int:
             measure=f"longest of {len(parts)} part(s): "
                     f"{max([words(p.get('summary')) for p in parts] or [0])} words of "
                     f"{LIMIT['part.summary.words']}")
-    unplain_parts = [(i, code_names(p.get("summary") or ""))
-                     for i, p in enumerate(parts, 1) if code_names(p.get("summary") or "")]
+    # Both of a part's lines, in one rule: the fix is the same edit either way -- move the name
+    # into the files listed beside them -- and a one-line form that reads as a class name is the
+    # failure this rule exists for drawn in the one place the page cannot hide.
+    unplain_parts = [(i, field, code_names(p.get(field) or ""))
+                     for i, p in enumerate(parts, 1)
+                     for field in ("one_line", "summary") if code_names(p.get(field) or "")]
     L.check(not unplain_parts, "parts.plain",
-            "; ".join(f"part {i}'s summary carries {', '.join(names)}"
-                      for i, names in unplain_parts[:3])
-            + ". A part lists its files, so the summary does not need to name them: say what was "
+            "; ".join(f"part {i}'s {'one-line form' if field == 'one_line' else 'summary'} "
+                      f"carries {', '.join(names)}"
+                      for i, field, names in unplain_parts[:3])
+            + ". A part lists its files, so neither line needs to name them: say what was "
               "built in the words the headline is written in. This is the top layer's plain rule, "
-              "applied to the one summary that is read beside six others",
-            measure=f"{len(parts)} part summar{'y' if len(parts) == 1 else 'ies'}, no class "
-                    "name, path or `::`")
+              "applied to the two lines that are read beside six other parts'",
+            measure=f"{2 * len(parts)} part line(s), no class name, path or `::`")
 
     # ---- the one small supporting table, when the brief holds one
     #
@@ -631,6 +667,7 @@ def shaped(brief: dict, sources: list | None = None) -> None:
         if not isinstance(p, dict):
             die(f"`parts[{i}]` is {type(p).__name__}, not an object with a `title` and a "
                 "`summary`. A part is a row of the Solution page. Nothing was checked.")
+        text(p.get("one_line"), f"parts[{i}].one_line")
         text(p.get("summary"), f"parts[{i}].summary")
 
     if sources is not None:

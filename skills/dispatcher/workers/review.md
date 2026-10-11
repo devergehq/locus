@@ -307,8 +307,8 @@ Review Desk's: that rule is about `review-desk`, and these are two different abs
 
 **Do not lint write 1.** A problem half is missing the change half *by design*, and the linter
 cannot tell that from a brief that forgot it: on a problem half written exactly as write 1 asks,
-**4 of its 22 checks fail** — the absent headline, the absent after flow, the problems marked on no
-after box, and the problems with no `now_fixed`. (22, not 24: two headline checks are skipped when
+**4 of its 24 checks fail** — the absent headline, the absent after flow, the problems marked on no
+after box, and the problems with no `now_fixed`. (24, not 26: two headline checks are skipped when
 there is no headline to measure.) Every one of those four is a slot write 1 is **not allowed** to
 carry. The gate belongs on write 2, where the whole brief is in hand.
 
@@ -353,12 +353,12 @@ put --help`, which is complete: read it rather than guessing at a nesting.
 | **Looked up** | `blind_pass.looked_up` | 2 |
 | **Counts** | **no brief field.** The one that fits goes in layer 3's --detail; the rest are that layer's facts | 2 |
 | **Provenance** | `provenance` | 2 |
-| **Parts** | `parts[].title`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
+| **Parts** | `parts[].title`, `.one_line`, `.summary`, `.fixes[]`, `.files[].path`, `.lines_added`, `.lines_removed`, `.in_diff` | 2 |
 | **Choices** | `open_choices[].left_open`, `.chosen`, `.why`, `.departs_from_ticket`, `.finding_seq` | 2 |
 | **Disagreements** | `disagreements[].description_says`, `.code_does`, `.finding_seq` | 2 |
 | **Verdict** | `approach_verdict` | 2 |
 
-Seven things that table does not say on its own:
+Eight things that table does not say on its own:
 
 - **`proposed_by` takes `ticket`, `blind_pass` or `both`**, and defaults to `ticket`, which is
   the honest answer for an option already on the record rather than a convenience. The next
@@ -390,6 +390,13 @@ Seven things that table does not say on its own:
 - **A part may claim a file the pull request never touched** — `in_diff: false`, and such a file
   has no lines added or removed. Without it a finding in a file outside the diff belongs to no
   part.
+- **`parts[].one_line` is DEV-919's, so a Review Desk that predates it refuses the whole
+  document.** The refusal names the part's own members, which is the first of the three cases
+  under "A `brief put` refused for an unknown field" below: drop `one_line` from every part and
+  write the same document again. Nothing else about the brief changes, and that page then draws
+  the summary cut to a line, which is what it did before the field existed. Write the field
+  anyway — a part with none fails `review-craft`'s lint, and every Review Desk from DEV-919 on
+  takes it.
 
 ### The blind pass's brief, and its three states
 
