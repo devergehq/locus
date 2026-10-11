@@ -810,9 +810,9 @@ yours, and until something reports it the request stays on its list.
 
 **It is not a sign-off, and it is not permission to post.** Review Desk ranks the request above
 its "the draft is ready, nobody's turn" rule, so this reaches you *while the draft is still
-waiting on your principal*. Nothing about the draft has moved. The paragraph above governs
-unchanged: you post when Review Desk reports the draft approved, and never because a ticket was
-asked for.
+waiting on your principal*. Nothing about the draft has moved, and the rule that the only
+approval you may act on is one Review Desk reported is untouched: you post when it reports the
+draft approved, and never because a ticket was asked for.
 
 1. **Check it is not already filed.** `review-desk review show --review <id> --json` →
    `review.nit_ticket_status`. `filed` with a `review.nit_ticket_id` means a session before you
@@ -850,9 +850,9 @@ asked for.
      then fix what it names. An unpaired fold swallows the rest of a ticket and the write still
      returns success. The path is written out for the reason the brief's linter has its written
      out: your working directory is the repository under review, and a bare filename exits 2
-     having checked nothing. `--key` reads Linear and needs `LINEAR_API_KEY` in your environment; without it,
-     lint the draft you are about to save — `issue_lint.py draft.md` — and say in your report
-     that the saved ticket was not the thing checked.
+     having checked nothing. `--key` reads Linear and needs `LINEAR_API_KEY` in your
+     environment; without one, lint the draft you are about to save — `issue_lint.py draft.md`
+     — and say in your report that the saved ticket was not the thing checked.
 5. **Report the id back**: `review-desk review nit-ticket --review <id> --ticket <NEW-ID>`.
    `--ticket` is required and there is no form of the command that asks for a ticket nobody has
    filed. This is what clears the item and what moves the button on the draft page from
