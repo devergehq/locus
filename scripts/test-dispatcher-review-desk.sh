@@ -1329,6 +1329,17 @@ echo '{"pr_status":"open","pr":{"repo":"acme/portal","number":418}}' \
   > "$inst/runtime/watch/gh-portal-418.json"
 rc=$(run "$disp" poll 1)
 ok "  an open pull request keeps it with its session"  "$(count review_desk)" 0
+# A cursor another process was half-way through writing. `.get` on a list is an AttributeError
+# inside a poll tick, so the type is tested rather than trusted.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '[]' > "$inst/runtime/watch/gh-portal-418.json"
+rc=$(run "$disp" poll 1)
+ok "  a cursor that is not an object keeps it too"     "$(count review_desk)" 0
+ok "  and the tick exits clean"                        "$rc" 0
 # And no other kind gets the bypass: a draft_approved on the same dead-eared session stays put,
 # because nothing about a draft can arrive after the merge.
 instance '{"mode":"auto"}'

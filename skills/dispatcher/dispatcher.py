@@ -1422,7 +1422,13 @@ class Poller:
         """
         if kind != "nits_to_ticket" or entry.get("status") != "done":
             return False
-        return read_json(watch_dir() / f"{key}.json", {}).get("pr_status") in PR_CLOSED
+        # `isinstance` for the same reason the ids above are type-tested: a cursor is a file on
+        # disk that another process writes, and `.get` on a half-written one that parsed as a
+        # list is an AttributeError in the middle of a poll tick. A cursor that will not parse
+        # at all is the exposure every other `read_json` in this file has and is caught by
+        # `tick`'s per-section guard — loud, and it never stops the poller.
+        cursor = read_json(watch_dir() / f"{key}.json", {})
+        return isinstance(cursor, dict) and cursor.get("pr_status") in PR_CLOSED
 
     def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
         """Name, once per interval, a kind of work this file cannot place. Blocks nothing.
