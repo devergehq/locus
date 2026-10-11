@@ -142,15 +142,55 @@ read anything else.
 states are `pending`, `running`, `done`, `waiting_on_you`, `failed` and `skipped`, and writing
 one twice is the same as writing it once, so you can report progress without reading first.
 
-| Layer | Which of your steps | `--detail` is |
-|---|---|---|
-| 1 lint | step 8's test, static-analysis and formatter runs, and step 11's `pr_lint` | what they said: `passed`, `3 failures`, `description 2.4x budget` |
-| 2 understand | step 2 | left to the store: **each** of your two brief writes settles or unsettles this layer |
-| 3 alternatives | step 3's blind options pass and step 4's table | `7 options, 4 not on the ticket, C built` |
-| 4 solution map | step 5 | your verdict in a phrase |
-| 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` |
-| 6 draft | step 12's draft and step 13's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed |
-| 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — |
+| Layer | Which of your steps | `--detail` is | Its facts are |
+|---|---|---|---|
+| 1 lint | step 8's test, static-analysis and formatter runs, and step 11's `pr_lint` | `3 failures, 1 fixed` | Tests · `142 run, 3 failed` / Static analysis · `clean` / Formatter · `2 files rewritten` / Description · `2.4x its budget` |
+| 2 understand | step 2 | left to the store: **each** of your two brief writes settles or unsettles this layer | **none, and none from you.** Facts arrive through `layer set`, which writes a state, and you never write this layer's state at all |
+| 3 alternatives | step 3's blind options pass and step 4's table | `9 options, C built` | Options · `9: 4 ticket, 6 blind` / On both · `3` / Blind pick · `C, same as built` / Not assessed · `2 of 27 cells` / Base commit · `a1b2c3d, exported` |
+| 4 solution map | step 5 | `right shape, one departure` | Parts · `7, one outside the diff` / Problems fixed · `3 of 3` / Choices · `3 open, 1 departs` / Disagreements · `2, both raised` |
+| 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` | Findings · `6 raised, 2 blockers` / Lenses · `8 applied` / Second lens · `2 findings, 1 agreed` / Held back · `1, ticketed` / Suppressed · `3, with reasons` |
+| 6 draft | step 12's draft and step 13's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed | Blocks · `9: 6 findings, 3 prose` / Visible words · `118 of 150` / Lint · `passes` / Waiting on · `you, in the dashboard` |
+| 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — | — |
+
+**Every example in that table is invented.** It is the shape and the length, not a record of a
+review that happened.
+
+### A step's note is four words, and the rest is facts
+
+**`--detail` is at most 4 words and states the outcome.** It is one line of a map: the page draws
+it beside the step's name on a single line that never wraps, so a sentence is cut off at the
+column's edge rather than read. Four words is not a style preference — a reader scanning seven
+steps wants to know what each one *came to*, and "what I was doing" is not that.
+
+| | |
+|---|---|
+| ✗ | A note of 34 words saying what you had read, what you were still weighing and what you meant to do next — eleven lines deep in a column about 150 pixels wide, which a reader cannot tell they were meant to read. |
+| ✓ | `9 options, C built` |
+
+**Everything the note used to carry goes in the step's `facts`: at most 5 of them, each a label of
+at most 3 words and a value of at most 6 words.** The page holds them on a card that opens over
+the step and moves nothing below it, two columns, label then value — so a fact is read when it is
+asked for and costs nothing when it is not. The store enforces no length on either, which is why
+the numbers are here.
+
+The division is by *kind*, not by what would not fit: the `detail` is the outcome, and a fact is
+one measurement that supports it. A fact whose value is a sentence is a note that has moved rather
+than been shortened.
+
+**Send the facts only when the installed `review-desk` takes them.** A step's `facts`, and a
+source's `status` and `note` below, arrived with DEV-917; an older install has the rest of this
+brief and not those three. **Probe the command, never the version number** — a version string tells
+you what was built, and what you need to know is what this binary accepts:
+
+```sh
+review-desk layer set --help     # does it name an option for a step's facts?
+```
+
+If it does not, write `--state` and `--detail` exactly as before, say nothing about it to anyone,
+and carry on: a four-word `detail` is the larger half of this change and it needs no new field at
+all. Read the option's own name off that help rather than from here, and the day the flag is
+renamed this brief does not go stale. **A review must never fail to be prepared because a field is
+missing** — that is the same rule as "Review Desk absent is silent", applied one field down.
 
 Three things that are easy to get wrong here:
 
@@ -244,8 +284,8 @@ Review Desk's: that rule is about `review-desk`, and these are two different abs
 
 **Do not lint write 1.** A problem half is missing the change half *by design*, and the linter
 cannot tell that from a brief that forgot it: on a problem half written exactly as write 1 asks,
-**4 of its 16 checks fail** — the absent headline, the absent after flow, the problems marked on no
-after box, and the problems with no `now_fixed`. (16, not 18: two headline checks are skipped when
+**4 of its 22 checks fail** — the absent headline, the absent after flow, the problems marked on no
+after box, and the problems with no `now_fixed`. (22, not 24: two headline checks are skipped when
 there is no headline to measure.) Every one of those four is a slot write 1 is **not allowed** to
 carry. The gate belongs on write 2, where the whole brief is in hand.
 
@@ -253,7 +293,7 @@ carry. The gate belongs on write 2, where the whole brief is in hand.
 
 | Step | What saves it |
 |---|---|
-| 2 Understand | `brief put` write 1 for the problem half, write 2 for the rest. Then `brief problem-statement` reads back what step 3 is given |
+| 2 Understand | `brief put` write 1 for the problem half, write 2 for the rest. Then `brief problem-statement` reads back what step 3 is given. `provenance sources` for what you read it *from* |
 | 3 Blind options pass | `brief put` write 2 — `blind_pass`, and `proposed_by` on the options it raised. `layer set --layer 3 --state running` while it runs |
 | 4 Alternatives | `brief put` write 2 — `options[]` with their verdicts. `layer set --layer 3 --state done` with the counts |
 | 5 Solution | `brief put` write 2 — `parts`, `open_choices`, `disagreements`, `approach_verdict`. `layer set --layer 4`. `finding add` first for anything a disagreement names, and `brief_lint.py` before the write |
@@ -271,6 +311,7 @@ put --help`, which is complete: read it rather than guessing at a nesting.
 | **The system** | `how_it_works_today` | **1** |
 | **Before** | `flow_before[][]`, with `flow_before_caption` | **1** |
 | **Problems** | `problems[].number` | **1** |
+| **Label** | `problems[].label` | **1** |
 | **Was wrong / now** — the was-wrong line | `problems[].was_wrong` | **1** |
 | **Headline** | `headline` | 2 |
 | **Supporting table** | `support_table.title`, `.columns[]`, `.rows[][]` | 2 |
@@ -364,6 +405,36 @@ An option the pass raised and the ticket did not is `blind_pass`. One **both** o
 `both`, which is the strongest thing the Alternatives page draws, so do not flatten it to
 `ticket` because the ticket got there first.
 
+### Where the understanding came from
+
+`review-desk provenance sources --review <id> --file sources.json` records what you read the
+problem from. The page draws them as a table — kind, reference, state, what it tells us, and the
+link — so each field is a column and **a sentence in `label` is a sentence in a column heading**.
+
+| Field | What goes in it | Length |
+|---|---|---|
+| `kind` | `ticket`, `description` or `comment` | — |
+| `label` | **the reference alone**: `ABC-231`, `PR #412`, `2 earlier comments` | a reference, not a sentence |
+| `status` | the ticket's state as you read it: `Backlog`, `In Progress`. Nothing else has one | one or two words |
+| `note` | what it tells us | at most 12 words |
+| `link` | where to follow it. Review Desk never fetches it | — |
+
+| | |
+|---|---|
+| ✗ | `label`: "Ticket ABC-231, which asks for the import to survive one bad file and is still in the backlog" — 18 words, and the state and the point are buried in it. |
+| ✓ | `label`: `ABC-231` · `status`: `Backlog` · `note`: `asks that one bad file not stop the night` |
+
+**The code is not a source, and there is no kind for it.** On the review that forced this rule the
+base commit was recorded as a `comment`, which put a 40-character hexadecimal run in a column of
+things a person reads. Where the code was read, that belongs in the brief's `provenance` sentence —
+"the ticket, the description, and the code at `a1b2c3d`" — which is where every other step already
+looks for it.
+
+**`status` and `note` are DEV-917's, so an older install refuses the whole document for an unknown
+field.** That refusal is exit 1 and it loses every source with it, so if it comes: drop those two
+keys from each source, write the document again, and say so once to the Dispatcher. The references
+are worth having without the notes.
+
 ### Whether the developer is asked
 
 **`brief_gate` in your dispatch block decides whether the developer is asked about write 2**, and
@@ -378,6 +449,17 @@ Write 1's reason is not a gate decision and must not read like one. Begin it `pr
 — ` and say that the full brief follows at step 5. Somebody will one day ask which reviews
 skipped the developer's confirmation and why; that phrase is what lets them tell your
 scaffolding from a real waiver.
+
+**It is one short clause, and the whole of it is one line.** The field is drawn beside the brief's
+own state, where a paragraph pushes the state off the screen — and there is nothing to explain:
+the brief is half written, which is a fact about the brief rather than a judgement about the
+developer. `problem half only — the full brief follows at step 5` is ten words and is the whole
+reason. Write that.
+
+| | |
+|---|---|
+| ✗ | A 52-word reason restating which fields are present, which are still null, why `now_fixed` is nullable, and what the blind pass will be given. |
+| ✓ | `problem half only — the full brief follows at step 5` |
 
 **A `brief put` refused for an unknown field is a Review Desk older than the structured brief**,
 not a broken one. Write 1 is the first of these commands you call, so you find out before you

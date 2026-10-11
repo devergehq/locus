@@ -356,6 +356,17 @@ section is where the argument goes. `review_lint.py` fails a table cell over 140
 an unbroken token over 40, and budgets each finding section the way it budgets a thread. It warns,
 without failing, on a body diagram that is not under a finding or Problem fit.
 
+**A title is at most 12 words, and it is not the claim.** The claim is the sentence of mechanism
+under **What**; the title is what the heading, the index row and the record's own list of findings
+are read by, so it has to survive being read beside eleven others. Where a record holds the
+review, the title is a field of its own and a review that writes none leaves the page to fall back
+on the whole claim as a heading. Say what goes wrong, in a line.
+
+| | |
+|---|---|
+| ✗ | No title at all, so the heading is the claim: 56 words of mechanism, condition and consequence, wrapped over four lines. |
+| ✓ | `a correction that throws after the reopen strands the invoice OPEN` — 11 words, and the mechanism is still under **What**. |
+
 **A section heading is `### {Severity} · {id} · {title}` and nothing else — no glyph.** The word
 already carries the severity — "Casing and formatting" below says so outright — and the glyph was
 the only thing in that heading a reader did not need. The id is **`F{seq}`**, the finding's number: where
@@ -485,6 +496,14 @@ would build instead.
 - Bold **only** severity labels and the one-sentence verdict. Bold inside a paragraph stops working
   when everything is bold.
 - Backticks for every identifier, path and value. `file.ts:68`, linked to the line where you can.
+  **This holds in every prose field a session writes, not only in a posted review** — a class, a
+  function, a path, a route or a config key is in backticks in a brief's detail, an option's
+  arguments, a flow box's note, a finding's claim, evidence and title, and a source's note. The
+  pages draw each backtick pair as inline code, so an unbacked name reads as prose and a half-backed
+  one reads as a typing slip. Stated here once, for every field, because a rule repeated per field
+  is a rule that drifts per field. ✗ a note that writes staged_prices bare · ✓ one that writes
+  it as `staged_prices`. The fields that carry **no** name at all are a shorter list and
+  `understand.md` holds it: a brief's top layer, and a part's summary.
 - Numbers, not adjectives: "1 in 81 draws", not "quite likely".
 - No emoji beyond the four severity glyphs and the 🤖 header. **The word carries the severity, not
   the glyph** — emoji-only schemes (Devin) and image badges (Greptile) can't be searched, filtered or
@@ -1024,6 +1043,14 @@ marketing, uncited; and "200–400 LOC" is a distortion of the Cisco study's "un
 exceed 400", whose upper bound rests on the unsourced 60-minute claim.
 
 ## Revision
+
+**11 October 2026.** Two things stated, neither of them new behaviour. A finding's **title is at
+most 12 words** and is not the claim: DEV-891 gave the title a field and a composed heading but no
+length, and a review that wrote none left the page heading a finding with the whole claim. The
+example that shipped with the heading runs 11 words and is unchanged. And the backticks bullet
+under "Casing and formatting" now says it holds in **every** prose field a session writes, not only
+in a posted review, because the pages draw each backtick pair as inline code — one rule for every
+field rather than one per field to drift.
 
 **10 October 2026.** One paragraph added, under the body's shape: **Problem fit** carries 2–3
 sentences and may carry the before-and-after diagram, and it is the only part of the
