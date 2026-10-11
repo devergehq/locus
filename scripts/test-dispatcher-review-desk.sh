@@ -1751,7 +1751,9 @@ ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than 
 ok "  reading how much older out of the refusal"    "$(grep -c 'how much older is in the refusal' "$brief_md")" 1
 ok "  one field behind: drop it and write again"    "$(grep -c 'drop that one field and write again' "$brief_md")" 1
 ok "  older than the brief: the five old fields"    "$(grep -c 'older than the structured brief itself' "$brief_md")" 1
-ok "  and the two are not to be confused"           "$(grep -c 'Do not read the first case as the second' "$brief_md")" 1
+ok "  and the cases are not to be confused"        "$(grep -c 'Do not read one of the first two as the third' "$brief_md")" 1
+ok "  with the list read for the field's own level" "$(grep -c 'the list for the level the field sits at' "$brief_md")" 1
+ok "  both refusal shapes quoted, nested and top"  "$(grep -c 'unknown field .blind_pass_state., expected one of' "$brief_md")" 1
 ok "  with the measured example that forced it"     "$(grep -c 'dropping .label. from the' "$brief_md")" 1
 
 printf '\n  the brief is linted before it is sent, and never before that\n'

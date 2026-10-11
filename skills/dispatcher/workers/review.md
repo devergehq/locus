@@ -492,14 +492,25 @@ names the field it did not know *and the whole list it does* know, like this:
 unknown field `label`, expected one of `number`, `was_wrong`, `now_fixed`, `detail_title`, …
 ```
 
-Two cases, and they are a long way apart:
+**The list it names is the list for the level the field sits at**, which is the thing to read it
+for. A field inside a problem, an option or a source is refused with that object's **own** members
+named; a field at the top of the brief is refused with the brief's own fields named. Both measured
+on 11 October 2026, against the same build:
 
-| The accepted list it names | What that install is | Do |
+```
+unknown field `label`, expected one of `number`, `was_wrong`, `now_fixed`, …
+unknown field `blind_pass_state`, expected one of `problem`, `diagram`, … `flow_before`, `problems`, …
+```
+
+So three cases, and only the last is the one that costs you the brief:
+
+| What the refusal names | What that install is | Do |
 |---|---|---|
-| holds `flow_before`, `problems`, `support_table` | one field behind: it has the structured brief and not the newest slot | **drop that one field and write again.** Nothing else about the brief changes |
-| holds only `problem`, `diagram`, `options`, `approach_verdict`, `provenance` | older than the structured brief itself | write the brief the old way after step 5 — those five fields — fill step 3's template by hand, and carry on |
+| the other members of the object the field sits in | one field behind inside a slot it already has | **drop that one field and write again.** Nothing else about the brief changes |
+| the brief's own fields, **with** `flow_before` and `problems` among them | one top-level field behind | the same: drop it and write again |
+| the brief's own fields, **without** `flow_before` or `problems` | older than the structured brief itself | write the brief the old way after step 5 — `problem`, `options` with their two arguments, `approach_verdict`, `provenance` — fill step 3's template by hand, and carry on |
 
-**Do not read the first case as the second.** `problems[].label` is the live example: an install
+**Do not read one of the first two as the third.** `problems[].label` is the live example: an install
 from before it existed refuses write 1, which is the first of these commands you call, so you meet
 this before you have dispatched anything. Measured on 11 October 2026 — dropping `label` from the
 three problems and writing the same document again was accepted, with all three problems stored.
