@@ -399,10 +399,13 @@ print(r.unrowed(['### Should \u00b7 the description says nothing about it'], [ro
 echo "The marker a session joins a comment to its finding by (DEV-929)"
 
 # Two findings on one line is ordinary -- a Should about what a line does, a Nit about what it
-# is called -- so `path` and `line` cannot tell their threads apart, and Review Desk ends every
-# composed thread with `<!-- review-desk:F<seq> -->` to be joined on instead. The linter's part
-# of that bargain is not to CHARGE the marker: it renders as nothing, and `prose` measures what
-# a reader reads. Before this, each marker spent ~24 characters of a 700-character budget.
+# is called -- so `path` and `line` cannot tell their threads apart. Review Desk is ADDING
+# `<!-- review-desk:F<seq> -->` to the end of every composed thread to be joined on instead:
+# agreed for DEV-929 and not yet in their branch at 598c4df, which is why the fixture below
+# carries the marker rather than being harvested from the binary like the composed body above.
+# The linter's part of that bargain is not to CHARGE it: a comment renders as nothing, and
+# `prose` measures what a reader reads. Measured before the change: each marker spent ~24
+# characters of a 700-character single-finding budget.
 ok "an HTML comment is not charged as prose"    "$(python3 -c "
 import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
 body = '> **Should · F3** — a title · \`Open\`\n>\n> **What** · x.\n\n<!-- review-desk:F3 -->'
