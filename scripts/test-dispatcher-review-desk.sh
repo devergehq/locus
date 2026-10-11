@@ -89,6 +89,28 @@ esac
 # validation instead.
 case "$1" in
   brief|finding) exec python3 "$RDWORK/rd_brief.py" "$@" ;;
+  # `harvest` and `draft show` answer from their own files, and from their own mode files, so a
+  # harvest can fail while `work list` answers. A WHOLE install that is broken or absent is
+  # $RDWORK/rd.mode above, and still governs both of these.
+  harvest)
+    case "$(cat "$RDWORK/rd.harvest.mode" 2>/dev/null || echo ok)" in
+      broken) echo '{"error":{"code":"gh_unreachable","message":"scripted harvest failure"}}'
+              exit 2 ;;
+      refused) echo '{"error":{"code":"not_found","message":"no such repository"}}'; exit 1 ;;
+      slow) sleep 3; echo '{"harvest":{"reviews":[]}}'; exit 0 ;;
+    esac
+    cat "$RDWORK/rd.harvest" 2>/dev/null || echo '{"harvest":{"reviews":[]}}'
+    exit 0 ;;
+  draft)
+    case "$(cat "$RDWORK/rd.draft.mode" 2>/dev/null || echo ok)" in
+      broken) echo '{"error":{"code":"cannot_open_database","message":"scripted"}}'; exit 2 ;;
+      # The ordinary answer for most of a review's life: `draft show` before `draft put`.
+      nodraft) echo '{"error":{"code":"not_found","message":"no draft for review 7"}}'; exit 1 ;;
+    esac
+    printf '{"draft":{"review_id":7,"status":"%s","event":"APPROVE","approved_at":1791520400,' \
+      "$(cat "$RDWORK/rd.draft.status" 2>/dev/null || echo drafting)"
+    printf '"body":"the approved body","lint":{}}}\n'
+    exit 0 ;;
 esac
 # mode ok: answer from a per-repository document if one exists, else the shared one.
 doc="$RDWORK/rd.work"
@@ -407,6 +429,8 @@ PY
   rm -f "$work/rd.work."* "$work/pr."*.json "$work/reviews.json"
   rm -f "$work/rd.brief."*.json "$work/rd.findings."* "$work/rd.state."* "$work/rd.layer2."*
   rm -f "$work/rd.parts"
+  rm -f "$work/rd.harvest" "$work/rd.harvest.mode" "$work/rd.draft.mode"
+  echo drafting > "$work/rd.draft.status"
 }
 
 D () { python3 "$disp" --instance "$inst" "$@"; }
@@ -506,6 +530,32 @@ elif scenario == "fill_absent":
     existing = json.loads(rest[0])
     added = m.fill_absent(section, existing, template)
     print(json.dumps({"added": sorted(added), "result": existing}))
+
+elif scenario == "watch_interval":
+    # The real instance config, with `limits` overridden by the second argument when given, so
+    # the default path and a configured one are the same call.
+    cfg = m.load_config()
+    if len(rest) > 1 and rest[1]:
+        cfg["limits"].update(json.loads(rest[1]))
+    print(m.watch_interval(cfg, {"draft_status": rest[0]} if rest[0] else {}))
+
+elif scenario == "full_due":
+    # `last_full` as a number of seconds ago, so "a pass is due again" is testable without one.
+    import time as clock
+    print(json.dumps(m.full_pass_due(clock.time() - float(rest[0]), m.load_config())))
+
+elif scenario == "watch_sleep":
+    # One real tick, then the interval `cmd_watch` would sleep after it: the two halves joined.
+    w = m.Watcher(rest[0], None, None)
+    w.tick(full=(rest[1] != "fast") if len(rest) > 1 else True)
+    print(json.dumps({"draft_status": w.state.get("draft_status"),
+                      "interval": m.watch_interval(m.load_config(), w.state)}))
+
+elif scenario == "rd_run":
+    # `review_desk_run`'s new `timeout`, against the stand-in's `slow` harvest.
+    state, _, detail = m.review_desk_run(m.review_desk_cfg(m.load_config()), *rest[1:],
+                                         timeout=int(rest[0]))
+    print(json.dumps({"state": state, "detail": detail}))
 
 elif scenario == "cfg":
     print(json.dumps(m.review_desk_cfg(json.loads(rest[0]))))
@@ -635,8 +685,8 @@ ok "  carrying the Review Desk review id"              "$(says '"review_desk_id"
 ok "  the head commit as recorded"                     "$(says '"head_sha": "3f9c2ab"')" yes
 ok "  the pull request's state"                        "$(says '"pr_state": "open"')" yes
 ok "  and the dashboard link"                          "$(says 'reviews/1')" yes
-ok "  and it asked per repository served"              "$(grep -c -- '--repo acme/portal' "$work/rd.calls")" 1
-ok "  and nothing else"                                "$(grep -c -- '--repo' "$work/rd.calls")" 1
+ok "  and it asked per repository served"              "$(grep -c '^work list .*--repo acme/portal' "$work/rd.calls")" 1
+ok "  and nothing else"                                "$(grep -c '^work list .*--repo' "$work/rd.calls")" 1
 ok "  the tick exits clean"                            "$rc" 0
 
 # Two repositories: the config's map and one learned from a ledger entry.
@@ -644,8 +694,8 @@ instance '{"mode":"auto"}'
 put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
 work_doc review_requested 1 acme/portal 412
 rc=$(run "$disp" poll 1)
-ok "a repo from the ledger is polled too"              "$(grep -c -- '--repo acme/billing' "$work/rd.calls")" 1
-ok "  alongside the one from the config"               "$(grep -c -- '--repo acme/portal' "$work/rd.calls")" 1
+ok "a repo from the ledger is polled too"              "$(grep -c '^work list .*--repo acme/billing' "$work/rd.calls")" 1
+ok "  alongside the one from the config"               "$(grep -c '^work list .*--repo acme/portal' "$work/rd.calls")" 1
 
 instance '{"mode":"auto"}'
 python3 - "$inst/config.json" <<'PY'
@@ -656,6 +706,8 @@ p.write_text(json.dumps(c, indent=2))
 PY
 rc=$(run "$disp" poll 1)
 ok "the template's OWNER/REPO placeholder is not asked" "$(grep -c -- '--repo' "$work/rd.calls")" 0
+# Both calls that take one, named: `work list` and the harvest below ask per repository, and
+# the placeholder must reach neither.
 ok "  so an unedited instance says nothing"            "$(count review_desk)" 0
 
 printf '\n  the three kinds that resume, and the one that does not\n'
@@ -789,6 +841,155 @@ ok "  and exits clean"                                 "$rc" 0
 no_sessions
 
 # =============================================================================================
+printf '\nThe harvest -- the poller runs it, per repository served (DEV-931)\n'
+# `review-desk harvest` reads a posted review's replies, resolved threads and changed lines back
+# from GitHub. It existed and nothing called it. Nothing here runs a real harvest: the stand-in
+# answers from $RDWORK/rd.harvest, and the real call would reach GitHub and the live store.
+
+# harvested <replies> <resolved> <code_changed>: what the stand-in's harvest reports recording.
+harvested () {
+  printf '{"harvest":{"reviews":[{"review_id":7,"repo":"acme/portal","pr":412,"round":1,' >  "$work/rd.harvest"
+  printf '"replies_recorded":%s,"threads_resolved_recorded":%s,"code_changed_recorded":%s,' \
+    "$1" "$2" "$3"                                                                         >> "$work/rd.harvest"
+  printf '"already_recorded":0}]}}\n'                                                      >> "$work/rd.harvest"
+}
+# age_marker <mark> [secs]: push one `due()` marker that far into the past, 100000s by default.
+# The clock, rather than a sleep: an interval is a number this test should not have to wait out.
+# The seconds matter for the rotation case below, where two marks must differ in age.
+age_marker () {
+  python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
+s['emitted'][sys.argv[2]] -= int(sys.argv[3])
+p.write_text(json.dumps(s))" "$inst/runtime/poll-state.json" "$1" "${2:-100000}"
+}
+harvests () { grep -c "^harvest --repo $1 --json" "$work/rd.calls" 2>/dev/null || true; }
+
+instance '{"mode":"auto"}'
+work_doc review_requested 1 acme/portal 412
+rc=$(run "$disp" poll 1)
+ok "the poll harvests the repository it serves"        "$(harvests acme/portal)" 1
+ok "  and exits clean"                                 "$rc" 0
+ok "  and says nothing, having recorded nothing"       "$(count harvest)" 0
+rc=$(run "$disp" poll 2)
+ok "two more ticks inside the interval harvest nothing" "$(harvests acme/portal)" 1
+age_marker 'harvest|acme/portal'
+rc=$(run "$disp" poll 1)
+ok "a tick after the interval harvests again"          "$(harvests acme/portal)" 2
+
+printf '\n  the turn goes to whichever repository has waited longest\n'
+# Not the first one that is due in sorted order. `due()` stamps absolute time, so that version
+# gave the one slot a tick has to the same early names for ever: five repositories at the
+# shipped 300s poll and 900s interval harvested the first three 66-68 times over sixteen hours
+# and the last two NOT ONCE. Three repositories, three ticks, each exactly once.
+instance '{"mode":"auto"}'
+put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
+put gh-store-5 mode=review status=lost repo=acme/store number=5 --by test
+rc=$(run "$disp" poll 3)
+ok "three ticks harvest acme/billing once"             "$(harvests acme/billing)" 1
+ok "  acme/portal once"                                "$(harvests acme/portal)" 1
+ok "  and acme/store once"                             "$(harvests acme/store)" 1
+rc=$(run "$disp" poll 2)
+ok "two more ticks harvest none of them again"          "$(grep -c '^harvest' "$work/rd.calls")" 3
+# TWO due at once, with different ages, which is what discriminates. Three repositories over
+# three back-to-back ticks pass on the starving sweep too -- inside one interval it also skipped
+# a repository it had already marked -- and so does aging the only repository that is due, since
+# "first in the sort" and "oldest mark" then name the same one. `acme/store` sorts LAST and has
+# waited longest; the sweep this replaced would have taken `acme/billing`.
+age_marker 'harvest|acme/billing' 1000
+age_marker 'harvest|acme/store' 100000
+rc=$(run "$disp" poll 1)
+ok "the oldest mark takes the tick, not the first due"  "$(harvests acme/store)" 2
+ok "  and the other due one waits its turn"             "$(harvests acme/billing)" 1
+ok "  and the one that is not due is untouched"         "$(harvests acme/portal)" 1
+rc=$(run "$disp" poll 1)
+ok "which it gets on the tick after"                    "$(harvests acme/billing)" 2
+
+# One ATTEMPT per tick, so two repositories take two ticks. Oldest first, so billing goes first.
+instance '{"mode":"auto"}'
+put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
+rc=$(run "$disp" poll 1)
+ok "one tick harvests one repository"                  "$(harvests acme/billing)" 1
+ok "  and leaves the other for the next tick"          "$(harvests acme/portal)" 0
+rc=$(run "$disp" poll 1)
+ok "the next tick harvests the other"                  "$(harvests acme/portal)" 1
+ok "  and not the first again"                         "$(harvests acme/billing)" 1
+
+instance '{"mode":"auto"}'
+python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); c = json.loads(p.read_text())
+c['allele']['repo_project_map'] = {'OWNER/REPO': 'your-project'}
+p.write_text(json.dumps(c, indent=2))" "$inst/config.json"
+rc=$(run "$disp" poll 1)
+ok "the template's placeholder repo is not harvested"  "$(grep -c '^harvest' "$work/rd.calls")" 0
+
+instance '{"mode":"off"}'
+rc=$(run "$disp" poll 2)
+ok "mode off runs no harvest"                          "$(grep -c '^harvest' "$work/rd.calls")" 0
+ok "  and says nothing about one"                      "$(count harvest)" 0
+
+instance '{"mode":"auto"}'
+hide
+rc=$(run "$disp" poll 2)
+ok "no binary under auto is silent about the harvest"  "$(count harvest_failed)" 0
+ok "  and still exits clean"                           "$rc" 0
+show
+instance '{"mode":"on"}'
+hide
+rc=$(run "$disp" poll 3)
+ok "no binary under on is loud once per interval"      "$(count '"event": "harvest_failed"')" 1
+ok "  naming the state absent"                         "$(says '"state": "absent"')" yes
+ok "  and still exits clean"                           "$rc" 0
+show
+
+printf '\n  a harvest that fails is reported once and stops nothing\n'
+instance '{"mode":"auto"}'
+work_doc review_requested 1 acme/portal 412
+echo broken > "$work/rd.harvest.mode"
+rc=$(run "$disp" poll 1)
+ok "a broken harvest emits one harvest_failed"         "$(count '"event": "harvest_failed"')" 1
+ok "  naming the state"                                "$(says '"state": "broken"')" yes
+ok "  and quoting Review Desk's own reason"            "$(says gh_unreachable)" yes
+ok "  and the repository it was asked about"           "$(says '"repo": "acme/portal"')" yes
+ok "  the tick exits clean"                            "$rc" 0
+ok "  the work the same tick found is still emitted"   "$(count '"event": "review_desk_requested"')" 1
+ok "  and the tick still completed"                    "$([ -f "$inst/runtime/poller-heartbeat" ] && echo yes || echo no)" yes
+rc=$(run "$disp" poll 2)
+ok "two more ticks do not repeat it"                   "$(count '"event": "harvest_failed"')" 0
+age_marker 'harvest|acme/portal'
+echo refused > "$work/rd.harvest.mode"
+rc=$(run "$disp" poll 1)
+ok "a refused harvest is reported too"                 "$(count '"event": "harvest_failed"')" 1
+ok "  as refused, not broken"                          "$(says '"state": "refused"')" yes
+
+printf '\n  what a harvest recorded is said once, and only when there is something\n'
+instance '{"mode":"auto"}'
+harvested 0 0 0
+rc=$(run "$disp" poll 1)
+ok "a harvest that recorded nothing says nothing"      "$(count harvest_recorded)" 0
+instance '{"mode":"auto"}'
+harvested 2 1 3
+rc=$(run "$disp" poll 1)
+ok "a harvest that recorded something says so"         "$(count '"event": "harvest_recorded"')" 1
+ok "  with the replies recorded"                       "$(says '"replies_recorded": 2')" yes
+ok "  the threads resolved"                            "$(says '"threads_resolved_recorded": 1')" yes
+ok "  the lines changed since"                         "$(says '"code_changed_recorded": 3')" yes
+ok "  and how many reviews it read"                    "$(says '"reviews": 1')" yes
+
+printf '\n  the harvest has its own timeout, because it is the one call that is not local\n'
+instance '{"mode":"auto"}'
+echo slow > "$work/rd.harvest.mode"
+rc=$(run "$disp" rd_run 1 harvest --repo acme/portal --json)
+ok "a harvest that outlasts its timeout is broken"     "$(says '"state": "broken"')" yes
+ok "  and says it did not answer in time"              "$(says 'did not answer in 1s')" yes
+ok "the constant is longer than the local one"         "$(python3 -c "
+import re
+src = open('$disp').read()
+print(int(re.search(r'^HARVEST_TIMEOUT = (\d+)', src, re.M).group(1))
+      > int(re.search(r'^REVIEW_DESK_TIMEOUT = (\d+)', src, re.M).group(1)))")" True
+
+# =============================================================================================
 printf '\nThe watcher -- the developer'"'"'s two acts, relayed to the session waiting\n'
 
 instance '{"mode":"auto"}'
@@ -800,7 +1001,7 @@ ok "  and emits nothing"                               "$(count draft_approved)"
 
 put gh-portal-412 review_desk_id=7 --by test
 rc=$(run "$disp" watch gh-portal-412 1)
-ok "an entry with a review id polls its own review"    "$(grep -c -- '--review 7' "$work/rd.calls")" 1
+ok "an entry with a review id polls its own review"    "$(grep -c '^work list .*--review 7' "$work/rd.calls")" 1
 ok "  and emits draft_approved"                        "$(count '"event": "draft_approved"')" 1
 ok "  on the first tick, not the second"               "$(says '"tick": 1')" yes
 ok "  with the draft link to approve at"               "$(says 'reviews/7/draft')" yes
@@ -849,6 +1050,121 @@ work_doc draft_approved 7 acme/portal 412
 rc=$(run "$disp" watch gh-portal-412 1)
 ok "off relays nothing, even with a review id"         "$(count review_desk)" 0
 ok "  and emits no draft_approved"                     "$(count draft_approved)" 0
+
+# =============================================================================================
+printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n'
+# The sign-off that posted 4m28s late was behind one `time.sleep(watch_interval_secs)`. What is
+# under test is which interval the watcher sleeps, and -- just as much -- what a fast pass is
+# allowed to ask: a shorter interval that also shortened `pull_request` would be 720 GitHub
+# calls an hour for every watcher holding a draft.
+
+# draft <status>: the status the stand-in's `draft show` answers with.
+draft () { echo "$1" > "$work/rd.draft.status"; }
+# limits <json>: merge keys into the throwaway instance's `limits` block.
+limits () {
+  python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); c = json.loads(p.read_text())
+c['limits'].update(json.loads(sys.argv[2]))
+p.write_text(json.dumps(c, indent=2))" "$inst/config.json" "$1"
+}
+# interval <draft_status> [limits-override]: what cmd_watch would sleep, in seconds.
+interval () { run "$disp" watch_interval "$1" "${2:-}" >/dev/null; cat "$work/out"; }
+# sleeps <key> [fast]: one real tick, then the interval it decided on. The LAST line, because
+# a tick emits its own events first -- and `watch_sleep` prints its answer last for that reason.
+sleeps () {
+  run "$disp" watch_sleep "$1" "${2:-full}" >/dev/null
+  tail -1 "$work/out" | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['interval'])"
+}
+# drafted <key> [fast]: the draft status that tick put in the cursor.
+drafted () {
+  run "$disp" watch_sleep "$1" "${2:-full}" >/dev/null
+  tail -1 "$work/out" | python3 -c "
+import json, sys
+print(json.load(sys.stdin)['draft_status'])"
+}
+drafts_asked () { grep -c '^draft show --review 7 --json' "$work/rd.calls" 2>/dev/null || true; }
+
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 review_desk_id=7 --by test
+draft ready
+ok "a draft waiting on the developer is asked about"   "$(sleeps gh-portal-412 >/dev/null; drafts_asked)" 1
+ok "  and the status it answered is in the cursor"     "$(drafted gh-portal-412)" ready
+ok "  so the next pass is 20 seconds away"             "$(sleeps gh-portal-412)" 20
+ok "  and 20 is what the code defaults it to"          "$(grep -c '^DRAFT_WATCH_INTERVAL_SECS = 20$' "$disp")" 1
+
+for status in drafting approved sent_back posted; do
+  draft "$status"
+  ok "a draft that is $status waits the usual interval" "$(sleeps gh-portal-412)" 300
+done
+
+draft ready
+ok "the shorter interval is a setting"                 "$(interval ready '{"draft_watch_interval_secs": 5}')" 5
+# A shorter interval that is longer than the one it replaces would be a setting that lies -- and
+# an instance that lengthened watch_interval_secs to spare an API budget must keep that.
+ok "  never longer than watch_interval_secs"           "$(interval ready '{"draft_watch_interval_secs": 600}')" 300
+ok "  a typo in it falls back to the default"          "$(interval ready '{"draft_watch_interval_secs": "soon"}')" 20
+ok "  and so does a zero, which would be a hot loop"   "$(interval ready '{"draft_watch_interval_secs": 0}')" 20
+ok "no draft status at all waits the usual interval"   "$(interval '')" 300
+
+printf '\n  what the fast pass may ask, which is Review Desk and nothing else\n'
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 review_desk_id=7 --by test
+draft ready
+: > "$work/gh.calls"
+rc=$(run "$disp" watch_sleep gh-portal-412 fast)
+ok "a fast pass asks GitHub nothing"                   "$(wc -l < "$work/gh.calls" | tr -d ' ')" 0
+ok "  and still reads Review Desk"                     "$(drafts_asked)" 1
+ok "  and the pull request too"                        "$(grep -c '^work list .*--review 7' "$work/rd.calls")" 1
+: > "$work/gh.calls"
+rc=$(run "$disp" watch_sleep gh-portal-412 full)
+ok "a full pass is the one that asks GitHub"           "$(grep -c 'api repos/acme/portal/pulls/412' "$work/gh.calls")" 1
+ok "a full pass is due when nothing has run"           "$(run "$disp" full_due 999999 >/dev/null; cat "$work/out")" true
+ok "  and not again until watch_interval_secs"         "$(run "$disp" full_due 0 >/dev/null; cat "$work/out")" false
+ok "  measured against that setting, not the short one" "$(run "$disp" full_due 301 >/dev/null; cat "$work/out")" true
+
+printf '\n  a watcher with nothing recorded, or Review Desk off, asks nothing\n'
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 --by test
+draft ready
+ok "an entry with no review id is not asked about"     "$(sleeps gh-portal-412 >/dev/null; drafts_asked)" 0
+ok "  and waits the usual interval"                    "$(sleeps gh-portal-412)" 300
+instance '{"mode":"off"}'
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 review_desk_id=7 --by test
+draft ready
+ok "mode off asks nothing"                             "$(sleeps gh-portal-412 >/dev/null; drafts_asked)" 0
+ok "  and waits the usual interval"                    "$(sleeps gh-portal-412)" 300
+
+printf '\n  the probe is silent: the call beside it is the one that is loud\n'
+# A review has no draft for most of its life, so `draft show` refusing is the ordinary answer
+# rather than news -- and a broken install is already a watch_error from `work list`, every tick.
+for mode in nodraft broken; do
+  instance '{"mode":"auto"}'
+  put gh-portal-412 mode=review status=active repo=acme/portal number=412 review_desk_id=7 --by test
+  echo "$mode" > "$work/rd.draft.mode"
+  rc=$(run "$disp" watch gh-portal-412 1)
+  ok "a $mode draft says nothing"                      "$(count '"section": "draft_wait"')" 0
+  ok "  and is no watch_error of its own"              "$(count '"event": "watch_error"')" 0
+  ok "  and waits the usual interval"                  "$(run "$disp" watch_interval '' >/dev/null; cat "$work/out")" 300
+done
+
+printf '\n  end to end: a real watch process sleeps the short interval\n'
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 review_desk_id=7 --by test
+draft ready
+limits '{"draft_watch_interval_secs": 1, "watch_interval_secs": 300}'
+: > "$work/gh.calls"
+started=$(date +%s)
+set +e; D watch gh-portal-412 --max-ticks 3 > "$work/out" 2>"$work/err"; rc=$?; set -e
+elapsed=$(( $(date +%s) - started ))
+ok "three passes at a 1s draft interval exit clean"    "$rc" 0
+ok "  and took under 20 seconds, not 600"              "$([ "$elapsed" -lt 20 ] && echo yes || echo no)" yes
+ok "  reporting three ticks"                           "$(says '"ticks": 3')" yes
+# One, from the first pass. The two fast ones asked GitHub nothing -- which is the whole
+# difference between this and a 720-call-an-hour watcher.
+ok "  with one GitHub call between them"               "$(wc -l < "$work/gh.calls" | tr -d ' ')" 1
 
 # =============================================================================================
 printf '\nThe posting check -- what makes posting once safe\n'
@@ -950,6 +1266,75 @@ import json, sys
 sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 print(json.loads((d.CODE_DIR / 'config.example.json').read_text())['review_desk'] == d.REVIEW_DESK_DEFAULTS)")" True
+
+printf '\n  doctor says what the two intervals are, and names one that is being ignored\n'
+# `positive_secs` has to be silent inside the loops -- a value that threw would respawn and run
+# with no sleep at all -- so `doctor` is where an operator learns their edit did nothing.
+intervals () { set +e; D doctor > "$work/out" 2>&1; set -e; grep '^. intervals' "$work/out" || true; }
+# limits_raw <json>: REPLACE the limits block, so a shape that is not an object can be tried.
+limits_raw () {
+  python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); c = json.loads(p.read_text())
+c['limits'] = json.loads(sys.argv[2])
+p.write_text(json.dumps(c, indent=2))" "$inst/config.json" "$1"
+}
+instance '{"mode":"auto"}'
+ok "doctor reports both intervals and their source"   "$(intervals | grep -c 'draft_watch_interval_secs 20s (default)')" 1
+ok "  and the harvest interval too"                   "$(intervals | grep -c 'harvest_interval_secs 900s (default)')" 1
+ok "  and passes"                                     "$(intervals | grep -c '^✓')" 1
+limits '{"harvest_interval_secs": 60}'
+ok "a configured interval is named as configured"     "$(intervals | grep -c 'harvest_interval_secs 60s (config)')" 1
+limits '{"harvest_interval_secs": "quarter-hourly"}'
+# Reported and NOT failed. SKILL.md's start-up step stops the Dispatcher on any cross, and a
+# typo in an interval whose default is already in force is not worth a dispatcher that will not
+# start -- nothing is misbehaving, a number is being ignored.
+ok "a value that is not seconds is named"             "$(intervals | grep -c 'IGNORED, and 900s used')" 1
+ok "  and does not fail doctor"                       "$(intervals | grep -c '^✓')" 1
+limits '{"harvest_interval_secs": 900, "draft_watch_interval_secs": 0}'
+ok "a zero is named too, being a hot loop"            "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+limits '{"draft_watch_interval_secs": true}'
+ok "and a true, which Python reads as 1 second"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+limits '{"draft_watch_interval_secs": "5"}'
+# One predicate, read by `doctor` and by the loops alike. An earlier version parsed a numeric
+# string in `positive_secs` and USED it while `doctor` called it ignored, so the operator was
+# told the opposite of what was happening by the command whose job is to tell them.
+#
+# `"5"` rather than `"20"`, and that is the assertion rather than a detail of it: quoted-20 and
+# the default-20 are the same number, so the version that parsed the string passed this too.
+ok "a quoted number is ignored, and said to be"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+ok "  and the loop ignores it as well"                "$(interval ready '{"draft_watch_interval_secs": "5"}')" 20
+ok "  where a real 5 is slept"                        "$(interval ready '{"draft_watch_interval_secs": 5}')" 5
+limits '{"draft_watch_interval_secs": 600}'
+ok "a draft interval over the usual one is reported"  "$(intervals | grep -c 'capped at watch_interval_secs 300s')" 1
+ok "  and is not a failure, the behaviour being defined" "$(intervals | grep -c '^✓')" 1
+# The cap line has to read `watch_interval_secs` the way the LOOP reads it. Gated on
+# `usable_secs`, a quoted "10" printed no cap at all while the watcher slept 10s.
+limits '{"draft_watch_interval_secs": 20, "watch_interval_secs": "10"}'
+ok "a quoted watch interval still reports the cap"    "$(intervals | grep -c 'capped at watch_interval_secs 10s')" 1
+ok "  which is the interval the watcher really sleeps" "$(interval ready)" 10
+limits '{"watch_interval_secs": 300}'
+# A `limits` that is not an object at all breaks `poll` and `status` too, so a cross is
+# defensible -- but it must not be charged to the one check that promises never to raise.
+limits_raw '5'
+ok "a limits block that is not an object does not cross" "$(intervals | grep -c '^✓')" 1
+ok "  and still names both intervals"                 "$(intervals | grep -c 'harvest_interval_secs 900s (default)')" 1
+
+printf '\n  and `limits`, which is the block an instance is most likely to have tuned\n'
+# DEV-931 adds two keys to it. `fill_absent` adds only what a config has never heard of, which
+# is what makes it safe over a block holding `tc-portal`'s 300 against the template's 90.
+rc=$(run "$disp" fill_absent '{"watch_interval_secs": 300}' limits)
+ok "an older limits block learns the draft interval"   "$(says 'limits.draft_watch_interval_secs')" yes
+ok "  and the harvest interval"                        "$(says 'limits.harvest_interval_secs')" yes
+ok "  while a tuned interval is left alone"            "$(says '"watch_interval_secs": 300')" yes
+ok "  and the shipped default is not written over it"  "$(says '"watch_interval_secs": 90')" no
+ok "the template's defaults are the code's"            "$(python3 -c "
+import json, sys
+sys.path.insert(0, '$root/skills/dispatcher')
+import dispatcher as d
+limits = json.loads((d.CODE_DIR / 'config.example.json').read_text())['limits']
+print(limits['draft_watch_interval_secs'] == d.DRAFT_WATCH_INTERVAL_SECS
+      and limits['harvest_interval_secs'] == d.HARVEST_INTERVAL_SECS)")" True
 
 # =============================================================================================
 printf '\nbrief tells a review worker what it is resuming\n'

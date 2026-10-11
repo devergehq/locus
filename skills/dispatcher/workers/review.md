@@ -150,7 +150,7 @@ one twice is the same as writing it once, so you can report progress without rea
 | 4 solution map | step 5 | `right shape, one departure` | Parts · `7, one outside the diff` / Problems fixed · `3 of 3` / Choices · `3 open, 1 departs` / Disagreements · `2, both raised` |
 | 5 code review | step 7's read, step 9's blind second lens, step 10's `review-craft` lenses | `6 findings, 2 blockers` | Findings · `6 raised, 2 blockers` / Lenses · `8 applied` / Second lens · `2 findings, 1 agreed` / Held back · `1, ticketed` / Suppressed · `3, with reasons` |
 | 6 draft | step 12's draft and step 13's `review_lint` | `running` while you write, then `waiting_on_you` with `6 findings, 118 words` once `draft put` has landed | Blocks · `9: 6 findings, 3 prose` / Visible words · `118 of 150` / Lint · `passes` / Waiting on · `you, in the dashboard` |
-| 7 harvest | **nothing you do.** Posting makes a harvest possible; it is not the harvest | — | — |
+| 7 harvest | **not you — the Dispatcher's poller.** It runs `review-desk harvest` for each repository it serves, no more often than `limits.harvest_interval_secs`, which is how the replies and resolutions that arrive after you are discarded reach the record. Posting makes a harvest possible; it is not the harvest, and running one yourself would ask about every review in the repository and read what nobody has answered yet | — | — |
 
 **Every example in that table is invented.** It is the shape and the length, not a record of a
 review that happened.
@@ -777,7 +777,12 @@ house style, as it has always been. The blocks are a Review Desk record, not a c
 review is written, and `--sections` is the only command that takes them.
 
 Then tell the Dispatcher the draft is ready **in Review Desk**, with the dashboard link, and
-wait. Your watcher polls the review and will hand you one of two things:
+wait. Your watcher polls the review and will hand you one of two things — and while the draft is
+with your principal it polls every `limits.draft_watch_interval_secs`, 20 seconds unless the
+instance says otherwise, so their click reaches you in about the time it takes them to make it.
+**Waiting is the whole of your job here. Do not read the review yourself to see whether they
+have decided**: your watcher is already doing it, and the answer you may act on is the one it
+hands you.
 
 | Event | Do |
 |---|---|
