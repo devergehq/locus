@@ -126,6 +126,47 @@ def first_line(section: str) -> str:
 IN_DIFF = re.compile(r"\b(in diff|pre-existing)\b", re.I)
 CHIP = re.compile(r"·\s*`[^`]+`")
 
+# A finding in the composed body carries BOTH an index row and — when it has nowhere to anchor —
+# a section, so adding every section heading to the rows counts that finding twice. Measured on
+# the body Review Desk composes for a six-finding draft with four findings anchored: a correct
+# `2 Blockers · 2 Should · 2 Nits` verdict failed as "says 2 Should, rows hold 3" and again as
+# "says 2 Nits, rows hold 3". The two findings with no line in the diff were each counted as a
+# row and as a section. **A section counts only where its finding has no row.**
+#
+# Identity is the finding's number. Review Desk composes the row's first cell as
+# `{glyph} {Severity} · F{seq}` and the heading as `### {Severity} · F{seq} · {title}`, so
+# `F{seq}` is the one token both carry — and it is the finding's identity across rounds, which
+# the severity and the title are not. A heading written by hand may have no number at all; it
+# falls back to its title, which the index's Finding column holds character for character.
+FSEQ = re.compile(r"\bF(\d+)\b")
+
+
+def head_title(head: str) -> str:
+    """A section heading's title: what is left after the severity word and the finding's number."""
+    s = re.sub(r"^(Blocker|Should|Nit|Question)\b", "", prose(head), flags=re.I).strip(" \u00b7")
+    return re.sub(r"^F\d+\b", "", s).strip(" \u00b7")
+
+
+def unrowed(heads: list[str], row_lines: list[str]) -> list[str]:
+    """The section headings whose finding has no row — the only ones a count may add to the rows.
+
+    A title has to be substantial before it is matched, because a short one is a word that could
+    appear in any row; with no number and no title to go on, the heading counts, which keeps the
+    old behaviour for a body nobody composed."""
+    seqs = {m.group(1) for r in row_lines for m in FSEQ.finditer(r)}
+    out = []
+    for head in heads:
+        nums = {m.group(1) for m in FSEQ.finditer(head)}
+        if nums:
+            if not nums & seqs:
+                out.append(head)
+            continue
+        title = head_title(head)
+        if not (len(title) >= 12 and any(title in prose(r) for r in row_lines)):
+            out.append(head)
+    return out
+
+
 # A heading's severity is NOT read with `SEV`: that pattern requires the word in bold, which is
 # right for a thread's title line and wrong for a heading, where the word stands on its own.
 # Reading section severities with `SEV` returned "" for every one of them, which made every
@@ -346,7 +387,8 @@ def main():
                     f"says {claimed_fixed.group(1)} fixed, tables hold {n}")
 
     if verdict:
-        all_rows = open_rows + done_rows + [h for h, _ in found]
+        table_rows = open_rows + done_rows
+        all_rows = table_rows + unrowed([h for h, _ in found], table_rows)
         for word, plural in (("Blocker", "Blockers"), ("Should", "Should"), ("Nit", "Nits")):
             claimed = re.search(rf"(\d+)\s+{plural}\b", verdict.group("v"))
             if not claimed:

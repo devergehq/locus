@@ -263,5 +263,124 @@ import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint a
 head = '### Should · F1 · a title'
 print(bool(r.HEAD_SEV.search(head)), bool(r.SEV.search(head)))")" "True False"
 
+
+echo "The shape Review Desk composes (DEV-929)"
+
+# The body and the four threads below are not written by hand: they are what
+# `review-desk draft handover --review <id> --json` printed for an approved draft of six
+# findings, four of them carrying a line inside the diff, built on review-desk 13a78ee. That
+# is the shape every posted review now has, so it is the shape this linter has to read.
+#
+# What it caught: `verdict.{blocker,should,nit}_split` added every section heading to the
+# table's rows, and in this shape a finding with nowhere to anchor has BOTH an index row and
+# a section. The two unanchored findings here were each counted twice, so a correct verdict
+# line failed twice over - "says 2 Should, rows hold 3" and "says 2 Nits, rows hold 3".
+# Before `unrowed`, this fixture scored 24/27 and exited 1.
+cat > "$work/composed.md" <<'EOF'
+**2 Blockers · 2 Should · 2 Nits — 6 open.** The export path ships columns the policy forbids.
+
+**Method** · read the export path and its callers · ran the suite · **0 suppressed** · **0 not verified** · **2 areas not reviewed** — detail at the end
+
+### Problem fit
+The change puts a column policy in front of the export path. That is the right shape for the problem.
+
+### Open — needs a decision
+
+| | Where | Finding | Status |
+| -- | -- | -- | -- |
+| 🔴 Blocker · F1 | [`ColumnPolicy.php:52`](https://github.com/acme/portal/blob/d41c8e2abc/app/Reporting/ColumnPolicy.php#L52) | The column policy is skipped when the definition names no columns | Open · on the code |
+| 🔴 Blocker · F2 | [`DeliverWebhook.php:57`](https://github.com/acme/portal/blob/d41c8e2abc/jobs/DeliverWebhook.php#L57) | A retried delivery carries no idempotency key | Open · on the code |
+| 🟠 Should · F3 | [`Writer.php:31`](https://github.com/acme/portal/blob/d41c8e2abc/app/Export/Writer.php#L31) | The export status is not checked before the file is written | Open · on the code |
+| 🟠 Should · F5 | [the pull request](https://github.com/acme/portal/pull/514) | The description does not say what happens to a skipped export | Open · in the body |
+| ⚪ Nit · F4 | [`WriterTest.php:12`](https://github.com/acme/portal/blob/d41c8e2abc/tests/WriterTest.php#L12) | The test name says what it does, not what it proves | Open · on the code |
+| ⚪ Nit · F6 | [the pull request](https://github.com/acme/portal/pull/514) | The changelog entry is missing | Open · in the body |
+
+### Should · F5 · The description does not say what happens to a skipped export
+
+**pre-existing** · `Open`
+
+**What** · the description says nothing about a skipped export.
+
+**Why it matters** · a reader cannot tell whether skipping is intended.
+
+**What I'd do** · say what a skipped export does.
+
+### Nit · F6 · The changelog entry is missing
+
+**pre-existing** · `Open`
+The changelog says nothing about the policy.
+
+<details><summary>How this review was made</summary>
+
+Suppressed: none. Not verified: none. Not reviewed: the migration, the seed data.
+</details>
+EOF
+cat > "$work/composed-t1.md" <<'EOF'
+> [!CAUTION]
+> **Blocker · F1** — The column policy is skipped when the definition names no columns · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t2.md" <<'EOF'
+> [!CAUTION]
+> **Blocker · F2** — A retried delivery carries no idempotency key · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t3.md" <<'EOF'
+> [!WARNING]
+> **Should · F3** — The export status is not checked before the file is written · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t4.md" <<'EOF'
+⚪ **Nit · F4** — The test name says what it does, not what it proves · `Open`
+**in diff** · `Open`
+The name says what the test does, not what it proves.
+EOF
+# A thread comment as GitHub returns it, anchored where the hand-over said it sits.
+anchored () { python3 -c 'import json,sys; print(json.dumps({"id":int(sys.argv[1]),"user":{"login":"principal"},"pull_request_review_id":900,"path":sys.argv[2],"line":int(sys.argv[3]),"body":open(sys.argv[4]).read()}))' "$@"; }
+composed_threads="$(anchored 1000 app/Reporting/ColumnPolicy.php 52 "$work/composed-t1.md"), $(anchored 1001 jobs/DeliverWebhook.php 57 "$work/composed-t2.md"), $(anchored 1002 app/Export/Writer.php 31 "$work/composed-t3.md"), $(anchored 1003 tests/WriterTest.php 12 "$work/composed-t4.md")"
+
+fixture "[$(review 900 principal "$work/composed.md")]" "[$composed_threads]"
+ok "the composed body passes whole"             "$(run)" 0
+ok "a finding with a row and a section counts once" "$(rule verdict.should_split)" no
+ok "and so does an unanchored nit"              "$(rule verdict.nit_split)" no
+ok "the anchored findings still count"           "$(says 'says 2 Blockers, rows hold 2')" yes
+ok "six rows, two sections, four threads"       "$(says '6 open rows, 0 resolved rows, 2 body sections')" yes
+
+# The pairing itself, so that a change to the heading's or the row's shape fails here rather
+# than in a verdict count nobody can read.
+ok "a section whose finding has a row is dropped" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should \u00b7 F5 | [x](http://y) | the description says nothing | Open |'
+print(r.unrowed(['### Should \u00b7 F5 \u00b7 the description says nothing'], [row]))")" "[]"
+ok "a section whose finding has none is kept"   "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should \u00b7 F5 | [x](http://y) | the description says nothing | Open |'
+print(len(r.unrowed(['### Should \u00b7 F9 \u00b7 something else entirely'], [row])))")" "1"
+ok "with no number, the title pairs it"         "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should | [x](http://y) | the description says nothing about it | Open |'
+print(r.unrowed(['### Should \u00b7 the description says nothing about it'], [row]))")" "[]"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
