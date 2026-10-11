@@ -1349,7 +1349,19 @@ class Poller:
         if not self.due(f"review_desk|{kind}|{rid}|{item.get('entered_at')}", every):
             return
         state = self.pr_state(repo, number)
-        if state in PR_CLOSED:
+        # **A merged pull request ends every kind of work here but one**, and an item on a closed
+        # one has been dropped since this section existed: there is nothing left to revise,
+        # approve or post.
+        #
+        # `nits_to_ticket` is the exception, and it is the kind the skip would hurt most. The
+        # request becomes an ITEM only once the draft is reported posted, and a merge usually
+        # follows a posting within the hour — the note the dashboard writes beside the button
+        # reads "the merge is not waiting on them", which is the whole reason the findings were
+        # held back. So the overwhelmingly likely shape of this kind is a request on a pull
+        # request that has already merged, and skipping it would leave the developer's click
+        # unanswered for ever: DEV-934's own bug in a narrower case. The ticket outlives the pull
+        # request, and `pr_state` on the event says which one this is.
+        if state in PR_CLOSED and kind != "nits_to_ticket":
             return
         common = dict(key=key, review_desk_id=rid, repo=repo, number=number,
                       head_sha=item.get("head_sha"), round=item.get("round"),

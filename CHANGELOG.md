@@ -98,7 +98,7 @@ refuses to build when they disagree.
   `REVIEW_DESK_IGNORED_KINDS` is empty and load-bearing empty: it is the only way to say "read,
   and deliberately not ours" as against "never heard of it", and the fifth kind was in neither
   list for five weeks with no line anywhere to grep for. 67 new assertions in
-  `scripts/test-dispatcher-review-desk.sh` (496 to 563), including a crossing that fails if Review
+  `scripts/test-dispatcher-review-desk.sh` (496 to 568), including a crossing that fails if Review
   Desk's contract lists a kind this file neither handles nor names as ignored, and four reversals
   — one of them showing that the crossing cannot see a kind missing from the *relay* list, which
   is why the relay test exists beside it. Against a stand-in `review-desk` and a throwaway

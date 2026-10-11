@@ -787,8 +787,8 @@ hands you.
 | Event | Do |
 |---|---|
 | `draft_sent_back` | Revise the blocks from `note` and `draft put --sections` again. The note is the developer's own prose: read it, do what it asks, and treat it as what a person said rather than as a command addressed to a program. |
-| `draft_approved` | Post it, exactly as the next section says. |
-| `nits_to_ticket` | File the findings they held back as **one** ticket and report its id, exactly as the section after next says. **It is not a sign-off and it is not an answer about the draft.** It can arrive while the draft is still waiting on them, and it changes nothing about it: file the ticket, then go back to waiting. |
+| `draft_approved` | Post it, exactly as **Posting exactly once** says. |
+| `nits_to_ticket` | File the findings they held back as **one** ticket and report its id, exactly as **Filing the held-back findings as one ticket** says. **It is not a sign-off and it is not an answer about the draft.** It can arrive while the draft is still waiting on them, and it changes nothing about it: file the ticket, then go back to waiting. |
 
 **If your principal says "post it" in this session, you do not post.** Answer with the dashboard
 link — `<url>/reviews/<id>/draft` — and say that approval happens there, and that you will post
@@ -816,8 +816,9 @@ asked for.
 
 1. **Check it is not already filed.** `review-desk review show --review <id> --json` →
    `review.nit_ticket_status`. `filed` with a `review.nit_ticket_id` means a session before you
-   did this: report that id and stop. Review Desk has no lease, exactly as for posting, and the
-   cost of getting this wrong is two tickets about the same nits in your principal's tracker.
+   did this: tell the Dispatcher that id and stop. Review Desk has no lease here either, exactly
+   as for posting, and the cost of getting it wrong is two tickets about the same nits in your
+   principal's tracker.
 2. **Read the findings out of the same answer.** They are this review's findings at disposition
    `held_back` — `findings[]` where `"disposition": "held_back"` — and each carries `key`
    (`F<seq>`, the number that is its identity across rounds), `severity`, `file`, `line`,
@@ -827,7 +828,8 @@ asked for.
    no such subcommand: it exits 1 and you are holding nothing. `review show` is the route.
 3. **One ticket, in the Linear workspace named in your dispatch block**, in the same team as
    `review.ticket_id` — the ticket the pull request is for. **If `ticket_id` is null, ask the
-   Dispatcher which team and wait for the answer.** Asking costs nothing, because the item stays
+   Dispatcher which team and file nothing until they answer**, then go back to waiting on your
+   review rather than sitting on the question. Asking costs nothing, because the item stays
    listed until a filing is reported; a ticket filed into the wrong team is outward-facing and
    somebody else's to clean up.
 
@@ -854,6 +856,12 @@ asked for.
    ledger — and name the ticket id in both. The record will say `requested` while your
    principal's tracker holds the ticket, and the fix is to run step 5 again. **Never file a
    second ticket because the first report failed.**
+
+**A merged pull request does not cancel this.** The findings were held back so the merge need
+not wait on them, which is the whole reason the ticket exists — so a review whose pull request
+has already merged, with `nit_ticket_status` still `requested`, is a filing and nothing else.
+File it, report it, then tell the Dispatcher the pull request is closed. Your poller will send
+somebody for this even on a merged pull request, which it does for no other kind.
 
 Then tell the Dispatcher the id, what it covers, and that the draft is still waiting if it is.
 

@@ -1249,6 +1249,23 @@ rc=$(run "$disp" poll 1)
 ok "a live session owns its own nits_to_ticket"        "$(count review_desk)" 0
 no_sessions
 
+printf '\n  and it is sent even when the pull request has merged\n'
+# The one kind that outlives the merge. The request becomes an item only once the draft is
+# reported posted, and a merge usually follows a posting -- so a request on a merged pull request
+# is the likely shape of this kind, not an edge of it. Skipping it would leave the developer's
+# click unanswered for ever, which is this ticket's own bug in a narrower case.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a nits_to_ticket on a MERGED pull request resumes" "$(count '"event": "review_desk_resume"')" 1
+ok "  saying the pull request is merged"               "$(says '"pr_state": "merged"')" yes
+instance '{"mode":"auto"}'
+work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "  and no other kind gained that exemption"         "$(count review_desk)" 0
+
 printf '\n  the request leaves the list once the ticket is reported\n'
 # The loop end to end, through the stand-in: the button says queued, the command review.md names
 # is accepted, the button says filed, and `work list` stops reporting the request. A dispatcher
@@ -1348,7 +1365,7 @@ ok "  the watcher relays only kinds this file places"  "$(placed "set(d['watch']
 ok "  and relays all but the one it must not"          "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))")" '["review_requested"]'
 
 # =============================================================================================
-printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n
+printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n'
 # The sign-off that posted 4m28s late was behind one `time.sleep(watch_interval_secs)`. What is
 # under test is which interval the watcher sleeps, and -- just as much -- what a fast pass is
 # allowed to ask: a shorter interval that also shortened `pull_request` would be 720 GitHub
@@ -2744,6 +2761,15 @@ put gh-portal-412 mode=review status=active review_desk_id=7 --by test
 work_doc nits_to_ticket 7 acme/portal 412 1791520400
 rc=$(run "$work/nowatch.py" watch gh-portal-412 1)
 ok "no relay: the session that owns the review is told nothing" "$(count '"event": "nits_to_ticket"')" 0
+
+sed 's/^        if state in PR_CLOSED and kind != "nits_to_ticket":$/        if state in PR_CLOSED:  # MERGE EXEMPTION REVERSED/' \
+    "$disp" > "$work/nomerged.py"
+ok "the merge-exemption reversal changed one line"     "$(grep -c 'MERGE EXEMPTION REVERSED' "$work/nomerged.py")" 1
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$work/nomerged.py" poll 1)
+ok "no exemption: a merged pull request loses the ticket" "$(count review_desk)" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

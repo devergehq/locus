@@ -256,8 +256,12 @@ each exactly as you dispatch a `review_request`, with three differences:
    ever.
 
 Caps and queueing apply as for anything else. An item whose pull request is merged or closed is
-already filtered out, and an event carrying `"pr_state": null` is one where GitHub could not be
-asked — read the pull request before you dispatch that one.
+already filtered out — **except a `nits_to_ticket`, which outlives the merge**: nothing is left
+to revise or post on a merged pull request, but the ticket your principal asked for is still work,
+and the request only becomes an item once the draft is reported posted, which a merge usually
+follows. Dispatch that one and let the worker file the ticket; `pr_state` tells you which case you
+are holding. An event carrying `"pr_state": null` is one where GitHub could not be asked — read
+the pull request before you dispatch that one.
 
 **The fifth kind is `nits_to_ticket`**, and it is the one that is not about the draft. Your
 principal clicks "File as one ticket for an agent" on the draft page; Review Desk files nothing
