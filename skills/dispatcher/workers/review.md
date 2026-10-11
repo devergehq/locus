@@ -1044,9 +1044,11 @@ post again, on somebody's pull request, under your principal's name.
    `pull_request_review_id` is the review you just created. That is the same route
    `review_lint.py` takes to find a review's threads.
 
-   **Join on the marker in the comment's own body, not on where it sits.** Review Desk ends
-   every composed thread with `<!-- review-desk:F<seq> -->`, which GitHub stores and hands back
-   in `body`, and which renders as nothing to a reader. That marker is the join.
+   **Join on the marker in the comment's own body, not on where it sits.** Review Desk is adding
+   `<!-- review-desk:F<seq> -->` to the end of every composed thread: settled for DEV-929,
+   **not** in `13a78ee`, so look for it rather than expecting it. GitHub stores it in `body` and
+   hands it back, and it renders as nothing to a reader. Where it is there, it is the join — and
+   the table below is what to do when it is not, which today is every Review Desk there is.
 
    **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
    line does and a Nit about what it is called — and measured on review-desk `13a78ee`, two such
