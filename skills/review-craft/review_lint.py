@@ -47,12 +47,20 @@ def die(msg):
 MERMAID = re.compile(r"^[ \t>]*```mermaid\b.*?^[ \t>]*```[ \t]*$", re.S | re.M)
 
 
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
 def visible(md: str) -> str:
-    """Folds and diagrams removed. A mermaid fence is read as a picture, not as prose, and its
-    source alone runs ~700 characters for a dozen nodes — a single-finding thread's whole budget.
-    Charging it would punish exactly the findings house-style asks to draw."""
+    """Folds, diagrams and HTML comments removed. A mermaid fence is read as a picture, not as
+    prose, and its source alone runs ~700 characters for a dozen nodes — a single-finding thread's
+    whole budget. Charging it would punish exactly the findings house-style asks to draw.
+
+    An HTML comment renders as nothing at all, so charging one is charging a reader for text they
+    cannot see. That became load-bearing with DEV-929: Review Desk ends every composed thread
+    with `<!-- review-desk:F<seq> -->`, the marker a session joins each posted comment to its
+    finding by, so every thread in a composed review now carries one."""
     s = re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
-    return MERMAID.sub("", s)
+    return COMMENT.sub("", MERMAID.sub("", s))
 
 
 def prose(md: str) -> str:

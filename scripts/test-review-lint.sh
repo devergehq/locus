@@ -357,8 +357,8 @@ cat > "$work/composed-t4.md" <<'EOF'
 The name says what the test does, not what it proves.
 EOF
 # A thread comment as GitHub returns it, anchored where the hand-over said it sits.
-anchored () { python3 -c 'import json,sys; print(json.dumps({"id":int(sys.argv[1]),"user":{"login":"principal"},"pull_request_review_id":900,"path":sys.argv[2],"line":int(sys.argv[3]),"body":open(sys.argv[4]).read()}))' "$@"; }
-composed_threads="$(anchored 1000 app/Reporting/ColumnPolicy.php 52 "$work/composed-t1.md"), $(anchored 1001 jobs/DeliverWebhook.php 57 "$work/composed-t2.md"), $(anchored 1002 app/Export/Writer.php 31 "$work/composed-t3.md"), $(anchored 1003 tests/WriterTest.php 12 "$work/composed-t4.md")"
+anchored_at () { python3 -c 'import json,sys; print(json.dumps({"id":int(sys.argv[1]),"user":{"login":"principal"},"pull_request_review_id":900,"path":sys.argv[2],"line":int(sys.argv[3]),"body":open(sys.argv[4]).read()}))' "$@"; }
+composed_threads="$(anchored_at 1000 app/Reporting/ColumnPolicy.php 52 "$work/composed-t1.md"), $(anchored_at 1001 jobs/DeliverWebhook.php 57 "$work/composed-t2.md"), $(anchored_at 1002 app/Export/Writer.php 31 "$work/composed-t3.md"), $(anchored_at 1003 tests/WriterTest.php 12 "$work/composed-t4.md")"
 
 # The shape before Review Desk composed anything: sections and no index at all. A section is
 # the only record of its finding there, so it still counts -- the fix narrows what is added to
@@ -395,6 +395,82 @@ ok "with no number, the title pairs it"         "$(python3 -c "
 import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
 row = '| \U0001f7e0 Should | [x](http://y) | the description says nothing about it | Open |'
 print(r.unrowed(['### Should \u00b7 the description says nothing about it'], [row]))")" "[]"
+
+echo "The marker a session joins a comment to its finding by (DEV-929)"
+
+# Two findings on one line is ordinary -- a Should about what a line does, a Nit about what it
+# is called -- so `path` and `line` cannot tell their threads apart, and Review Desk ends every
+# composed thread with `<!-- review-desk:F<seq> -->` to be joined on instead. The linter's part
+# of that bargain is not to CHARGE the marker: it renders as nothing, and `prose` measures what
+# a reader reads. Before this, each marker spent ~24 characters of a 700-character budget.
+ok "an HTML comment is not charged as prose"    "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = '> **Should · F3** — a title · \`Open\`\n>\n> **What** · x.\n\n<!-- review-desk:F3 -->'
+print('review-desk' in r.prose(body))")" "False"
+ok "  and the prose around it survives"         "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = '> **Should · F3** — a title · \`Open\`\n>\n> **What** · x.\n\n<!-- review-desk:F3 -->'
+print(r.prose(body))")" "Should · F3 — a title · Open What · x."
+ok "  a multi-line comment too"                 "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+print(r.prose('a <!-- one\ntwo --> b'))")" "a b"
+
+# Two threads on one line, each marked, and the body's index row count is still right.
+cat > "$work/sameline.md" <<'EOF'
+**1 Should · 1 Nit — 2 open.** The response is returned without checking its status.
+
+**Method** · read `DeliverWebhook` and its callers · ran the job's tests · **0 suppressed** · **1 area not reviewed** — Suppressed: none.
+
+### Problem fit
+Keeping the response is the right shape; the caller needs it to decide whether to retry.
+
+### Open — needs a decision
+| | Where | Finding | Status |
+| -- | -- | -- | -- |
+| 🟠 Should · F1 | [`DeliverWebhook.php:16`](https://github.com/o/r/blob/abc/jobs/DeliverWebhook.php#L16) | the response is returned without checking its status | Open · on the code |
+| ⚪ Nit · F2 | [`DeliverWebhook.php:16`](https://github.com/o/r/blob/abc/jobs/DeliverWebhook.php#L16) | `$response` says its type, not its role | Open · on the code |
+EOF
+cat > "$work/sameline-t1.md" <<'EOF'
+> [!WARNING]
+> **Should · F1** — the response is returned without checking its status · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · `handle` returns the response without reading its status.
+>
+> **Why it matters** · a 500 is recorded as a delivery.
+>
+> **What I'd do** · throw on a non-2xx before returning.
+
+<!-- review-desk:F1 -->
+EOF
+cat > "$work/sameline-t2.md" <<'EOF'
+⚪ **Nit · F2** — `$response` says its type, not its role · `Open`
+**in diff** · `Open`
+The name says what it holds, not what it is for.
+
+<!-- review-desk:F2 -->
+EOF
+fixture "[$(review 910 principal "$work/sameline.md")]" \
+  "[$(anchored_at 8001 jobs/DeliverWebhook.php 16 "$work/sameline-t1.md"), \
+    $(anchored_at 8002 jobs/DeliverWebhook.php 16 "$work/sameline-t2.md")]"
+ok "two threads on one line lint clean"         "$(run)" 0
+ok "  and the marker is in the body GitHub returns" "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(sum('<!-- review-desk:F' in t['body'] for t in threads))")" 2
+ok "  one marker each, so the join is unique"   "$(python3 -c "
+import json, re
+threads = json.load(open('$work/fix/comments.json'))
+keys = [re.findall(r'<!-- review-desk:(F\d+) -->', t['body']) for t in threads]
+print(sorted(k[0] for k in keys if len(k) == 1))")" "['F1', 'F2']"
+# `set([...])` rather than a set comprehension: the harness runs under `sh`, and a `{` with a
+# comma in it is brace expansion -- the comprehension was expanded into two broken variants that
+# each raised a SyntaxError, and the assertion then compared empty to empty and "passed".
+ok "  which path and line could not be"         "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(len(set([(t['path'], t['line']) for t in threads])), 'key for', len(threads), 'threads')")" "1 key for 2 threads"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1031,17 +1031,23 @@ post again, on somebody's pull request, under your principal's name.
    `pull_request_review_id` is the review you just created. That is the same route
    `review_lint.py` takes to find a review's threads.
 
-   **Pair on `path` and `line` — and where two threads sit on one line, on the `F{seq}` in the
-   comment's own text.** Two findings on one line is ordinary: a Should about what the line does
-   and a Nit about what it is called. Measured on review-desk `13a78ee`, two such threads come
-   back carrying one `path` and one `line` between them, so pairing on those alone has nothing
-   to choose with and would hand `finding link` the wrong comment for the wrong finding —
-   silently, because both calls succeed. Every composed thread names its own finding as
-   `**{Severity} · F{seq}**`, and GitHub returns that text, so read the number out of the
-   comment's body. **Not from its first line**: an alert marker sits above the title on every
-   Blocker, Should and Question.
+   **Join on the marker in the comment's own body, not on where it sits.** Review Desk ends
+   every composed thread with `<!-- review-desk:F<seq> -->`, which GitHub stores and hands back
+   in `body`, and which renders as nothing to a reader. That marker is the join.
 
-   Never pair on a comment's position in the array, which nothing promises.
+   **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
+   line does and a Nit about what it is called — and measured on review-desk `13a78ee`, two such
+   threads come back carrying one `path` and one `line` between them. Pairing on those has
+   nothing to choose with, and `finding link` would attach each comment to whichever finding was
+   found first: both calls return success, the record is wrong, and nothing says so.
+
+   | What the comment carries | Do |
+   |---|---|
+   | `<!-- review-desk:F<seq> -->` | join on it; this is the case |
+   | no marker, but a title naming `**{Severity} · F{seq}**` | an older Review Desk — join on that, and **not** on the body's first line, where an alert marker sits above the title |
+   | neither, or two findings for one comment | **link nothing for that comment and say so loudly**, naming the comment id. A wrong link is worse than a missing one: it is silent, and it is on the record |
+
+   Never join on a comment's position in the array, which nothing promises.
 
    Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
    for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.
