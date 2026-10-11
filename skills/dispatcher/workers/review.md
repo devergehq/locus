@@ -1137,7 +1137,7 @@ post again, on somebody's pull request, under your principal's name.
    is sent_back, and only an approved draft can be marked posted", and the review is left with
    **no `github_review_id`** — so nothing in the record says the review you just posted exists.
 
-   Three things follow, and the first is the one that matters:
+   Four things follow, in this order:
 
    - **Put the id in the record first: `review-desk review link --review <id> --github-review
      <the GitHub review id>`.** It writes `reviews.github_review_id` on its own, and that is the
@@ -1152,9 +1152,7 @@ post again, on somebody's pull request, under your principal's name.
      the moment that one was reported. So the record holds the number until this round posts
      again, and what you said out loud is what holds it after.
    - **Then treat the send-back as any other**, from the event table: revise the blocks and
-     `draft put --sections` again. The id you recorded will be overwritten when this round's
-     next review is reported, which is correct — the field names the review that is current —
-     and is why the line above is not redundant.
+     `draft put --sections` again.
    - **Say that the pull request already carries a review.** The next sign-off is a different
      body, so step 3's check — which matches on the body — will not find the first one and will
      let you post, correctly: it is a new review. Your principal should hear that there will be
