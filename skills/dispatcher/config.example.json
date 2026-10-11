@@ -71,10 +71,14 @@
     "production_mcp": null
   },
 
+  "_comment_limits": "Every key here is defaulted in code as well, so an instance whose `limits` block has never heard of one needs no edit; a re-run of `init` adds it so it can be seen and tuned. Two of them are about the wait between a developer acting and anything happening. `draft_watch_interval_secs` is how often a review session's watcher asks Review Desk about its own review WHILE that review's draft is waiting on the developer, and `watch_interval_secs` is how often it asks the rest of the time: the first sign-off posted for real waited 4m28s on a 300s interval. It is never read as longer than `watch_interval_secs` — a shorter interval that is not shorter is a setting that lies. `harvest_interval_secs` is how often the poller runs `review-desk harvest` per repository it serves, which is what reads a posted review's replies and resolutions back from GitHub. It is counted from the last ATTEMPT, so a repository whose harvest fails is retried on that cadence rather than on every tick.",
+
   "limits": {
     "max_workers": 15,
     "poll_interval_secs": 300,
     "watch_interval_secs": 90,
+    "draft_watch_interval_secs": 20,
+    "harvest_interval_secs": 900,
     "watch_max_hours": 120,
     "reemit_after_secs": 900,
     "blocked_alert_after_secs": 120,
