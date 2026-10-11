@@ -72,6 +72,13 @@ allele sidebar, and stop.
    A fourth, **`review mode`**, reports whether a review worker's blind options pass is on, and
    whether that came from the config or from the default. It fails only on a value that is
    neither `true` nor `false`, because a worker would be told the pass is on for any truthy one.
+   A fifth, **`intervals`**, prints the two intervals DEV-931 added — how often a watcher reads
+   Review Desk while a draft waits, and how often a repository is harvested — with `config` or
+   `default` beside each. **It reports and never fails** — a value that is not a positive whole
+   number of seconds is named as IGNORED on that line, because such a value is silently ignored
+   inside the loops that read it and an operator who edited a setting that did nothing would
+   otherwise never find out. It is not a cross, because nothing is misbehaving: the default was
+   already in force, and your start-up must not stop over a number.
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
@@ -258,7 +265,8 @@ A posted review is not the end of it: the author replies to a finding, resolves 
 a line that answers one. `review-desk harvest` is what reads those back from GitHub into the
 record, and **your poller is what runs it** — for each repository it serves, one repository per
 tick, no more often than `limits.harvest_interval_secs` (900 seconds unless the instance says
-otherwise). Nothing else could: a review's session is discarded long before the replies arrive,
+otherwise). The tick's turn goes to whichever repository has waited longest, so with N
+repositories each is harvested every `max(interval, N × poll_interval_secs)`. Nothing else could: a review's session is discarded long before the replies arrive,
 and your poller is the one process that outlives every review.
 
 Four things to know about it, and none of them asks anything of you:
@@ -272,6 +280,10 @@ Four things to know about it, and none of them asks anything of you:
   same tick found is emitted as usual.
 - **`mode: off` runs none**, and an absent binary is silent under `auto` and loud under `on`,
   like everything else here.
+- **It does not move layer 7's row.** In Review Desk 0.1.0 only `draft posted` writes that
+  layer, so the dashboard goes on saying "posted, waiting for the harvest" however many
+  harvests have run. What a harvest changes is the record behind it. Do not tell your principal
+  that a layer has turned over; tell them what was recorded, which is what the event carries.
 
 ### The wait after a sign-off
 

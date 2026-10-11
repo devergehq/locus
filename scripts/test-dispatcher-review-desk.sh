@@ -876,7 +876,27 @@ age_marker 'harvest|acme/portal'
 rc=$(run "$disp" poll 1)
 ok "a tick after the interval harvests again"          "$(harvests acme/portal)" 2
 
-# One ATTEMPT per tick, so two repositories take two ticks. Sorted, so billing goes first.
+printf '\n  the turn goes to whichever repository has waited longest\n'
+# Not the first one that is due in sorted order. `due()` stamps absolute time, so that version
+# gave the one slot a tick has to the same early names for ever: five repositories at the
+# shipped 300s poll and 900s interval harvested the first three 66-68 times over sixteen hours
+# and the last two NOT ONCE. Three repositories, three ticks, each exactly once.
+instance '{"mode":"auto"}'
+put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
+put gh-store-5 mode=review status=lost repo=acme/store number=5 --by test
+rc=$(run "$disp" poll 3)
+ok "three ticks harvest acme/billing once"             "$(harvests acme/billing)" 1
+ok "  acme/portal once"                                "$(harvests acme/portal)" 1
+ok "  and acme/store once"                             "$(harvests acme/store)" 1
+rc=$(run "$disp" poll 2)
+ok "two more ticks harvest none of them again"          "$(grep -c '^harvest' "$work/rd.calls")" 3
+# And the one that was starved before is the one that goes first when only it is due.
+age_marker 'harvest|acme/store'
+rc=$(run "$disp" poll 1)
+ok "the longest-waiting repository takes the next tick" "$(harvests acme/store)" 2
+ok "  and the others are left where they were"          "$(harvests acme/billing)" 1
+
+# One ATTEMPT per tick, so two repositories take two ticks. Oldest first, so billing goes first.
 instance '{"mode":"auto"}'
 put gh-billing-77 mode=review status=lost repo=acme/billing number=77 --by test
 rc=$(run "$disp" poll 1)
@@ -1237,6 +1257,37 @@ import json, sys
 sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 print(json.loads((d.CODE_DIR / 'config.example.json').read_text())['review_desk'] == d.REVIEW_DESK_DEFAULTS)")" True
+
+printf '\n  doctor says what the two intervals are, and crosses one that is being ignored\n'
+# `positive_secs` has to be silent inside the loops -- a value that threw would respawn and run
+# with no sleep at all -- so `doctor` is where an operator learns their edit did nothing.
+intervals () { set +e; D doctor > "$work/out" 2>&1; set -e; grep '^. intervals' "$work/out" || true; }
+instance '{"mode":"auto"}'
+ok "doctor reports both intervals and their source"   "$(intervals | grep -c 'draft_watch_interval_secs 20s (default)')" 1
+ok "  and the harvest interval too"                   "$(intervals | grep -c 'harvest_interval_secs 900s (default)')" 1
+ok "  and passes"                                     "$(intervals | grep -c '^✓')" 1
+limits '{"harvest_interval_secs": 60}'
+ok "a configured interval is named as configured"     "$(intervals | grep -c 'harvest_interval_secs 60s (config)')" 1
+limits '{"harvest_interval_secs": "quarter-hourly"}'
+# Reported and NOT failed. SKILL.md's start-up step stops the Dispatcher on any cross, and a
+# typo in an interval whose default is already in force is not worth a dispatcher that will not
+# start -- nothing is misbehaving, a number is being ignored.
+ok "a value that is not seconds is named"             "$(intervals | grep -c 'IGNORED, and 900s used')" 1
+ok "  and does not fail doctor"                       "$(intervals | grep -c '^✓')" 1
+limits '{"harvest_interval_secs": 900, "draft_watch_interval_secs": 0}'
+ok "a zero is named too, being a hot loop"            "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+limits '{"draft_watch_interval_secs": true}'
+ok "and a true, which Python reads as 1 second"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+limits '{"draft_watch_interval_secs": "20"}'
+# One predicate, read by `doctor` and by the loops alike. An earlier version parsed a numeric
+# string in `positive_secs` and USED it while `doctor` called it ignored, so the operator was
+# told the opposite of what was happening by the command whose job is to tell them.
+ok "a quoted number is ignored, and said to be"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
+ok "  and the loop ignores it as well"                "$(interval ready '{"draft_watch_interval_secs": "20"}')" 20
+ok "  where a real number is used"                    "$(interval ready '{"draft_watch_interval_secs": 20}')" 20
+limits '{"draft_watch_interval_secs": 600}'
+ok "a draft interval over the usual one is reported"  "$(intervals | grep -c 'capped at watch_interval_secs 300s')" 1
+ok "  and is not a failure, the behaviour being defined" "$(intervals | grep -c '^✓')" 1
 
 printf '\n  and `limits`, which is the block an instance is most likely to have tuned\n'
 # DEV-931 adds two keys to it. `fill_absent` adds only what a config has never heard of, which

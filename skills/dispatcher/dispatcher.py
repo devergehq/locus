@@ -285,8 +285,23 @@ def clip(text: str | None) -> str:
     return text if len(text) <= BODY_LIMIT else text[:BODY_LIMIT] + " …(truncated — read the full text at the url)"
 
 
+def usable_secs(value) -> bool:
+    """Whether `positive_secs` will take this value as the number of seconds it is given for.
+
+    Separate from `positive_secs` so that `doctor` and the loops cannot disagree about what a
+    usable value is. An earlier version had them disagree: `positive_secs` parsed a numeric
+    string with `int()` and USED it, while `doctor` rejected any string and told the operator
+    their value was being ignored. One of the two had to be wrong and the operator could not
+    tell which, so there is now one predicate and both read it.
+
+    `isinstance(True, int)` is True in Python, so `true` in a JSON config would otherwise be
+    one second. Excluded by name rather than by hoping nobody writes it.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 def positive_secs(value, fallback: int) -> int:
-    """A seconds setting as a positive int, or the code default when it is not one.
+    """A seconds setting, or the code default when the config does not hold a usable one.
 
     Total by design, where most of this file would rather raise. Both callers sit inside a loop
     whose host restarts it — the poller under `Monitor`, a worker's watcher under a persistent
@@ -294,18 +309,13 @@ def positive_secs(value, fallback: int) -> int:
     fail again with no sleep in between, which is the one shape that turns a typo in a config
     into a hot loop against GitHub. A string, a null, a zero and a negative all therefore read
     as "not set", and the code default is what a setting nobody has written means anyway.
+
+    **`doctor` says so out loud, and never fails over it.** A value this rejects is a value the
+    operator edited and never saw take effect, which is worth a line and is not worth stopping
+    the Dispatcher for — nothing is misbehaving, and the setting it concerns was designed to be
+    absent on every existing instance. See `intervals_check`.
     """
-    try:
-        secs = int(value)
-    except (TypeError, ValueError):
-        return fallback
-    return secs if secs > 0 else fallback
-
-
-def harvest_interval(cfg: dict) -> int:
-    """`limits.harvest_interval_secs`, defaulted here so no existing instance needs an edit."""
-    return positive_secs((cfg.get("limits") or {}).get("harvest_interval_secs"),
-                         HARVEST_INTERVAL_SECS)
+    return value if usable_secs(value) else fallback
 
 
 def pr_key(repo: str, number: int) -> str:
@@ -453,6 +463,12 @@ def review_desk_cfg(cfg: dict) -> dict:
     block = dict(REVIEW_DESK_DEFAULTS)
     block.update({k: v for k, v in (cfg.get("review_desk") or {}).items() if v is not None})
     return block
+
+
+def harvest_interval(cfg: dict) -> int:
+    """`limits.harvest_interval_secs`, defaulted here so no existing instance needs an edit."""
+    return positive_secs((cfg.get("limits") or {}).get("harvest_interval_secs"),
+                         HARVEST_INTERVAL_SECS)
 
 
 def review_desk_off(rd: dict) -> bool:
@@ -1351,22 +1367,28 @@ class Poller:
           * It commits nothing of the POLLER's own, so `trust_empty` has nothing to guard here,
             for the same reason it has nothing to guard in `review_desk`.
 
-        An attempt is counted whatever it answers, which is why a failure returns as well as a
-        success: the attempt that has to be bounded is the SLOW one, and a timeout is the slow
-        one. A repository whose harvest fails is retried on the next interval, not on the next
-        tick, and the repositories after it in the sweep take the following ticks.
+        **What it does NOT do is move layer 7's row**, and that is worth writing down because
+        the symptom this fixes looks like it would. In Review Desk 0.1.0 the only writer of that
+        layer is `draft posted`, which sets it `pending` with the detail "posted, waiting for
+        the harvest"; nothing in the harvest crate writes a layer at all, so the row still reads
+        that way after a harvest has recorded everything GitHub had to say. What a harvest
+        changes is the RECORD — replies, resolved threads, lines changed since. The row is
+        Review Desk's to advance, and DEV-931's own out-of-scope list puts what the dashboard
+        shows after sign-off on that side of the line.
 
-        **One harvest ATTEMPT per tick, and the arithmetic is the point rather than a
-        detail.** A
-        harvest is the only Review Desk call that goes to the network, so N repositories at
+        An attempt is counted whatever it answers, and the thing being counted is the SLOW one:
+        a timeout. So a repository whose harvest fails has had its turn, and waits an interval
+        like any other — the next tick belongs to whichever repository has waited longest.
+
+        **One harvest ATTEMPT per tick, and the arithmetic is the point rather than a detail.**
+        A harvest is the only Review Desk call that goes to the network, so N repositories at
         `HARVEST_TIMEOUT` each would be N x 120s added to a tick whose interval is 300s —
         starving `liveness` and the heartbeat while the per-section try/except reported nothing
-        wrong. Stopping after the first repository that actually ran bounds a tick at one
-        timeout, and the per-repository markers then rotate on their own: with N repositories, a
-        poll interval of P and a harvest interval of I, each repository is harvested every
-        `max(I, N x P)`. Three repositories at the shipped 300s and 900s is 900s. Past that the
-        effective interval stretches, which is the stated cost of refusing to let one tick hold
-        N network calls.
+        wrong. One attempt bounds a tick at one timeout, and the repository that gets it is the
+        one whose mark is oldest, so the turns rotate: with N repositories, a poll interval of P
+        and a harvest interval of I, each repository is harvested every `max(I, N x P)`. Three
+        repositories at the shipped 300s and 900s is 900s. Past that the effective interval
+        stretches, which is the stated cost of refusing to let one tick hold N network calls.
 
         **The interval is a floor, not a clock, and the production host is why that matters.**
         Nothing here wakes itself up: `due()` only refuses to run again too soon. Under a host
@@ -1383,9 +1405,21 @@ class Poller:
             # no reviews in its ledger has nothing to harvest and says nothing about harvesting.
             return
         every = harvest_interval(cfg)
-        for repo in repos:
-            if not self.due(f"harvest|{repo}", every):
-                continue
+        # The LONGEST-WAITING repository, which is not the first one in the sort — and the
+        # difference is a repository that is never harvested at all. `due()` stamps absolute
+        # time, so a sweep that took the first repository whose interval had elapsed handed the
+        # one slot a tick has to the same early names for ever. Simulated against this loop:
+        # five repositories at the shipped 300s poll and 900s interval harvested the first three
+        # 66-68 times over sixteen hours and the fourth and fifth NOT ONCE, and under the host
+        # the principal actually drives, where a tick is further apart than the interval, only
+        # the alphabetically first repository was ever asked about. Those repositories keep
+        # exactly the symptom this section exists to remove, silently.
+        #
+        # `min` over the marks is the whole fix: a repository with no mark sorts first, and if
+        # the oldest mark is not due then no mark is, so one test still answers for all of them.
+        # It is also what makes the arithmetic above true rather than aspirational.
+        repo = min(repos, key=lambda r: self.state["emitted"].get(f"harvest|{r}", 0))
+        if self.due(f"harvest|{repo}", every):
             state, payload, detail = review_desk_run(rd, "harvest", "--repo", repo, "--json",
                                                      timeout=HARVEST_TIMEOUT)
             if state == "absent":
@@ -1408,9 +1442,6 @@ class Poller:
                          command=rd["command"], detail=detail)
                 return
             self.harvested(repo, payload)
-            # One attempt a tick. See the docstring: this `return` is the bound on how long a
-            # tick can take, not a shortcut.
-            return
 
     @staticmethod
     def harvested(repo: str, payload) -> None:
@@ -1806,6 +1837,11 @@ def watch_interval(cfg: dict, state: dict) -> int:
     `min(quick, normal)`, because a "shorter interval" that is longer than the one it replaces is
     a setting that lies — and an instance that lengthened `watch_interval_secs` to spare an API
     budget must not have a new key quietly undo it.
+
+    **A watcher on a Linear ticket never reaches the second branch**, which is worth stating
+    because it bounds the whole change: `draft_status` is written only where the ledger entry
+    carries a `review_desk_id`, and that is a review. Every other watcher on the box behaves
+    exactly as it did, one full pass per `watch_interval_secs`, bit for bit.
 
     `watch_interval_secs` is still read the way every other `limits` key in this file is read,
     and raises on a config that does not have it. The new key is NOT, and the asymmetry is
@@ -2882,12 +2918,50 @@ def cmd_doctor(args) -> None:
         where = "config" if raw is not None else "default"
         return f"blind options pass {'on' if on else 'off'} ({where})"
 
+    def intervals_check():
+        """The two intervals DEV-931 adds, and a line when one of them is being ignored.
+
+        **This check reports and never fails, and the distinction is the whole of it.**
+        `positive_secs` reads anything but a positive whole number as "not set", because a value
+        that threw inside the poller's loop or a watcher's would respawn and run with no sleep
+        at all. That is right for the loop and leaves the operator uninformed: they edited a
+        setting and nothing happened. So this says so — and stops there, because `SKILL.md`'s
+        start-up step stops the Dispatcher on any cross, and a typo in a cosmetic interval whose
+        default is already in force is not worth a dispatcher that will not start. Nothing is
+        misbehaving; a number is being ignored.
+
+        `review_desk.mode`'s cross one section up is the contrast rather than the precedent: a
+        truthy string there CHANGES what a worker is told to do. A rejected interval changes
+        nothing, which is exactly why it must not block.
+        """
+        limits = cfg.get("limits") or {}
+        said = []
+        for key, default in (("draft_watch_interval_secs", DRAFT_WATCH_INTERVAL_SECS),
+                             ("harvest_interval_secs", HARVEST_INTERVAL_SECS)):
+            raw = limits.get(key)
+            if raw is None:
+                said.append(f"{key} {default}s (default)")
+            elif usable_secs(raw):
+                said.append(f"{key} {raw}s (config)")
+            else:
+                said.append(f"{key} is {raw!r}, which is not a positive whole number of "
+                            f"seconds — IGNORED, and {default}s used")
+        watch = limits.get("watch_interval_secs")
+        quick = positive_secs(limits.get("draft_watch_interval_secs"), DRAFT_WATCH_INTERVAL_SECS)
+        if usable_secs(watch) and quick > watch:
+            # `watch_interval` takes the smaller of the two, so the behaviour is defined and
+            # this is not a fault either. Said because a draft interval nobody will ever sleep
+            # is a setting whose owner believes it is doing something.
+            said.append(f"the draft interval is capped at watch_interval_secs {watch}s")
+        return " · ".join(said)
+
     check("watchers", watchers)
     check("watch cursors", cursors)
     # Order matters only for the reader: `skills/dispatcher/SKILL.md` names these as the third
     # and the fourth check, so swapping them makes its prose wrong rather than its logic.
     check("review desk", review_desk_check)
     check("review mode", review_check)
+    check("intervals", intervals_check)
     check("production mcp", production_mcp)
     check("runtime writable", runtime_writable)
     check("code root", lambda: str(CODE_DIR))

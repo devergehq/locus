@@ -18,7 +18,8 @@ refuses to build when they disagree.
   nothing calling it, so layer 7 of every posted review read `pending` for ever and
   `workers/review.md` said of it "nothing you do" — true of the session, and nobody else had the
   job. The poller now runs `review-desk harvest --repo <owner/repo>` for each repository it
-  serves, one repository per tick and no more often than `limits.harvest_interval_secs` (900),
+  serves, one attempt per tick and no more often than `limits.harvest_interval_secs` (900),
+  the turn going to whichever repository has waited longest,
   which is how a reply or a resolved thread that arrives after the session is discarded reaches
   the record. It is the first call in `dispatcher.py` that writes to Review Desk and it cannot
   sign off: it records what GitHub already says, running it twice records nothing twice, and a
@@ -30,11 +31,15 @@ refuses to build when they disagree.
   `pull_request`'s four GitHub calls as well, which at 20 seconds is 720 an hour per watcher
   against a token the poller shares, held for as long as a human leaves a draft `ready`; so
   `Watcher.tick` gained `full`, and a fast pass makes no GitHub call at all — asserted, not
-  argued. Both settings are defaulted in code, so no instance needs an edit, and `init` adds
-  them to an older `limits` block without touching a tuned value. 79 new assertions in
-  `scripts/test-dispatcher-review-desk.sh`, against a stand-in `review-desk` and a throwaway
-  instance: no real harvest, no `~/.review-desk`, no `~/.locus/data/dispatcher`, nothing on
-  7777. (DEV-931)
+  argued. Both settings are defaulted in code, so no instance needs an edit, `init` adds them to
+  an older `limits` block without touching a tuned value, and `D doctor` gained an `intervals`
+  line that names a value it is ignoring and never fails over one. A self-review then found the
+  harvest sweep taking the first repository that was DUE rather than the one that had waited
+  longest, which over sixteen simulated hours harvested three repositories 66-68 times each and
+  the fourth and fifth not once; it now takes the oldest mark. 94 new assertions in
+  `scripts/test-dispatcher-review-desk.sh` (396 to 490), against a stand-in `review-desk` and a
+  throwaway instance: no real harvest, no `~/.review-desk`, no `~/.locus/data/dispatcher`,
+  nothing on 7777. (DEV-931)
 
 - **`review-craft` now lints a brief.** `skills/review-craft/brief_lint.py` checks the structured
   brief Review Desk stores — deterministic, read-only, standard library only, 18 rules. Nothing
