@@ -1820,6 +1820,17 @@ def watch_interval(cfg: dict, state: dict) -> int:
     return min(quick, normal)
 
 
+def full_pass_due(last_full: float, cfg: dict) -> bool:
+    """Is a pass that asks Linear and GitHub due, `last_full` being when the last one started?
+
+    `watch_interval_secs` keeps its original meaning here — how often the ticket and the pull
+    request are read — and the short interval added by DEV-931 only inserts cheaper passes
+    between two of them. A watcher with no draft waiting sleeps that same interval, so every
+    pass is due when it wakes and this returns True on every one of them.
+    """
+    return time.time() - last_full >= int(cfg["limits"]["watch_interval_secs"])
+
+
 def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, str] | None:
     """Why this watcher should stop, from local files only. `None` means carry on.
 
@@ -1916,8 +1927,7 @@ def cmd_watch(args) -> None:
             emit("watch_stopped", key=args.key, reason="ledger", status=status, ticks=ticks,
                  cursor_removed=from_ledger and watcher.forget(), detail=why)
             return
-        cfg = load_config()
-        full = time.time() - last_full >= int(cfg["limits"]["watch_interval_secs"])
+        full = full_pass_due(last_full, load_config())
         if full:
             last_full = time.time()
         watcher.tick(full=full)
