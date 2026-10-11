@@ -177,6 +177,24 @@ The division is by *kind*, not by what would not fit: the `detail` is the outcom
 one measurement that supports it. A fact whose value is a sentence is a note that has moved rather
 than been shortened.
 
+**Send every fact each time you send any, because the option replaces the whole list.** This is
+the one place where "writing a layer twice is the same as writing it once" stops being true, and
+it is true of the state and the `detail` and not of the facts. Measured against the branch that
+adds them, on a step holding five: a later call naming **one** fact left that step with one fact,
+not six. A call naming **none** left all five alone — which is what makes an ordinary progress
+write safe — and the option that empties the list on purpose is a separate one beside it.
+
+| What you write | What the step ends up with |
+|---|---|
+| no fact option at all | the facts it already had. Report progress freely |
+| one fact | that one fact, **and nothing else** |
+| all five again | the five |
+| the clear option | none |
+
+So write the facts **once the step is done and you know all of them**, in the same call that sets
+its final state. A step you are reporting progress on gets a state and a `detail` and no facts,
+and loses nothing.
+
 **Send the facts only when the installed `review-desk` takes them.** A step's `facts`, and a
 source's `status` and `note` below, arrived with DEV-917; an older install has the rest of this
 brief and not those three. **Probe the command, never the version number** — a version string tells
@@ -191,6 +209,11 @@ and carry on: a four-word `detail` is the larger half of this change and it need
 all. Read the option's own name off that help rather than from here, and the day the flag is
 renamed this brief does not go stale. **A review must never fail to be prepared because a field is
 missing** — that is the same rule as "Review Desk absent is silent", applied one field down.
+
+**The version number cannot answer this, and that is measured rather than argued.** The build
+that adds the facts and the build that has never heard of them **both print
+`review-desk 0.1.0`** — checked against each other on 11 October 2026. A session that branched on
+the version string would have got the wrong answer from both of them.
 
 Three things that are easy to get wrong here:
 
@@ -461,11 +484,30 @@ the whole reason. Write that.
 | ✗ | A 52-word reason restating which fields are present, which are still null, why `now_fixed` is nullable, and what the blind pass will be given. |
 | ✓ | `problem half only — the full brief follows at step 5` |
 
-**A `brief put` refused for an unknown field is a Review Desk older than the structured brief**,
-not a broken one. Write 1 is the first of these commands you call, so you find out before you
-have dispatched anything: say so once to the Dispatcher, write the brief the old way after step 5
-instead — `problem`, `options` with their two arguments, `approach_verdict`, `provenance` — fill
-step 3's template by hand, and carry on.
+**A `brief put` refused for an unknown field is a Review Desk older than the field**, not a broken
+one — and **how much older is in the refusal, so read it before you give anything up.** The message
+names the field it did not know *and the whole list it does* know, like this:
+
+```
+unknown field `label`, expected one of `number`, `was_wrong`, `now_fixed`, `detail_title`, …
+```
+
+Two cases, and they are a long way apart:
+
+| The accepted list it names | What that install is | Do |
+|---|---|---|
+| holds `flow_before`, `problems`, `support_table` | one field behind: it has the structured brief and not the newest slot | **drop that one field and write again.** Nothing else about the brief changes |
+| holds only `problem`, `diagram`, `options`, `approach_verdict`, `provenance` | older than the structured brief itself | write the brief the old way after step 5 — those five fields — fill step 3's template by hand, and carry on |
+
+**Do not read the first case as the second.** `problems[].label` is the live example: an install
+from before it existed refuses write 1, which is the first of these commands you call, so you meet
+this before you have dispatched anything. Measured on 11 October 2026 — dropping `label` from the
+three problems and writing the same document again was accepted, with all three problems stored.
+Falling back to the old shape there would have thrown away the flows, the numbered problems and
+every later page over one two-word field.
+
+Either way, say so once to the Dispatcher, naming the field that was refused rather than only
+that something was.
 
 ### Rules, and every finding
 

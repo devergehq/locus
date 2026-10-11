@@ -1407,12 +1407,23 @@ ok "every fact label is three words or fewer"        "$(layers "d['longest_fact_
 ok "every fact value is six words or fewer"          "$(layers "d['longest_fact_value'] <= 6")" True
 ok "  and the table says every example is invented"  "$(grep -c 'Every example in that table is invented' "$brief_md")" 1
 
+printf '\n  a step\x27s facts replace, so they are written once\n'
+ok "the brief says the option replaces the list"    "$(grep -c 'the option replaces the whole list' "$brief_md")" 1
+ok "  naming the one rule it breaks"                "$(grep -c 'stops being true' "$brief_md")" 1
+ok "  with the measurement, five against one"       "$(grep -c 'left that step with one fact' "$brief_md")" 1
+ok "  and a row per thing a call can say"           "$(grep -c '^| no fact option at all | the facts it already had' "$brief_md")" 1
+ok "  including the one that empties it"            "$(grep -c '^| the clear option | none |' "$brief_md")" 1
+ok "  so the facts go in the call that finishes"    "$(grep -c 'once the step is done and you know all of them' "$brief_md")" 1
+ok "  and progress loses nothing"                   "$(grep -c 'and loses nothing' "$brief_md")" 1
+
 printf '\n  a field DEV-917 adds is sent only where it is taken\n'
 ok "the brief probes the command, not the version"  "$(grep -c 'Probe the command, never the version number' "$brief_md")" 1
 ok "  with the command that answers it"             "$(grep -c 'review-desk layer set --help' "$brief_md")" 1
 ok "  reading the option name off that help"        "$(grep -c "Read the option's own name off that help" "$brief_md")" 1
 ok "  and carries on without it, silently"          "$(grep -c 'say nothing about it to anyone' "$brief_md")" 1
 ok "  because a review must still be prepared"      "$(grep -c 'never fail to be prepared because a field is' "$brief_md")" 1
+ok "  and the version string cannot answer it"      "$(grep -c 'The version number cannot answer this' "$brief_md")" 1
+ok "  measured: both builds print the same version" "$(grep -c 'both print' "$brief_md")" 1
 ok "a source document refused for the two fields is retried" "$(grep -c 'drop those two' "$brief_md")" 1
 
 printf '\n  write 1 says why in one clause\n'
@@ -1736,7 +1747,12 @@ ok "and unmarking the flows does not rescue it"     "$(rc brief put --review 1 -
 ok "  the verdict that scored against it refuses too" "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
 ok "  and the brief forbids dropping or renumbering" "$(grep -c 'Never drop a problem, and never renumber one' "$brief_md")" 1
 ok "an unknown field is exit 1, not exit 2"         "$(rc brief put --review 4 --file "$work/old.json")" 1
-ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the structured brief' "$brief_md")" 1
+ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the field\*\*, not a broken' "$brief_md")" 1
+ok "  reading how much older out of the refusal"    "$(grep -c 'how much older is in the refusal' "$brief_md")" 1
+ok "  one field behind: drop it and write again"    "$(grep -c 'drop that one field and write again' "$brief_md")" 1
+ok "  older than the brief: the five old fields"    "$(grep -c 'older than the structured brief itself' "$brief_md")" 1
+ok "  and the two are not to be confused"           "$(grep -c 'Do not read the first case as the second' "$brief_md")" 1
+ok "  with the measured example that forced it"     "$(grep -c 'dropping .label. from the' "$brief_md")" 1
 
 printf '\n  the brief is linted before it is sent, and never before that\n'
 # The first two assertions RUN the linter over the two documents this harness built, which is
