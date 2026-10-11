@@ -1450,7 +1450,12 @@ ok "  and it checks for a filing before filing"        "$(grep -c 'review.nit_ti
 # permission to post. Said in the row and again in the section.
 ok "  filing is not a sign-off, said twice"            "$(grep -c 'not a sign-off' "$worker_md")" 2
 ok "  and the button text the report moves"            "$(grep -c 'Queued as one ticket' "$worker_md")" 1
-ok "  each event row names its section, not its distance" "$(grep -c 'exactly as \*\*' "$worker_md")" 2
+# Counted by name rather than by the prefix `exactly as **`. The prefix is good practice
+# anywhere -- DEV-929 added a third use of it, pointing at **The draft, and then wait** from the
+# posting steps -- so counting it made a correct cross-reference look like a regression here.
+# What this assertion is for is that each of the two event rows names its section.
+ok "  the approved row names its section"            "$(grep -c 'exactly as \*\*Posting exactly once\*\*' "$worker_md")" 1
+ok "  and the nits row names its own"                "$(grep -c 'exactly as \*\*Filing the held-back' "$worker_md")" 1
 ok "  and a null ticket blocks the filing, not the session" "$(grep -c 'file nothing until they answer' "$worker_md")" 1
 ok "  a merged pull request does not cancel the ticket"  "$(grep -c 'merged pull request does not cancel' "$worker_md")" 1
 ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1

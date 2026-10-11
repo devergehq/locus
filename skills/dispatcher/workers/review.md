@@ -1005,20 +1005,27 @@ post again, on somebody's pull request, under your principal's name.
    each anchored finding on the pull request twice, once as a section and once as a comment,
    under your principal's name. So: **never post the old body.**
 
-   What to do is ask, once, and then wait as you already do. Tell the Dispatcher, and say to
-   your principal that the draft has to be **sent back from the draft page** so the blocks can
-   be written again — then wait for `draft_sent_back` and handle it exactly as the table above
-   says. The round is not lost; only the body is. Do not look for a command that does it: there
-   is none, and sending a draft back is the developer's act for the same reason approving it is.
+   What to do is **ask once, say it is stuck, and then go back to waiting.** Tell the Dispatcher
+   and say to your principal that the draft has to be **sent back from the draft page** so the
+   blocks can be written again; then wait for `draft_sent_back` and handle it exactly as **The
+   draft, and then wait** describes. The round is not lost; only the body is. Do not look for a
+   command that does it: there is none, and sending a draft back is the developer's act for the
+   same reason approving it is.
 
-   **Why this is spelled out rather than left to "it refuses, so wait".** Waiting alone does not
-   clear it — nothing about an approved draft changes on its own — so a session that only waits
-   waits forever on a review that needed one sentence to a person. Measured on review-desk
-   `bae4f5e`, where sending back an approved draft was refused `409` and rewriting its blocks
-   was refused too, which left the draft with no exit at all. That was reported and ruled on: a
-   developer may send back any approved draft that has not been posted. **Until that lands, a
-   draft in this state cannot be cleared by anyone** — so say so plainly rather than promising
-   a send-back that answers `409`, and name the review so somebody can see it is stuck.
+   **Why the asking is the part that matters, and not the waiting.** Nothing about an approved
+   draft changes on its own, so a session that only waits waits forever on a review that needed
+   one sentence to a person. Going back to waiting afterwards is still right — it costs nothing
+   and your watcher is the thing that will hand you the send-back — but it is not what clears
+   this, and a brief that said only "it refused, so wait" would have had sessions sitting on
+   dead reviews.
+
+   **One caveat to pass on with the ask, while it is still true.** Measured on review-desk
+   `bae4f5e`: sending back an approved draft was refused `409`, "only a draft that is ready can
+   be sent back", and rewriting its blocks was refused too — which left the draft with no exit
+   at all. Reported and ruled on: a developer may send back any approved draft that has not been
+   posted. **Until that ruling ships, your principal's click will be refused**, so name the
+   review and say that the send-back itself may not work yet. Telling them to click a button
+   that answers `409`, and saying nothing about it, spends their time on a dead end twice.
 
    **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
    the step after this one, and a session that posted and then died before reporting it needs

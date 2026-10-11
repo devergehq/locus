@@ -414,7 +414,7 @@ ok "  nor is it waited on alone, which never ends" "$(grep -c 'waits forever' "$
 ok "  told apart by the status, not the sentence" "$(grep -c 'not the sentence' "$brief")" 1
 ok "  and both refusals carry one code"          "$(grep -c 'refusals carry .draft_status.' "$brief")" 1
 ok "  and only the developer can clear it"       "$(grep -c 'sent back from the draft page' "$brief")" 1
-ok "  with no command for a session to reach for" "$(grep -c 'Do not look for a command that does it' "$brief")" 1
+ok "  with no command for a session to reach for" "$(grep -c 'Do not look for a' "$brief")" 1
 ok "the agent marker goes after Review Desk's"   "$(grep -c 'the .agent:. marker goes after Review Desk' "$brief")" 1
 ok "  because marker_last reads the last line"   "$(grep -c 'threads.marker_last. off the body.s last physical line' "$brief")" 1
 ok "the marker is the join, with the title after" "$(grep -c 'the join is carried by the thing' "$brief")" 1
