@@ -13,6 +13,29 @@ refuses to build when they disagree.
 
 ### Added
 
+- **The dispatcher's poller runs the harvest, and a draft waiting on the developer is read every
+  20 seconds.** Two waits nobody had set. `review-desk harvest` had existed since DEV-859 with
+  nothing calling it, so layer 7 of every posted review read `pending` for ever and
+  `workers/review.md` said of it "nothing you do" — true of the session, and nobody else had the
+  job. The poller now runs `review-desk harvest --repo <owner/repo>` for each repository it
+  serves, one repository per tick and no more often than `limits.harvest_interval_secs` (900),
+  which is how a reply or a resolved thread that arrives after the session is discarded reaches
+  the record. It is the first call in `dispatcher.py` that writes to Review Desk and it cannot
+  sign off: it records what GitHub already says, running it twice records nothing twice, and a
+  failure is one `harvest_failed` per interval per reason that stops nothing. And the first
+  sign-off posted for real waited 4 minutes 28 seconds behind `watch_interval_secs` 300, so a
+  review session's watcher now reads Review Desk every `limits.draft_watch_interval_secs` (20)
+  while its draft is waiting on the developer, and `watch_interval_secs` otherwise. **Only the
+  Review Desk reads speed up.** A red team found that `cmd_watch`'s one `time.sleep` throttles
+  `pull_request`'s four GitHub calls as well, which at 20 seconds is 720 an hour per watcher
+  against a token the poller shares, held for as long as a human leaves a draft `ready`; so
+  `Watcher.tick` gained `full`, and a fast pass makes no GitHub call at all — asserted, not
+  argued. Both settings are defaulted in code, so no instance needs an edit, and `init` adds
+  them to an older `limits` block without touching a tuned value. 79 new assertions in
+  `scripts/test-dispatcher-review-desk.sh`, against a stand-in `review-desk` and a throwaway
+  instance: no real harvest, no `~/.review-desk`, no `~/.locus/data/dispatcher`, nothing on
+  7777. (DEV-931)
+
 - **`review-craft` now lints a brief.** `skills/review-craft/brief_lint.py` checks the structured
   brief Review Desk stores — deterministic, read-only, standard library only, 18 rules. Nothing
   checked one before: on the review that forced `understand.md` the session recorded 310 words of
