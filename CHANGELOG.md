@@ -73,6 +73,38 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **"File as one ticket for an agent" reached nobody.** Review Desk answers `work list` with five
+  kinds of work and `REVIEW_DESK_KINDS` named four, so `nits_to_ticket` — the developer asking, on
+  the draft page, for the findings they held back to be filed as one ticket — was dropped by the
+  poller and by the watcher both. Review Desk files no ticket and says so, so that request was
+  work for an agent that nobody was ever handed, and it had been since DEV-877. It now reaches
+  whichever is true: the live session, through its own watcher, or a replacement, through
+  `review_desk_resume`. Both emits carry `nit_ticket_status`, which on a `draft_approved` is the
+  fact that is not otherwise visible — "Ticket what is left, and approve" is one click, and the
+  ticket becomes an item of its own only once the posting is reported. `workers/review.md` gained
+  the event and a section: one ticket covering the review's `held_back` findings, in the Linear
+  workspace from the dispatch block and the team from the review's own `ticket_id`, written with
+  `issue-craft` and reported back with `review-desk review nit-ticket --review <id> --ticket
+  <NEW-ID>` — which is what clears the item and moves the draft page's button from "Queued as one
+  ticket" to "Filed as <NEW-ID>". It says in two places that **filing is not a sign-off**: Review
+  Desk ranks the request above its "nobody's turn" rule, so the item arrives while the draft may
+  still be waiting on the developer, and nothing a session may do about it has changed. It also
+  warns off `finding list`, which Review Desk's own `work list` help names and 0.1.0 does not have
+  — a session that followed that help would exit 1 holding nothing. **And the next new kind will
+  say so**: `Poller.unknown_kind` emits one `review_desk_unknown_kind` per kind name per
+  `reemit_after_secs`, dispatching nothing and blocking nothing, sitting where the kind is tested
+  rather than where liveness is — so an unknown kind is named even for a review somebody is
+  working, which is what lets the watcher stay silent instead of repeating it every 20 seconds.
+  `REVIEW_DESK_IGNORED_KINDS` is empty and load-bearing empty: it is the only way to say "read,
+  and deliberately not ours" as against "never heard of it", and the fifth kind was in neither
+  list for five weeks with no line anywhere to grep for. 67 new assertions in
+  `scripts/test-dispatcher-review-desk.sh` (496 to 563), including a crossing that fails if Review
+  Desk's contract lists a kind this file neither handles nor names as ignored, and four reversals
+  — one of them showing that the crossing cannot see a kind missing from the *relay* list, which
+  is why the relay test exists beside it. Against a stand-in `review-desk` and a throwaway
+  instance: no real review, no real ticket, no `~/.review-desk`, no `~/.locus/data/dispatcher`,
+  nothing on 7777. (DEV-934)
+
 - **An empty GitHub search is no longer read as an empty inbox.** `review_requests()` and
   `linear_triggers()` both treated a zero-result tick as a fact about the world and committed the
   destructive state that follows from it. Executed, the review side cleared a live review with the
