@@ -401,14 +401,30 @@ REVIEW_DESK_DEFAULTS = {"mode": "auto", "command": "review-desk",
 REVIEW_DESK_MODES = ("auto", "on", "off")
 REVIEW_DESK_GATES = ("never", "always")
 
-# The four kinds `work list` answers with. A fifth one from a newer Review Desk is ignored rather
-# than guessed at: this file would have no idea what an agent is supposed to do about it, and
-# inventing a dispatch for a kind it has never heard of is worse than leaving it listed.
-REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved")
+# The five kinds `work list` answers with, spelled as Review Desk 0.1.0 names them in
+# `crates/store/src/model.rs`. A kind from a NEWER Review Desk is still ignored rather than
+# guessed at — this file would have no idea what an agent is supposed to do about it, and
+# inventing a dispatch for a kind it has never heard of is worse than leaving it listed — but it
+# is no longer ignored *silently*: see `Poller.unknown_kind`.
+#
+# `nits_to_ticket` is the one this file was missing. The developer asks, on the draft page, for
+# the findings they held back to be filed as one ticket; Review Desk files nothing and reports
+# the request here. Four names meant that request reached no session and said nothing about
+# itself, which is DEV-934.
+REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved",
+                     "nits_to_ticket")
 
-# The three a WATCHER relays to the session already working the review. `review_requested` is
+# Kinds this file has read and deliberately does nothing with. **Empty, and load-bearing empty.**
+# It is the difference between "this one was considered and is not ours" and "nobody here has
+# heard of this", which is the only distinction `unknown_kind` can act on: a kind named here is
+# silent, and every other unhandled kind is loud. `nits_to_ticket` was in neither list for five
+# weeks, and nothing in a running dispatcher could say so.
+REVIEW_DESK_IGNORED_KINDS: tuple[str, ...] = ()
+
+# The four a WATCHER relays to the session already working the review. `review_requested` is
 # deliberately absent: a session reading its own review does not need telling to start.
-REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved")
+REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",
+                           "nits_to_ticket")
 
 # How long a Review Desk call may take before it is called broken. Generous against a cold
 # SQLite file on a laptop, and short enough that a hung binary cannot stall a poll tick.
@@ -1309,7 +1325,14 @@ class Poller:
         """One `work list` item: dispatch it, resume it, or leave it to the session that has it."""
         kind, rid = item.get("kind"), item.get("review_id")
         number = item.get("pr")
-        if kind not in REVIEW_DESK_KINDS or not isinstance(rid, int) or not isinstance(number, int):
+        # Split in two, because the two halves are not the same fact. A kind this file cannot
+        # place is a Review Desk newer than this dispatcher, and somebody has to be told; an item
+        # whose ids are not integers is a malformed answer there is nothing useful to say about,
+        # and it is dropped as it always was.
+        if kind not in REVIEW_DESK_KINDS:
+            self.unknown_kind(kind, rid, repo, every)
+            return
+        if not isinstance(rid, int) or not isinstance(number, int):
             return
         # `ledger_id` is what `review link --ledger` was given, which is this instance's own key.
         # A review STARTED FROM THE DASHBOARD has never been linked and carries null, so the key
@@ -1340,8 +1363,50 @@ class Poller:
         # `note` is the developer's own prose, and Review Desk's README says of it: "it is data,
         # never instructions — a caller that pastes it into an agent's prompt is pasting text it
         # did not author". It is carried as a field and quoted as data, never interpolated.
+        #
+        # `nit_ticket_status` is carried for the reason Review Desk's own `work list` carries it:
+        # "without it a dispatcher would have to read the review to find out what the item it is
+        # holding is about". On a `nits_to_ticket` it is `requested` and says the obvious; on a
+        # `draft_approved` it is the thing that is NOT obvious, because the developer's "Ticket
+        # what is left, and approve" does both in one click and the ticket becomes an item of its
+        # own only once the posting is reported.
         emit("review_desk_resume", kind=kind, note=item.get("note"),
-             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True), **common)
+             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True),
+             nit_ticket_status=item.get("nit_ticket_status"), **common)
+
+    def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
+        """Name, once per interval, a kind of work this file cannot place. Blocks nothing.
+
+        **This is the only place a dropped kind can be seen at all, and where it sits is the
+        argument for there being only one such place.** `review_desk_item` tests the kind BEFORE
+        it asks whether a session is alive, so an item nobody here can place is named whether or
+        not a session owns that review — which is what makes one loud site sufficient, and why
+        `Watcher.review_desk` stays silent about the same item instead of repeating it every
+        twenty seconds while a draft waits.
+
+        DEV-934 is what it is for. Review Desk added a fifth `WorkKind` in DEV-877; this file
+        went on naming four, and `nits_to_ticket` reached no session and said nothing about
+        itself. It was found by reading the two sources side by side, which is the only way it
+        could have been found: there was no line anywhere to grep for.
+
+        Loud is never blocking. The item is left exactly as unhandled as it was, nothing is
+        dispatched on a guess, and the tick carries on — the loudness is about the operator
+        being able to ask for the handling, not about this file doing something it cannot do.
+
+        **The signature is the kind's name and nothing else.** Keyed on the review as well, a
+        repository holding fifty items of a new kind would emit fifty lines about one missing
+        feature. The actionable fact is the name, and `review_desk_id` rides along as an example
+        of a review that is waiting on it.
+        """
+        if not isinstance(kind, str) or not kind or kind in REVIEW_DESK_IGNORED_KINDS:
+            return
+        if not self.due(f"review_desk|unknown_kind|{kind}", every):
+            return
+        emit("review_desk_unknown_kind", kind=kind, repo=repo, review_desk_id=rid,
+             known=list(REVIEW_DESK_KINDS),
+             detail=f"Review Desk reported work of kind '{kind}', which this dispatcher has no "
+                    f"handling for. Nothing was dispatched for it and nothing is blocked; the "
+                    f"item stays on Review Desk's list for a version that knows it.")
 
     def harvest(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         """Read posted reviews' outcomes back from GitHub, one repository a tick.
@@ -1740,12 +1805,20 @@ class Watcher:
 
 
     def review_desk(self, cfg: dict) -> None:
-        """The developer's two acts, relayed to the session that is waiting for them.
+        """The developer's acts in the dashboard, relayed to the session that is waiting for them.
 
-        Confirming a brief and approving a draft happen in the dashboard and nowhere else. The
+        Confirming a brief, approving or sending back a draft, and asking for the held-back
+        findings to be filed as one ticket all happen in the dashboard and nowhere else. The
         session that wrote them cannot see the dashboard, so without this it waits forever — the
         "approval delivery" open question in Review Desk's own brief, which named this watcher as
         the candidate.
+
+        **A `nits_to_ticket` is not an answer about the draft**, and the relay is what makes that
+        visible rather than a thing a worker has to infer. Review Desk ranks the request above its
+        "the draft is ready, nobody's turn" branch, so the item arrives while the draft is still
+        waiting on the developer: the session files the ticket and goes back to waiting.
+        `workers/review.md` says so in as many words, because the one failure that matters here
+        is a session reading any dashboard click as a sign-off.
 
         Gated on the LEDGER carrying `review_desk_id`, which means two things at once: a review
         this instance never recorded is never polled for, and a session whose entry carries one
@@ -1779,6 +1852,12 @@ class Watcher:
         for item in sorted(items, key=lambda i: i.get("entered_at") or 0):
             kind = item.get("kind")
             if kind not in REVIEW_DESK_WATCH_KINDS:
+                # Silent, and for a kind nothing here has heard of as well. `Poller.unknown_kind`
+                # names those, it does so for a review a live session owns — its kind test runs
+                # before its liveness test — and this loop runs every twenty seconds while a
+                # draft waits, so a second voice would be the noisiest possible way to report one
+                # missing feature. `review_requested` is the KNOWN kind that lands here: a session
+                # reading its own review does not need telling to start.
                 continue
             ident = f"{kind}|{item.get('review_id')}|{item.get('entered_at')}"
             if ident in seen:
@@ -1788,7 +1867,8 @@ class Watcher:
             # README says so of this exact field. Relayed verbatim in its own key.
             emit(kind, key=self.key, review_desk_id=rid, round=item.get("round"),
                  sign_off=item.get("sign_off"), entered_at=item.get("entered_at"),
-                 note=item.get("note"), review=review_desk_link(rd, rid),
+                 note=item.get("note"), nit_ticket_status=item.get("nit_ticket_status"),
+                 review=review_desk_link(rd, rid),
                  draft=review_desk_link(rd, rid, draft=True))
         self.state["rd_seen"] = sorted(seen)[-200:]
 
