@@ -351,7 +351,7 @@ line number.
 | **The blind pass would pick** | **C**, the same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
 | **Given** | The poured problem half, verbatim — the fold below is the whole of it. |
 | **Looked up** | Nothing. |
-| **Counts** | Options · `4 ticket, 6 blind` · On both · `3` · Only the ticket · `1` · Only the blind pass · `3` |
+| **Counts** | Options · `4 ticket, 6 blind` · On both · `3` · Ticket only · `1` · Blind only · `3` |
 | **Provenance** | The ticket, the description, and the code at `a1b2c3d` — an export with no history in it. |
 
 <details><summary>What the pass was given, verbatim</summary>
