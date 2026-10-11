@@ -251,27 +251,33 @@ echo "A part's summary"
 ok "a brief with no parts passes"                 "$(run "$work/base.json")" 0
 ok "and the pass says it measured none"           "$(says 'longest of 0 part(s)')" yes
 ok "31 words fails against the limit of 30"       "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": " ".join(["word"]*31), "fixes": [1], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": " ".join(["word"]*31), "fixes": [1], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "as parts.summaries"                           "$(rule parts.summaries)" yes
-ok "naming the part and the count"                "$(says 'part 1 runs 31 words')" yes
+ok "naming the line and the count"                "$(says "part 1's summary runs 31 words")" yes
 ok "and where the mechanism goes instead"         "$(says 'leave the mechanism to the files beside it')" yes
 ok "30 words passes"                              "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": " ".join(["word"]*30), "fixes": [1], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": " ".join(["word"]*30), "fixes": [1], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
 ok "a class name in a part summary fails"         "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": "TokenRepository now reads the expiry column.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "TokenRepository now reads the expiry column.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "as parts.plain"                               "$(rule parts.plain)" yes
 ok "naming the part and the name"                 "$(says "part 1's summary carries TokenRepository")" yes
 ok "a path in a part summary fails"               "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": "The hour is read in app/Http/Reset.php now.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "The hour is read in app/Http/Reset.php now.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "a :: in a part summary fails"                 "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": "The expiry is read through Token::fresh now.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "The expiry is read through Token::fresh now.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "a plain summary of eight words passes"        "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": "An hour is stamped on each link.", "fixes": [1],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "An hour is stamped on each link.", "fixes": [1],
                "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
 
 echo "A part's one-line form"
@@ -413,7 +419,8 @@ ok "a class name in the detail is allowed"        "$(run "$work/base.json")" 0
 ok "and the detail may be any length"             "$(mut 'b["problems"][0]["detail_before"] += [" ".join(["word"]*400)]'; case_run)" 0
 ok "as may an option argument"                    "$(mut '
 b["options"][0]["argument_for"] = " ".join(["word"]*300)
-b["parts"] = [{"title": "A part", "one_line": "An hour per token", "summary": "An hour is stamped on each token.", "fixes": [1],
+b["parts"] = [{"title": "A part", "one_line": "An hour per token",
+               "summary": "An hour is stamped on each token.", "fixes": [1],
                "files": [{"path": "app/Thing.php", "lines_added": 9000, "lines_removed": 9000,
                           "in_diff": True}], "lines_added": 9000, "lines_removed": 9000}]'; case_run)" 0
 
@@ -572,7 +579,8 @@ ok "and names the problem's label"                 "$(shouts 'problems\[1\].labe
 ok "a part that is a string is 2"                  "$(mut 'b["parts"]=["A part"]'; case_run)" 2
 ok "and names the part"                            "$(shouts 'parts\[1\]')" yes
 ok "a part summary that is a list is 2"            "$(mut '
-b["parts"] = [{"title": "A part", "one_line": "An hour per link", "summary": ["one", "two"], "fixes": [], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": ["one", "two"], "fixes": [], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 2
 ok "sources that are not a list is 2"              "$(python3 -c '
 import json, sys

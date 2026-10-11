@@ -1517,7 +1517,7 @@ t = 'a correction that throws after the reopen strands the invoice OPEN'
 doc = open('$house_md').read()
 print(len(t.split()) <= 12 and doc.count(t) == 3)")" True
 ok "backticks hold in every prose field"            "$(grep -c 'This holds in every prose field a session writes' "$house_md")" 1
-ok "  and the fields that carry no name are named"  "$(grep -c "a brief's top layer, and both of a part's two lines" "$house_md")" 1
+ok "  and the fields that carry no name are named"  "$(grep -c "a brief's top layer, and a part's two lines" "$house_md")" 1
 
 printf '\n  the fields the brief names are ones Review Desk accepts, and cover the pages\n'
 ok "no field named is one the store would refuse"   "$(ask "d['unknown_roots']")" "[]"

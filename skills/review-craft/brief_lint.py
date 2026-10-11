@@ -449,7 +449,7 @@ def lint(brief: dict, sources: list | None = None) -> int:
     # Length and plainness are separate rules, because one is fixed by cutting and the other by
     # moving a name into the part's files, which are listed beside the summary already.
     #
-    # Three rules over two fields, and the one-line form needs two of them for the reason the
+    # Four rules over two fields, and the one-line form needs two of them for the reason the
     # label does: a part with NO one-line form and one that runs long fail differently and are
     # fixed by different edits -- and the first is the one the page cannot work around. The row
     # it draws is a single line that never wraps, so with nothing to draw there it falls back to
@@ -475,7 +475,7 @@ def lint(brief: dict, sources: list | None = None) -> int:
             measure=f"longest of {len(parts)} part(s): "
                     f"{max([words(p.get('one_line')) for p in parts] or [0])} words of "
                     f"{LIMIT['part.one_line.words']}")
-    over_parts = [f"part {i} runs {words(p.get('summary'))} words"
+    over_parts = [f"part {i}'s summary runs {words(p.get('summary'))} words"
                   for i, p in enumerate(parts, 1)
                   if words(p.get("summary")) > LIMIT["part.summary.words"]]
     L.check(not over_parts, "parts.summaries",
