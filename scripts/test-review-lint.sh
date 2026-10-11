@@ -360,6 +360,20 @@ EOF
 anchored () { python3 -c 'import json,sys; print(json.dumps({"id":int(sys.argv[1]),"user":{"login":"principal"},"pull_request_review_id":900,"path":sys.argv[2],"line":int(sys.argv[3]),"body":open(sys.argv[4]).read()}))' "$@"; }
 composed_threads="$(anchored 1000 app/Reporting/ColumnPolicy.php 52 "$work/composed-t1.md"), $(anchored 1001 jobs/DeliverWebhook.php 57 "$work/composed-t2.md"), $(anchored 1002 app/Export/Writer.php 31 "$work/composed-t3.md"), $(anchored 1003 tests/WriterTest.php 12 "$work/composed-t4.md")"
 
+# The shape before Review Desk composed anything: sections and no index at all. A section is
+# the only record of its finding there, so it still counts -- the fix narrows what is added to
+# the rows, and must not stop adding it. The second assertion is the control: with the count
+# wrong on the same body, the check still fails, so the first is not passing vacuously.
+fixture "[$(review 899 principal "$work/sectioned.md")]" '[]'
+run >/dev/null
+ok "with no index, a section still counts"      "$(rule verdict.should_split)" no
+ok "  and the check is live, not vacuous"       "$(ran verdict.should_split)" yes
+sed 's/^\*\*1 Should · 1 open\.\*\*/**2 Should · 1 open.**/' "$work/sectioned.md" > "$work/miscount.md"
+fixture "[$(review 899 principal "$work/miscount.md")]" '[]'
+run >/dev/null
+ok "  a wrong count on that body still fails"   "$(rule verdict.should_split)" yes
+ok "  naming what the body holds"               "$(says 'says 2 Should, rows hold 1')" yes
+
 fixture "[$(review 900 principal "$work/composed.md")]" "[$composed_threads]"
 ok "the composed body passes whole"             "$(run)" 0
 ok "a finding with a row and a section counts once" "$(rule verdict.should_split)" no

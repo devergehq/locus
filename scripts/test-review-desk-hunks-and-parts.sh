@@ -290,6 +290,21 @@ except urllib.error.HTTPError as refused:
     print(refused.code)
 POST
 
+cat > "$work/get.py" <<'GET'
+"""One GET, written out. The dashboard's draft endpoint carries the derived threads, and the
+hand-over that also carries them is refused until the developer has signed off -- which nothing
+here may do.
+
+    get.py <url> <out-file>
+
+urllib rather than curl, for the reason post.py gives.
+"""
+import pathlib, sys, urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=20) as answer:
+    pathlib.Path(sys.argv[2]).write_bytes(answer.read())
+GET
+
 cat > "$work/against.py" <<'AGAINST'
 """Every number a hunk draws, against the file at the head commit.
 
@@ -372,12 +387,16 @@ ok "without Review Desk it is one markdown draft"    "$(grep -c "Without Review 
 ok "the house style carries the section's shape"     "$(grep -c 'A section heading is `### {Severity} · {id} · {title}`' "$style")" 1
 ok "  and where the status line goes"                "$(grep -c 'go on the section.s first line' "$style")" 1
 ok "  and that a nit there is not grouped"           "$(grep -c 'each Nit raised gets its own section' "$style")" 1
-# The other rule the composition overrides, and the one that would have been left contradicting
-# itself: "at most three findings raised in the body" is about a body an agent writes whole, and
-# a finding with no block cannot be decided on at all.
-ok "  and that the three-in-the-body cap moves"      "$(grep -c 'the cap moves to the findings' "$style")" 1
-ok "  with the brief saying so where blocks are written" "$(grep -c 'Every posted finding gets a block, past three' "$brief")" 1
+# The rule the composition was once read as overriding. It does not: DEV-929 made the composed
+# body an index with a section only for a finding that cannot be anchored, so "at most three
+# findings raised in the body" means what it says again. These three assertions are the ones
+# that moved when the override came out, and they are kept pointed at the claim rather than at
+# the paragraph, so that restoring the override anywhere fails here.
+ok "  and that the three-in-the-body cap holds"      "$(grep -c 'Both rules hold for a body a record composes from blocks' "$style")" 1
+ok "  with the brief saying the limits still hold"   "$(grep -c "the house style's limits still hold" "$brief")" 1
+ok "  and neither says the cap is lifted"            "$(grep -c 'the cap moves to the findings' "$style")$(grep -c 'past three' "$brief")" 00
 ok "  and nothing relaxed for a body you write"      "$(grep -c 'three is still three' "$style")" 1
+ok "  a block is not a section, so the body is short" "$(grep -c 'A block is not a section' "$brief")" 1
 
 # =============================================================================================
 printf '\nB. the hunk, built from a fixture repository\n'
@@ -718,7 +737,7 @@ for a in "$@"; do case "$a" in api|-H|--paginate|Accept:*) ;; *) path=$a ;; esac
 case "$path" in
   user) echo '{"login":"principal"}' ;;
   */reviews) cat "$RDWORK/reviews.json" ;;
-  */comments*) echo '[]' ;;
+  */comments*) cat "$RDWORK/comments.json" ;;
   *) echo "fake gh: unexpected $path" >&2; exit 1 ;;
 esac
 GHSTANDIN
@@ -729,9 +748,16 @@ serve_body () { python3 -c "
 import json, sys
 json.dump([{'id': 9001, 'user': {'login': 'principal'}, 'body': open(sys.argv[1]).read(),
             'submitted_at': '2026-10-11T00:00:00Z'}], open('$work/reviews.json', 'w'))" "$1"; }
-# linted <body-file> -> exit code; the report in $work/lint.out
+# linted <body-file> [comments-json] -> exit code; the report in $work/lint.out
+#
+# The second argument arrives with DEV-929: a composed review is a body AND the threads the same
+# record derives, and the linter grades them together. Without it the threads are absent, which
+# is the right fixture for a body `compose.py` built and the wrong one for a body Review Desk
+# composed -- there, every anchored finding is a thread, so serving none left the linter reading
+# "0 threads, 0 body sections" and failing `threads.exist` on a review that was correct.
 linted () {
   serve_body "$1"
+  if [ -n "${2:-}" ]; then cp "$2" "$work/comments.json"; else echo '[]' > "$work/comments.json"; fi
   set +e
   PATH="$work/bin:$PATH" python3 "$lint" 1 --repo o/r > "$work/lint.out" 2>&1
   c=$?
@@ -845,10 +871,31 @@ print(json.load(sys.stdin)['draft']['status'])"; }
     | python3 -c "
 import json, sys
 open('$work/real.md', 'w').write(json.load(sys.stdin)['draft']['body'])"
-  ok "  and the body is the composition, to the byte" "$(cmp -s "$work/composed.md" "$work/real.md" \
-      && echo same || echo differs)" same
-  ok "  which the linter passes on the real body"    "$(linted "$work/real.md")" 0
-  ok "  on every one of its checks"                  "$(checks)" all
+  ok "  a prose block passing through to the byte"   "$(python3 -c "
+import json
+blocks = json.load(open('$work/blocks.json'))
+body = open('$work/real.md').read()
+print(all(b['text'] in body for b in blocks if b['kind'] == 'prose'))")" True
+
+  # DEV-929 moved the index into Review Desk, so there are now two compositions in the wild and
+  # the body itself says which one built it. The WHOLE body is no longer composed by a rule this
+  # brief states -- the brief says in terms that the worker writes neither the index nor the
+  # threads -- so `compose.py` modelling all of it would be a second implementation to keep in
+  # step, which is the thing it was written to avoid. The heading rule it does still model stays
+  # under test in section C.
+  #
+  # An older binary is SKIPPED rather than held to the old composition. Pinning a shape the
+  # brief no longer describes is the kind of check whose passing carries no information.
+  if grep -q '^### Open — needs a decision$' "$work/real.md"; then
+    composes_index=yes
+    ok "  and the real body is an index, not the blocks" "$(grep -c '^### Open — needs a decision$' "$work/real.md")" 1
+    ok "  with one row per posted finding"           "$(grep -c '^| .* · F[0-9]* |' "$work/real.md")" 2
+    ok "  and no section, both of them anchoring"    "$(grep -c '^### \(Should\|Nit\) · F[0-9]* · ' "$work/real.md")" 0
+  else
+    composes_index=no
+    skipped "this review-desk composes the pre-DEV-929 body, the blocks joined end to end"
+    skipped "  (the index, the threads and their lint need a review-desk with 'draft handover')"
+  fi
   # One finding, two blocks: the heading is composed from the finding, so a second block would
   # repeat it. The refusal happens before anything is written, so the good blocks above survive
   # it -- which the decisions below depend on.
@@ -860,7 +907,7 @@ json.dump(blocks + [blocks[2]], open('$work/twice.json', 'w'))"
   ok "  and the body it refused is still the first"  "$(review-desk draft show --review "$rid" --json \
       | python3 -c "
 import json, sys
-print(json.load(sys.stdin)['draft']['body'] == open('$work/composed.md').read())")" True
+print(json.load(sys.stdin)['draft']['body'] == open('$work/real.md').read())")" True
 
   printf '\n  cut, regrade and rewrite, for every posted finding\n'
   review-desk serve --port 0 --json > "$work/serve.out" 2>&1 &
@@ -873,6 +920,27 @@ print(json.load(sys.stdin)['draft']['body'] == open('$work/composed.md').read())
 import json
 print(json.load(open('$work/serve.out'))['serve']['url'].rstrip('/') + '/api/v1')" 2>/dev/null || echo "")
   ok "the server answers on 127.0.0.1"               "$(echo "$api" | grep -c '^http://127.0.0.1:')" 1
+
+  # The body and its threads, graded together, which is the pair GitHub receives in one call.
+  # The threads come off the dashboard's own draft endpoint rather than `draft handover`: the
+  # hand-over is refused until the developer has signed off, and NOTHING in this repository may
+  # approve a draft to make a test pass. The endpoint serves the same derived threads on a draft
+  # that is merely `ready`, so the pair can be checked without anyone pretending to be them.
+  if [ "$composes_index" = yes ]; then
+    python3 "$work/get.py" "$api/reviews/$rid/draft" "$work/apidraft.json"
+    ok "the draft endpoint carries the threads"      "$(python3 -c "
+import json
+print(len(json.load(open('$work/apidraft.json')).get('threads', [])))")" 2
+    python3 -c "
+import json
+threads = json.load(open('$work/apidraft.json')).get('threads', [])
+json.dump([{'id': 7000 + i, 'user': {'login': 'principal'}, 'pull_request_review_id': 9001,
+            'path': t['path'], 'line': t['line'], 'body': t['body']}
+           for i, t in enumerate(threads)], open('$work/realthreads.json', 'w'))"
+    ok "the composed body and its threads lint clean" "$(linted "$work/real.md" "$work/realthreads.json")" 0
+    ok "  on every one of its checks"                "$(checks)" all
+  fi
+
   decide () { python3 "$work/post.py" "$api/reviews/$1/findings/$2/decide" "$3" "$work/decided.json"; }
   # Order matters: a regrade then a rewrite then a cut, so each one is made on a block the one
   # before it left behind. Cutting first would leave nothing to regrade.

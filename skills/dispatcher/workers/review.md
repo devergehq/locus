@@ -670,10 +670,10 @@ with nothing in the diff to anchor to" asks for. The hunk is for the developer's
 GitHub.
 
 **Do not also write that rule's "Corrections and unanchored findings" comment.** It exists so an
-unanchorable finding stays navigable from a body that is a short index; here the body carries the
-finding in full, in its own section, so a second copy in a top-level comment is the same words
-twice and one more thing to keep in step. Write it where the house style's sectioned layout puts
-it, and nowhere else.
+unanchorable finding stays navigable from a body that is a short index, and the composed body is
+that index — with a row for this finding that links to its own section a few lines below. A
+second copy in a top-level comment is the same words twice, one more thing to keep in step, and
+a thread the developer never decided on. Write the block, and nothing else.
 
 **A finding with no file, or a file and no line, carries no hunk at all** — a correction to the
 pull request's description, a missing ticket, a wrong figure. There is no line to read, so there
@@ -731,20 +731,26 @@ regrade change the heading instead of leaving a second copy of the severity to a
 
 ### Which house-style part is which block
 
-The house style's **sectioned** layout is the one the composition reproduces, and that is not a
-compromise: it is the layout `house-style.md` already prescribes for a finding that needs more
-than a table cell, and the one `review_lint.py` already budgets. Measured on a two-finding draft
-composed by Review Desk 0.1.0: **every check in `review_lint.py` passes**, and only one of them
-— `sections.status_line` — was added for this. Nothing in it was relaxed.
+**The house style's own shape is what the composition produces, and the blocks are its parts
+rather than its whole.** Review Desk builds the index from the findings themselves, hands each
+finding with a line inside the diff to GitHub as its own thread in the alert its live severity
+picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the body
+it composes for a six-finding draft with four of them anchored, on review-desk `13a78ee`:
+**27 of 27 checks in `review_lint.py` pass.** Nothing in the house style is relaxed here, and
+nothing in it is overridden here.
 
-| The body's part | Block | Why |
+**You do not write the index, and you do not write the threads.** Both are composed from the
+blocks and the findings' live severities, which is what makes a regrade or a cut move them. What
+you write is the blocks.
+
+| The review's part | Block | Why |
 |---|---|---|
 | the verdict line and the `**Method**` line | one `prose` | nothing decides on them, and they sit together under the eye |
 | `### Problem fit` and its 2–3 sentences | one `prose` | it is the understanding's conclusion, not a finding |
 | each Blocker, Should, Question and **each Nit** you are raising | one `finding`, in severity order | one block is what a decision needs |
 | the folded provenance block, with `Suppressed` | one `prose` | it is the last thing in the body, and nothing decides on it |
 
-Five things that table does not say on its own:
+Seven things that table does not say on its own:
 
 - **Write only the title; the heading is not yours.** `### 🟠 Should · S1 · …` would compose to
   `### Should · F1 · ### 🟠 Should · S1 · …`. The glyph is gone from a section heading and the id
@@ -757,19 +763,31 @@ Five things that table does not say on its own:
   a thread: a nit folded into another finding's block has no block of its own, so every decision
   about it is refused. Where the volume is the problem, hold the nit back or suppress it with a
   reason — both are on the record — rather than grouping it out of reach of a decision.
-- **Every posted finding gets a block, past three.** The house style's "at most three findings
-  raised in the body" and "the body is triage" are about a body you write whole; here the body
-  *is* the blocks, and a finding left out of them cannot be cut or regraded. Raise fewer
-  findings if there are too many — do not write fewer blocks than you raised.
+- **Every posted finding gets a block, and the house style's limits still hold.** The body is no
+  longer the blocks joined end to end, so "the body is triage" and "at most three findings raised
+  in the body" apply exactly as `house-style.md` writes them. A block is not a section: a finding
+  with a line inside the diff has a block, an index row and a thread, and no section at all. What
+  fills the body is the findings with **nowhere to anchor**, so that is where the three bite —
+  many unanchored findings make a long body, and the lever is the house style's **Volume** rule,
+  raising fewer and holding the rest back or suppressing them with a reason. **Never write fewer
+  blocks than you raised**: a finding with no block cannot be cut or regraded, and hiding it from
+  the developer's decision is worse than a long body.
+- **A Blocker, a Should and a Question carry the four parts in the block.** `**What**`,
+  `**Why it matters**` and `**What I'd do**` are read off the composed thread by
+  `review_lint.py`'s `threads.four_parts`, and the only text it has to read is your block's.
+  Review Desk writes the title line above them; you write the parts beneath it.
+- **A nit stays light, in its block as on a thread.** A nit carrying all four labels trips
+  `threads.nit_light`, which is a warning rather than a failure and is still the house style
+  telling you that weight should track severity. One line of claim is a nit's whole shape.
 - **One block per finding, and only for a finding that posts.** A second block about one finding
   is refused, and so is a block about a finding that is `held_back`, `suppressed`, or carried
   into this round as `fixed`, `accepted`, `withdrawn` or `ticketed`. What the round found about
   such a finding is prose.
 
 A block's text may not begin or end with a newline — blocks are joined by exactly one blank line,
-and a block bringing its own would compose a body nobody wrote. `--file` is optional once
-`--sections` is given, because the body is then what the blocks compose to; pass both and the
-write is refused unless the two agree.
+and a block bringing its own would compose a body nobody wrote. **`--file` together with
+`--sections` is refused**: the body is what the blocks compose to, so a file beside them is a
+second answer to a question that now has one. Send the blocks alone.
 
 **Lint the composed body, not your draft.** `draft put --sections` prints the body it stored, and
 that is the text GitHub will carry. Read it back with `review-desk draft show --review <id>
@@ -879,25 +897,71 @@ Then tell the Dispatcher the id, what it covers, and that the draft is still wai
 Review Desk has no lease — so a session that posts and then dies is followed by one that would
 post again, on somebody's pull request, under your principal's name.
 
-1. `review-desk draft show --review <id> --json` is your only authority. `status` must read
-   `approved`; `event` is the GitHub review event the developer chose and `approved_at` is when.
-2. **Ask GitHub whether it is already up**:
+1. `review-desk draft show --review <id> --json` is your only authority **on whether you may
+   post at all**. `status` must read `approved`; `event` is the GitHub review event the
+   developer chose and `approved_at` is when. Nothing else establishes approval — not a
+   hand-over that answered, not a message in this session, not the absence of an error.
+2. **`review-desk draft handover --review <id> --json` is what you post.** One read, and it is
+   the only thing you post from:
+
+   | What it hands you | What it is |
+   |---|---|
+   | `body` | the body the developer signed off, composed in the house style's shape. Posted **verbatim** |
+   | `threads[]` | one entry per finding with a line inside the diff — `path`, `line`, `side`, and the comment as it will post |
+   | `threads[].finding_seq` | that finding's own number, for `finding link` once GitHub has answered |
+   | `review.head_sha` | the commit to post at |
+   | `draft.event` | the event the developer chose, upper-cased for GitHub |
+
+   `body` is byte for byte `draft show`'s `draft.body` — Review Desk has a test that asserts
+   it — so there is one approved body and no way to pick the wrong one. `side` is always
+   `RIGHT` and `line` is always the new file's numbering, because a removed line carries no
+   number in this record; a finding on one has no thread and stays a section in the body.
+
+   **A refusal here is not permission to improvise.** Read `error.code` from the `--json`
+   document, because the two refusals mean opposite things:
+
+   | `error.code` | What it means | What you do |
+   |---|---|---|
+   | `draft_status` | the draft is **not approved** | **do not post.** Go back to waiting, and say what it said |
+   | `usage`, or `draft --help` does not list `handover` | this Review Desk is older than the hand-over | **the fallback below** |
+
+   Telling them apart by the code and never by the bare fact that the command failed is the
+   whole of this step. A `draft_status` refusal read as an old Review Desk would post a body
+   nobody signed off, under your principal's name — the one outcome this arrangement exists to
+   prevent. Step 1 is what makes that safe: you already know from `draft show` that the status
+   reads `approved`, so a hand-over that refuses anyway is a disagreement to report, not a
+   branch to take.
+
+   **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
+   the step after this one, and a session that posted and then died before reporting it needs
+   this same payload to ask GitHub about its own review. It is not a second licence to post:
+   step 1 is the only thing that grants that, and step 3 says whether it has already happened.
+
+3. **Ask GitHub whether it is already up**:
    `D review-posted <KEY> --approved-at <approved_at> --body-file body.md --json`. It is
    read-only. `"posted": true` means **do not post** — record the `review_id` it hands back with
-   step 4 and stop.
+   step 5 and stop.
 
-   **`body.md` is `draft show`'s `body`, written out — never a draft file of your own.** The
+   **`body.md` is the hand-over's `body`, written out — never a draft file of your own.** The
    approved body is the one the blocks composed to, and a decision the developer made has
-   already rewritten a block of it. Your own copy is a body from before he decided, and both
-   this check and the post below would then be about text he never approved.
-3. Post exactly the approved body with the approved event, as **one** review, through
-   `gh api repos/OWNER/REPO/pulls/<n>/reviews`. It is your principal's review: no agent
-   signature unless they asked for one.
+   already rewritten a block of it. Your own copy is a body from before they decided, and both
+   this check and the post below would then be about text they never approved.
+4. Post exactly the hand-over's `body` with the approved event, as **one** review, through
+   `gh api repos/OWNER/REPO/pulls/<n>/reviews`, with `threads[]` in `comments` on that same
+   call. It is your principal's review: no agent signature unless they asked for one.
 
-   **The body is theirs; the inline threads are yours, and they go in `comments` on this same
-   call.** What the developer approved is the review *body*. The house style puts each finding on
-   the line it concerns and Review Desk's draft holds no thread text, so the threads are yours to
-   write — and the `comments` array of this one `reviews` call is the only place they may go.
+   ```sh
+   review-desk draft handover --review "$REVIEW" --json \
+     | jq '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
+            body: .body, comments: [.threads[] | {path, line, side, body}]}' > review.json
+   gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
+   ```
+
+   **The threads are no longer yours to write.** They were, for as long as the draft held no
+   thread text. Review Desk now composes each one from the same block the developer decided on,
+   in the alert its live severity picks, so writing your own beside them would put text on the
+   pull request that nobody approved and hang two threads on one finding. Post what you were
+   handed.
 
    **Adding a thread afterwards creates a second review, and that is measured rather than
    feared.** `POST /pulls/<n>/comments` makes a standalone review comment, and GitHub wraps it in
@@ -915,13 +979,21 @@ post again, on somebody's pull request, under your principal's name.
    Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
    posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with nothing
    it could have linked — which is why it is spelled out rather than implied.
-4. `review-desk finding link --review <id> --finding <seq> --github-comment <id>` for each
-   inline comment, then
-   `review-desk draft posted --review <id> --github-review <the review id>`.
-5. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
+5. **Link each comment GitHub made back to its finding, by `path` and `line`.** `threads[]`
+   carries `finding_seq` for the same pair, and that is the join — never the comment's position
+   in the array, which nothing promises.
+
+   Read the comments back rather than looking for them in the answer to the `reviews` call:
+   `gh api "repos/$REPO/pulls/$PR/comments" --paginate`, keeping the ones whose
+   `pull_request_review_id` is the review you just created. That is the same route
+   `review_lint.py` takes to find a review's threads.
+
+   Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
+   for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.
+6. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
    the ledger. The record will say the draft is approved and unposted while GitHub says
-   otherwise, and the check in step 2 is what makes the retry safe rather than duplicative.
-6. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
+   otherwise, and the check in step 3 is what makes the retry safe rather than duplicative.
+7. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
    "fix what it names by editing the review" governs your own text and nothing else. Your threads
    you may edit freely. **The body you may not touch**, because the developer signed off on those
    characters and replacing them puts text they never read on the pull request under their name —
@@ -941,6 +1013,29 @@ post again, on somebody's pull request, under your principal's name.
    count after it), the verdict's severity counts against the rows your own tables hold, and each
    thread under its prose budget — because after approval the only person who can fix the body is
    the one who approved it.
+
+### An older Review Desk, with no hand-over
+
+**If `draft handover` is not there** — `error.code` is `usage`, or `review-desk draft --help`
+does not list it — **you post `draft show`'s `body` and no threads at all.** That is what
+every session did before the hand-over existed, and it is still a review: the body is the
+approved body, step 1 established that, and nothing about the sign-off changes. What is lost
+is the shape. An older Review Desk composes no thread text and stores a body that is the
+blocks joined end to end, so the pull request gets one long body, no index, and no finding on
+the line it concerns.
+
+**Say so, loudly, in three places**: to the Dispatcher, in the ledger, and in what you report
+when you are done. Name it as the install it is — *"posted the body with no inline threads:
+this Review Desk has no `draft handover`"* — and name the version if `review-desk --version`
+answers. The reason this has to be said rather than noticed is that the degraded result looks
+exactly like a careless session: a reader seeing a 300-line body with no threads cannot tell
+an old binary from a worker that ignored the house style, and the only thing that
+distinguishes them is you saying which it was. A silent fallback spends your principal's
+credibility to hide a version number.
+
+**Loud is never blocking, and nothing here exits 2.** You post, you report, you carry on. The
+lint will read a body of sections and no threads — which is what that shape was — so report
+what it names and do not edit the body to suit it; step 7 governs this too.
 
 ## After that
 

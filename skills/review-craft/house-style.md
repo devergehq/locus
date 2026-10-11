@@ -35,14 +35,18 @@ matters most.
 default, and measured tools raise 1.1–3.4 findings per PR. Anything past three goes inline only,
 or into a collapsed "Also found" list. If everything is important, nothing is.
 
-**Both of those rules are about a body an agent writes whole. Where a record composes the body
-from blocks, every posted finding is a section in it, and the cap moves to the findings
-themselves.** It has to: a block is the unit a per-finding decision rewrites, and a finding
-written only as a thread has no block, so cutting or regrading it is refused outright. Hiding the
-fourth finding from the body would hide it from the developer's decision, which is the opposite
-of what the body is for there. So the lever on volume is the **Volume** rule at the bottom of this
-file — raise fewer findings, hold the rest back or suppress them with a reason — and not the
-body's shape. Nothing above is relaxed for a body you write yourself: three is still three.
+**Both rules hold for a body a record composes from blocks, and the unit they count is the
+finding in the body rather than the block.** A record keeps one block per posted finding, because
+a block is what a per-finding decision rewrites and a finding with none cannot be cut or regraded
+— but a block is not a section. A finding with a line inside the diff composes to an index row
+and a thread, and appears in the body only as that row; a finding with nowhere to anchor composes
+to a row and a section. So the fourth finding is never hidden from the developer's decision, and
+the body is still triage.
+
+Where the three bites is the unanchored findings, and the lever is the **Volume** rule at the
+bottom of this file — raise fewer, hold the rest back or suppress them with a reason — never
+writing fewer blocks than were raised. Nothing here is relaxed for a body you write yourself:
+three is still three.
 
 ## Whose name is on it
 
