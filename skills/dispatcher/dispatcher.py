@@ -1340,7 +1340,7 @@ class Poller:
         # sources agree about one pull request instead of opening a second entry for it.
         key = item.get("ledger_id") or pr_key(repo, number)
         entry = ledger.get(key) or {}
-        if review_desk_live(live, entry):
+        if review_desk_live(live, entry) and not self.cannot_be_told(kind, key, entry):
             return
         # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
         # the ticks in between. The marker therefore means "this item was considered", not "this
@@ -1386,6 +1386,44 @@ class Poller:
              sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True),
              nit_ticket_status=item.get("nit_ticket_status"), **common)
 
+    def cannot_be_told(self, kind: str, key: str, entry: dict) -> bool:
+        """Is this a ticket request whose live session has already stopped listening?
+
+        **A session that is alive is not the same as a session that can still be reached, and
+        `nits_to_ticket` is the one kind where the difference bites.** The four kinds that are
+        about the draft cannot arrive after a merge — there is nothing left to revise, approve or
+        post. A request for a ticket can, and after a merge is the likeliest time for it.
+
+        Without this, the exemption below is unreachable in exactly the case it was written for,
+        which is DEV-934's own bug wearing the fix's clothes:
+
+          1. The worker reports `done` and stays up with its watcher, which is what lets it hear
+             an approval at all. `review_desk_live` says so and depends on it.
+          2. The draft is approved, it posts, the pull request merges. `watch_stop_reason` ends
+             the watcher on `done` plus a closed pull request — correctly, because nothing else
+             would ever stop it, and `_common.md` tells the worker that is expected and nothing
+             to do.
+          3. Nothing writes a terminal ledger status at a merge; the comment on `WATCH_DEAD`
+             says the status to reason about after one is `done`. So the entry stays `done`,
+             `done` is in `ALIVE`, and allele still lists the session because nobody discarded
+             it.
+          4. The developer clicks "File as one ticket for an agent", and `review_desk_live`
+             answers True about a session whose eyes are shut.
+
+        Read from the WATCHER'S OWN CURSOR, which is where `watch_stop_reason` reads it, so the
+        two agree by construction and this costs one local file and no GitHub call. An absent
+        cursor, or one with no `pr_status`, means no watcher has concluded anything yet and
+        liveness stands — which is also the answer for a worker that passed `--as`, whose cursor
+        is under another name. Being wrong in that direction costs a quiet interval; being wrong
+        in the other puts two sessions on one review.
+
+        The event still carries `session_id` and `ledger_status`, so the Dispatcher can message
+        the session that is sitting there rather than dispatch a replacement. SKILL.md says so.
+        """
+        if kind != "nits_to_ticket" or entry.get("status") != "done":
+            return False
+        return read_json(watch_dir() / f"{key}.json", {}).get("pr_status") in PR_CLOSED
+
     def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
         """Name, once per interval, a kind of work this file cannot place. Blocks nothing.
 
@@ -1407,8 +1445,10 @@ class Poller:
 
         **The signature is the kind's name and nothing else.** Keyed on the review as well, a
         repository holding fifty items of a new kind would emit fifty lines about one missing
-        feature. The actionable fact is the name, and `review_desk_id` rides along as an example
-        of a review that is waiting on it.
+        feature. The actionable fact is the name, and `repo` and `review_desk_id` both ride along
+        as ONE EXAMPLE each of where it was seen — the first repository the tick reached, not the
+        extent of it. A global signature and a per-repository field in the same event would
+        otherwise read as "this kind is waiting there", when it may be waiting in all of them.
 
         What it rests on, said rather than assumed: the poller has to be ASKING about that
         repository. `review_desk_repos` takes them from `allele.repo_project_map` and from the
@@ -1424,7 +1464,9 @@ class Poller:
              known=list(REVIEW_DESK_KINDS),
              detail=f"Review Desk reported work of kind '{kind}', which this dispatcher has no "
                     f"handling for. Nothing was dispatched for it and nothing is blocked; the "
-                    f"item stays on Review Desk's list for a version that knows it.")
+                    f"item stays on Review Desk's list for a version that knows it. `repo` and "
+                    f"`review_desk_id` are one example of where it was seen, not the extent of "
+                    f"it — this is said once per kind, not once per repository.")
 
     def harvest(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         """Read posted reviews' outcomes back from GitHub, one repository a tick.

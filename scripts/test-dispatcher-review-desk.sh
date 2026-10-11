@@ -682,6 +682,19 @@ run () {
 }
 
 # =============================================================================================
+printf '\nThis file runs every assertion it contains\n'
+# **First, because the failure it guards can swallow whatever follows it.** A `printf` heading
+# that loses its closing quote is still valid shell -- `sh -n` passes -- and the lines after it
+# are taken as string content and PRINTED rather than run. It has happened three times in this
+# file's history: once hiding 2 assertions and once about 37, including the end-to-end filing
+# loop, while the suite went on reporting "0 failed". The guard sat at the bottom when it was
+# written, which is the one place a defect that eats the rest of the file could eat the guard too.
+ok "no heading in this harness is missing its quote"   "$(grep -c "^printf '[^']*$" "$0")" 0
+sed "s/^printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n'\$/printf '\\\\nSilence -- no review_desk block, no review-desk on PATH\\\\n/" \
+    "$0" > "$work/noquote.sh"
+ok "  and the reversal of one is caught"               "$(grep -c "^printf '[^']*$" "$work/noquote.sh")" 1
+
+# =============================================================================================
 printf '\nSilence -- no review_desk block, no review-desk on PATH\n'
 # The ticket's first acceptance criterion. An instance that has never heard of Review Desk must
 # produce output in which the words do not appear, which is what makes the other three harnesses
@@ -1188,6 +1201,11 @@ pathlib.Path(sys.argv[1]).write_text(json.dumps([
      "disposition_reason": "not worth a round trip"},
     {"seq": 5, "key": "F5", "severity": "nit", "file": "app/Jobs/Deliver.php", "line": 71,
      "claim": "The log line names the old field", "disposition": "held_back",
+     "disposition_reason": None},
+    # NOT held back, and that is what gives the count below something to be wrong about: the
+    # ticket covers the held-back findings and not the review's findings.
+    {"seq": 1, "key": "F1", "severity": "blocker", "file": "app/Jobs/Deliver.php", "line": 58,
+     "claim": "A retried delivery carries no idempotency key", "disposition": "in_draft",
      "disposition_reason": None}]))
 HELD
 }
@@ -1274,6 +1292,57 @@ echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$disp" poll 1)
 ok "  and no other kind gained that exemption"         "$(count review_desk)" 0
 
+printf '\n  a live session whose watcher has stopped is not told, so somebody else is\n'
+# The combination the two assertions above never made. A review worker reports `done` and stays
+# up to hear the approval; after the merge `watch_stop_reason` ends its watcher, and nothing
+# writes a terminal ledger status -- so `done` is in ALIVE, allele still lists the session, and
+# `review_desk_live` says a session owns a review nobody is listening to. The watcher's own
+# cursor is what settles it, which is where `watch_stop_reason` reads it too.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a done key whose PR merged no longer owns the ticket" "$(count '"event": "review_desk_resume"')" 1
+ok "  and the event names the session to message"      "$(says '"session_id": "live-7"')" yes
+ok "  with the status that says its watcher is shut"   "$(says '"ledger_status": "done"')" yes
+# The cursor is what decides, and these two are why it is read at all: the same live session
+# with no cursor, and with a cursor whose pull request is open, both keep the item.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "  no cursor yet, so liveness stands"               "$(count review_desk)" 0
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"open","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+rc=$(run "$disp" poll 1)
+ok "  an open pull request keeps it with its session"  "$(count review_desk)" 0
+# And no other kind gets the bypass: a draft_approved on the same dead-eared session stays put,
+# because nothing about a draft can arrive after the merge.
+instance '{"mode":"auto"}'
+work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "  and no other kind gained the bypass"             "$(count review_desk)" 0
+no_sessions
+
 printf '\n  the request leaves the list once the ticket is reported\n'
 # The loop end to end, through the stand-in: the button says queued, the command review.md names
 # is accepted, the button says filed, and `work list` stops reporting the request. A dispatcher
@@ -1284,10 +1353,10 @@ echo '{"status":"requested","ticket_id":null}' > "$work/rd.nit"
 work_doc nits_to_ticket 7 acme/portal 412 1791520400
 put gh-portal-412 mode=review status=active review_desk_id=7 --by test
 ok "the draft page's button reads"                     "$(button 7)" "Queued as one ticket"
-ok "  over the two findings it covers"                 "$(python3 -c "
+ok "  over the two held back out of three"             "$(python3 -c "
 import json
-print(len([f for f in json.load(open('$work/show.json'))['findings']
-           if f['disposition'] == 'held_back']))")" 2
+d = json.load(open('$work/show.json'))['findings']
+print('%d of %d' % (len([f for f in d if f['disposition'] == 'held_back']), len(d)))")" "2 of 3"
 ok "the command review.md names is accepted"           "$(desk_rc review nit-ticket --review 7 --ticket ABC-246 --json)" 0
 ok "  it reports the filing back"                      "$(grep -c '"status": "filed"' "$work/out")" 1
 ok "  the button then reads"                           "$(button 7)" "Filed as ABC-246"
@@ -2595,7 +2664,7 @@ printf '\nNegative controls -- reverse each guard and require these tests to fai
 # Each substitution is counted rather than assumed: a sed that matched nothing would turn a
 # control into a second copy of the test it is controlling.
 
-sed 's/^        if review_desk_live(live, entry):$/        if False:  # LIVENESS REVERSED/' \
+sed 's/^        if review_desk_live(live, entry) and not self\.cannot_be_told(kind, key, entry):$/        if False:  # LIVENESS REVERSED/' \
     "$disp" > "$work/nolive.py"
 ok "the liveness reversal changed one line"            "$(grep -c 'LIVENESS REVERSED' "$work/nolive.py")" 1
 instance '{"mode":"auto"}'
@@ -2787,12 +2856,6 @@ work_doc nits_to_ticket 7 acme/portal 412 1791520400
 rc=$(run "$work/nowatch.py" watch gh-portal-412 1)
 ok "no relay: the session that owns the review is told nothing" "$(count '"event": "nits_to_ticket"')" 0
 
-printf '\n  this file runs every assertion it contains\n'
-ok "no heading in this harness is missing its quote"   "$(grep -c "^printf '[^']*$" "$0")" 0
-sed "s/^printf '\\\\nThe fifth kind -- one ticket for the findings held back (DEV-934)\\\\n'\$/printf '\\\\nThe fifth kind -- one ticket for the findings held back (DEV-934)\\\\n/" \
-    "$0" > "$work/noquote.sh"
-ok "the quote reversal changed one line"               "$(grep -c "^printf '[^']*$" "$work/noquote.sh")" 1
-
 sed 's/^        if state in PR_CLOSED and kind != "nits_to_ticket":$/        if state in PR_CLOSED:  # MERGE EXEMPTION REVERSED/' \
     "$disp" > "$work/nomerged.py"
 ok "the merge-exemption reversal changed one line"     "$(grep -c 'MERGE EXEMPTION REVERSED' "$work/nomerged.py")" 1
@@ -2801,6 +2864,21 @@ work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
 echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$work/nomerged.py" poll 1)
 ok "no exemption: a merged pull request loses the ticket" "$(count review_desk)" 0
+
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if True:  # DEAF SESSION REVERSED/' \
+    "$disp" > "$work/nodeaf.py"
+ok "the deaf-session reversal changed one line"        "$(grep -c 'DEAF SESSION REVERSED' "$work/nodeaf.py")" 1
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=done repo=acme/portal number=418 session_id=live-7 --by test
+no_sessions
+session live-7
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$work/nodeaf.py" poll 1)
+ok "no bypass: a shut watcher still owns the ticket"   "$(count review_desk)" 0
+no_sessions
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
