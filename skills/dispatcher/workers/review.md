@@ -994,21 +994,31 @@ post again, on somebody's pull request, under your principal's name.
    refuses with "…is approved, and a draft whose body is what its blocks compose to". Read the
    status, not the sentence.
 
-   **Step 1 already refused to go on unless the status read `approved`, so the first row is the
-   race and the second is the ordinary case.** The draft can move between the two reads — your
-   principal sending it back in that window is exactly the thing that does it — and then the
-   hand-over is refusing something that is no longer approved. Re-read `draft show` rather than
-   trusting the status from a moment ago: `sent_back` means go back to waiting, and the
-   `draft_sent_back` your watcher is about to hand you is the same news arriving properly.
+   **Step 1 already refused to go on unless the status read `approved`, so if you got here the
+   second row is what a `draft_status` refusal means.** Re-read `draft show` rather than reason
+   about it: the status it reports now is the answer, and the first row is the guard that makes
+   this command safe to call on its own rather than a branch a worker who did step 1 takes.
 
-   **The second one is the one that will not fix itself.** The draft was approved in the old
-   shape — every finding a section, no index — and the threads are composed from the record as
-   it is now, so handing both over would put each anchored finding on the pull request twice,
-   once as a section and once as a comment, under your principal's name. **Never post the old
-   body**, and do not go back to waiting either: nothing about that draft changes on its own, so
-   a session that waits waits forever. Tell the Dispatcher and say plainly what has to happen —
-   the developer sends the draft back, and then you write the blocks again, which is the
-   ordinary `draft_sent_back` loop. The round is not lost; only the body is.
+   **The second one needs the developer, and it is the one thing in this section they have to
+   be asked for.** The draft was approved in the old shape — every finding a section, no index —
+   and the threads are composed from the record as it is now, so handing both over would put
+   each anchored finding on the pull request twice, once as a section and once as a comment,
+   under your principal's name. So: **never post the old body.**
+
+   What to do is ask, once, and then wait as you already do. Tell the Dispatcher, and say to
+   your principal that the draft has to be **sent back from the draft page** so the blocks can
+   be written again — then wait for `draft_sent_back` and handle it exactly as the table above
+   says. The round is not lost; only the body is. Do not look for a command that does it: there
+   is none, and sending a draft back is the developer's act for the same reason approving it is.
+
+   **Why this is spelled out rather than left to "it refuses, so wait".** Waiting alone does not
+   clear it — nothing about an approved draft changes on its own — so a session that only waits
+   waits forever on a review that needed one sentence to a person. Measured on review-desk
+   `bae4f5e`, where sending back an approved draft was refused `409` and rewriting its blocks
+   was refused too, which left the draft with no exit at all. That was reported and ruled on: a
+   developer may send back any approved draft that has not been posted. **Until that lands, a
+   draft in this state cannot be cleared by anyone** — so say so plainly rather than promising
+   a send-back that answers `409`, and name the review so somebody can see it is stuck.
 
    **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
    the step after this one, and a session that posted and then died before reporting it needs
