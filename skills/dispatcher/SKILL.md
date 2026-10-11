@@ -263,13 +263,14 @@ asked — read the pull request before you dispatch that one.
 
 A posted review is not the end of it: the author replies to a finding, resolves a thread, pushes
 a line that answers one. `review-desk harvest` is what reads those back from GitHub into the
-record, and **your poller is what runs it** — for each repository it serves, one repository per
+record, and **your poller is what runs it** — for each repository it serves, one attempt per
 tick, no more often than `limits.harvest_interval_secs` (900 seconds unless the instance says
 otherwise). The tick's turn goes to whichever repository has waited longest, so with N
-repositories each is harvested every `max(interval, N × poll_interval_secs)`. Nothing else could: a review's session is discarded long before the replies arrive,
+repositories each is harvested every `max(interval, N × poll_interval_secs)`, and a tick where
+none is due harvests none. Nothing else could: a review's session is discarded long before the replies arrive,
 and your poller is the one process that outlives every review.
 
-Four things to know about it, and none of them asks anything of you:
+Five things to know about it, and none of them asks anything of you:
 
 - **It cannot sign off.** A harvest records what GitHub already says. Approving a draft and
   posting a review are not on its surface, so who may sign off is exactly as it was.

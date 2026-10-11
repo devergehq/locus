@@ -2934,7 +2934,12 @@ def cmd_doctor(args) -> None:
         truthy string there CHANGES what a worker is told to do. A rejected interval changes
         nothing, which is exactly why it must not block.
         """
-        limits = cfg.get("limits") or {}
+        # `isinstance`, not `or {}`. The latter covers absent, null, `{}`, `[]` and `0` and
+        # leaves a TRUTHY non-dict — `"limits": 5` — reaching `.get` and raising, which `check`
+        # would turn into the very cross this function exists not to be. Such a config breaks
+        # `cmd_poll` and `cmd_status` as well, so a cross would be defensible; it would just be
+        # charged to the wrong check, and this one promises in its first line not to raise.
+        limits = cfg.get("limits") if isinstance(cfg.get("limits"), dict) else {}
         said = []
         for key, default in (("draft_watch_interval_secs", DRAFT_WATCH_INTERVAL_SECS),
                              ("harvest_interval_secs", HARVEST_INTERVAL_SECS)):
@@ -2946,9 +2951,18 @@ def cmd_doctor(args) -> None:
             else:
                 said.append(f"{key} is {raw!r}, which is not a positive whole number of "
                             f"seconds — IGNORED, and {default}s used")
-        watch = limits.get("watch_interval_secs")
+        # `int()` in a try, because that is what `watch_interval` and `full_pass_due` do with
+        # this key and this line has to describe them rather than itself. Gated on
+        # `usable_secs` instead, a quoted `"10"` printed no cap line while the watcher was
+        # sleeping 10s and the operator was told their 20s was in force. `watch_interval_secs`
+        # predates DEV-931 and is read with `int()` everywhere, so it is NOT narrowed to match
+        # `usable_secs` — that would change what an existing instance's config means.
+        try:
+            watch = int(limits.get("watch_interval_secs"))
+        except (TypeError, ValueError):
+            watch = None
         quick = positive_secs(limits.get("draft_watch_interval_secs"), DRAFT_WATCH_INTERVAL_SECS)
-        if usable_secs(watch) and quick > watch:
+        if watch is not None and quick > watch:
             # `watch_interval` takes the smaller of the two, so the behaviour is defined and
             # this is not a fault either. Said because a draft interval nobody will ever sleep
             # is a setting whose owner believes it is doing something.

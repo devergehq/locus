@@ -36,9 +36,11 @@ refuses to build when they disagree.
   line that names a value it is ignoring and never fails over one. A self-review then found the
   harvest sweep taking the first repository that was DUE rather than the one that had waited
   longest, which over sixteen simulated hours harvested three repositories 66-68 times each and
-  the fourth and fifth not once; it now takes the oldest mark. 94 new assertions in
-  `scripts/test-dispatcher-review-desk.sh` (396 to 490), against a stand-in `review-desk` and a
-  throwaway instance: no real harvest, no `~/.review-desk`, no `~/.locus/data/dispatcher`,
+  the fourth and fifth not once; it now takes the oldest mark. A second review pass then found the
+  assertion for that fix passing on the starving code — three repositories over three
+  back-to-back ticks go round either way — so it now ages two marks differently and fails on it.
+  100 new assertions in `scripts/test-dispatcher-review-desk.sh` (396 to 496), against a
+  stand-in `review-desk` and a throwaway instance: no real harvest, no `~/.review-desk`, no `~/.locus/data/dispatcher`,
   nothing on 7777. (DEV-931)
 
 - **`review-craft` now lints a brief.** `skills/review-craft/brief_lint.py` checks the structured

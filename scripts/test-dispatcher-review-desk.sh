@@ -853,14 +853,15 @@ harvested () {
     "$1" "$2" "$3"                                                                         >> "$work/rd.harvest"
   printf '"already_recorded":0}]}}\n'                                                      >> "$work/rd.harvest"
 }
-# age_marker <mark>: push one `due()` marker far enough into the past that it is due again. The
-# clock, rather than a sleep: an interval is a number this test should not have to wait out.
+# age_marker <mark> [secs]: push one `due()` marker that far into the past, 100000s by default.
+# The clock, rather than a sleep: an interval is a number this test should not have to wait out.
+# The seconds matter for the rotation case below, where two marks must differ in age.
 age_marker () {
   python3 -c "
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
-s['emitted'][sys.argv[2]] -= 100000
-p.write_text(json.dumps(s))" "$inst/runtime/poll-state.json" "$1"
+s['emitted'][sys.argv[2]] -= int(sys.argv[3])
+p.write_text(json.dumps(s))" "$inst/runtime/poll-state.json" "$1" "${2:-100000}"
 }
 harvests () { grep -c "^harvest --repo $1 --json" "$work/rd.calls" 2>/dev/null || true; }
 
@@ -890,11 +891,19 @@ ok "  acme/portal once"                                "$(harvests acme/portal)"
 ok "  and acme/store once"                             "$(harvests acme/store)" 1
 rc=$(run "$disp" poll 2)
 ok "two more ticks harvest none of them again"          "$(grep -c '^harvest' "$work/rd.calls")" 3
-# And the one that was starved before is the one that goes first when only it is due.
-age_marker 'harvest|acme/store'
+# TWO due at once, with different ages, which is what discriminates. Three repositories over
+# three back-to-back ticks pass on the starving sweep too -- inside one interval it also skipped
+# a repository it had already marked -- and so does aging the only repository that is due, since
+# "first in the sort" and "oldest mark" then name the same one. `acme/store` sorts LAST and has
+# waited longest; the sweep this replaced would have taken `acme/billing`.
+age_marker 'harvest|acme/billing' 1000
+age_marker 'harvest|acme/store' 100000
 rc=$(run "$disp" poll 1)
-ok "the longest-waiting repository takes the next tick" "$(harvests acme/store)" 2
-ok "  and the others are left where they were"          "$(harvests acme/billing)" 1
+ok "the oldest mark takes the tick, not the first due"  "$(harvests acme/store)" 2
+ok "  and the other due one waits its turn"             "$(harvests acme/billing)" 1
+ok "  and the one that is not due is untouched"         "$(harvests acme/portal)" 1
+rc=$(run "$disp" poll 1)
+ok "which it gets on the tick after"                    "$(harvests acme/billing)" 2
 
 # One ATTEMPT per tick, so two repositories take two ticks. Oldest first, so billing goes first.
 instance '{"mode":"auto"}'
@@ -1258,10 +1267,18 @@ sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 print(json.loads((d.CODE_DIR / 'config.example.json').read_text())['review_desk'] == d.REVIEW_DESK_DEFAULTS)")" True
 
-printf '\n  doctor says what the two intervals are, and crosses one that is being ignored\n'
+printf '\n  doctor says what the two intervals are, and names one that is being ignored\n'
 # `positive_secs` has to be silent inside the loops -- a value that threw would respawn and run
 # with no sleep at all -- so `doctor` is where an operator learns their edit did nothing.
 intervals () { set +e; D doctor > "$work/out" 2>&1; set -e; grep '^. intervals' "$work/out" || true; }
+# limits_raw <json>: REPLACE the limits block, so a shape that is not an object can be tried.
+limits_raw () {
+  python3 -c "
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); c = json.loads(p.read_text())
+c['limits'] = json.loads(sys.argv[2])
+p.write_text(json.dumps(c, indent=2))" "$inst/config.json" "$1"
+}
 instance '{"mode":"auto"}'
 ok "doctor reports both intervals and their source"   "$(intervals | grep -c 'draft_watch_interval_secs 20s (default)')" 1
 ok "  and the harvest interval too"                   "$(intervals | grep -c 'harvest_interval_secs 900s (default)')" 1
@@ -1278,16 +1295,30 @@ limits '{"harvest_interval_secs": 900, "draft_watch_interval_secs": 0}'
 ok "a zero is named too, being a hot loop"            "$(intervals | grep -c 'IGNORED, and 20s used')" 1
 limits '{"draft_watch_interval_secs": true}'
 ok "and a true, which Python reads as 1 second"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
-limits '{"draft_watch_interval_secs": "20"}'
+limits '{"draft_watch_interval_secs": "5"}'
 # One predicate, read by `doctor` and by the loops alike. An earlier version parsed a numeric
 # string in `positive_secs` and USED it while `doctor` called it ignored, so the operator was
 # told the opposite of what was happening by the command whose job is to tell them.
+#
+# `"5"` rather than `"20"`, and that is the assertion rather than a detail of it: quoted-20 and
+# the default-20 are the same number, so the version that parsed the string passed this too.
 ok "a quoted number is ignored, and said to be"       "$(intervals | grep -c 'IGNORED, and 20s used')" 1
-ok "  and the loop ignores it as well"                "$(interval ready '{"draft_watch_interval_secs": "20"}')" 20
-ok "  where a real number is used"                    "$(interval ready '{"draft_watch_interval_secs": 20}')" 20
+ok "  and the loop ignores it as well"                "$(interval ready '{"draft_watch_interval_secs": "5"}')" 20
+ok "  where a real 5 is slept"                        "$(interval ready '{"draft_watch_interval_secs": 5}')" 5
 limits '{"draft_watch_interval_secs": 600}'
 ok "a draft interval over the usual one is reported"  "$(intervals | grep -c 'capped at watch_interval_secs 300s')" 1
 ok "  and is not a failure, the behaviour being defined" "$(intervals | grep -c '^✓')" 1
+# The cap line has to read `watch_interval_secs` the way the LOOP reads it. Gated on
+# `usable_secs`, a quoted "10" printed no cap at all while the watcher slept 10s.
+limits '{"draft_watch_interval_secs": 20, "watch_interval_secs": "10"}'
+ok "a quoted watch interval still reports the cap"    "$(intervals | grep -c 'capped at watch_interval_secs 10s')" 1
+ok "  which is the interval the watcher really sleeps" "$(interval ready)" 10
+limits '{"watch_interval_secs": 300}'
+# A `limits` that is not an object at all breaks `poll` and `status` too, so a cross is
+# defensible -- but it must not be charged to the one check that promises never to raise.
+limits_raw '5'
+ok "a limits block that is not an object does not cross" "$(intervals | grep -c '^✓')" 1
+ok "  and still names both intervals"                 "$(intervals | grep -c 'harvest_interval_secs 900s (default)')" 1
 
 printf '\n  and `limits`, which is the block an instance is most likely to have tuned\n'
 # DEV-931 adds two keys to it. `fill_absent` adds only what a config has never heard of, which
