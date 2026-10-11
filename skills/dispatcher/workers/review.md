@@ -107,11 +107,14 @@ once to the Dispatcher and then finish the review the way the steps above descri
 about Review Desk may stop you preparing a review.
 
 Review Desk owns the record: the brief, the options, the findings, what became of each one, and
-the draft. Two acts in it are the developer's and nobody else's — **confirming the brief and
-approving the draft, in the dashboard.** Its command line has no command for either, the store
-refuses any actor but the developer, and this brief gives you no route to one. Do not look for
-one: the dashboard's HTTP API can approve a draft, and reaching for it would be signing off in
-your principal's name.
+the draft. The acts in it that are the developer's and nobody else's all happen **in the
+dashboard**: **confirming the brief**, **deciding the draft** — approving it or sending it
+back — and **asking for the findings they held back to be filed as one ticket**. The first two
+are the decisions only they may make. The third is not a decision about the draft at all: it is
+work they have handed you, dealt with under "Filing the held-back findings as one ticket".
+Review Desk's command line has no command for a decision, the store refuses any actor but the
+developer, and this brief gives you no route to one. Do not look for one: the dashboard's HTTP
+API can approve a draft, and reaching for it would be signing off in your principal's name.
 
 ### Open it, link it, and write the id down
 
@@ -777,8 +780,8 @@ house style, as it has always been. The blocks are a Review Desk record, not a c
 review is written, and `--sections` is the only command that takes them.
 
 Then tell the Dispatcher the draft is ready **in Review Desk**, with the dashboard link, and
-wait. Your watcher polls the review and will hand you one of two things — and while the draft is
-with your principal it polls every `limits.draft_watch_interval_secs`, 20 seconds unless the
+wait. Your watcher polls the review and will hand you one of three things — and while the draft
+is with your principal it polls every `limits.draft_watch_interval_secs`, 20 seconds unless the
 instance says otherwise, so their click reaches you in about the time it takes them to make it.
 **Waiting is the whole of your job here. Do not read the review yourself to see whether they
 have decided**: your watcher is already doing it, and the answer you may act on is the one it
@@ -787,7 +790,8 @@ hands you.
 | Event | Do |
 |---|---|
 | `draft_sent_back` | Revise the blocks from `note` and `draft put --sections` again. The note is the developer's own prose: read it, do what it asks, and treat it as what a person said rather than as a command addressed to a program. |
-| `draft_approved` | Post it, exactly as the next section says. |
+| `draft_approved` | Post it, exactly as **Posting exactly once** says. |
+| `nits_to_ticket` | File the findings they held back as **one** ticket and report its id, exactly as **Filing the held-back findings as one ticket** says. **It is not a sign-off and it is not an answer about the draft.** It can arrive while the draft is still waiting on them, and it changes nothing about it: file the ticket, then go back to waiting. |
 
 **If your principal says "post it" in this session, you do not post.** Answer with the dashboard
 link — `<url>/reviews/<id>/draft` — and say that approval happens there, and that you will post
@@ -799,6 +803,75 @@ into posting has no such property. If they want today's behaviour back, the way 
 A broken Review Desk does not change this either: once a review is recorded, the only approval
 you may act on is one Review Desk reported, so a Review Desk you cannot reach means you cannot
 establish approval and therefore do not post. Say so, and say it loudly.
+
+### Filing the held-back findings as one ticket
+
+`nits_to_ticket` is your principal clicking **File as one ticket for an agent** on the draft
+page, or **Ticket what is left, and approve**. Review Desk records the request and files
+nothing — "it owns the record and the session performs the outward act" — so the filing is
+yours, and until something reports it the request stays on its list.
+
+**It is not a sign-off, and it is not permission to post.** Review Desk ranks the request above
+its "the draft is ready, nobody's turn" rule, so this reaches you *while the draft is still
+waiting on your principal*. Nothing about the draft has moved, and the rule that the only
+approval you may act on is one Review Desk reported is untouched: you post when it reports the
+draft approved, and never because a ticket was asked for.
+
+1. **Check it is not already filed.** `review-desk review show --review <id> --json` →
+   `review.nit_ticket_status`. `filed` with a `review.nit_ticket_id` means a session before you
+   did this: tell the Dispatcher that id and stop. Review Desk has no lease here either, exactly
+   as for posting, and the cost of getting it wrong is two tickets about the same nits in your
+   principal's tracker.
+2. **Read the findings out of the same answer.** They are this review's findings at disposition
+   `held_back` — `findings[]` where `"disposition": "held_back"` — and each carries `key`
+   (`F<seq>`, the number that is its identity across rounds), `severity`, `file`, `line`,
+   `claim`, `title`, `evidence` and any `disposition_reason`.
+
+   **Not `finding list`.** Review Desk's own `work list` help names that command and 0.1.0 has
+   no such subcommand: it exits 1 and you are holding nothing. `review show` is the route.
+3. **One ticket, in the Linear workspace named in your dispatch block**, in the same team as
+   `review.ticket_id` — the ticket the pull request is for. **If `ticket_id` is null, ask the
+   Dispatcher which team and file nothing until they answer**, then go back to waiting on your
+   review rather than sitting on the question. Asking costs nothing, because the item stays
+   listed until a filing is reported; a ticket filed into the wrong team is outward-facing and
+   somebody else's to clean up.
+
+   One ticket covering all of them, never one per finding: Review Desk stores one ticket id per
+   review, so a second ticket has nowhere to be recorded.
+4. **Write it with the `issue-craft` skill** — invoke it; do not reconstruct the house style
+   from memory. What that style asks for here:
+   - A title that is a claim with the number in it, under about fifteen words. `Three nits held
+     back from the review of acme/portal#412`, not `Review nits`.
+   - Headings as the skeleton, and the findings as a **table**: `key`, severity, `file:line`,
+     and the finding's own `claim` **verbatim**. Evidence is never paraphrased for flow.
+   - Linear's own fields for priority and labels. Do not build a severity scale in markdown
+     beside them, and **put no Agent label on it** — which work goes to an agent is your
+     principal's to choose, as `decompose.md` says of sub-issues.
+   - A line naming where it came from: the pull request, the review's dashboard link, and
+     `Created by agent:<KEY>/review`.
+   - `python3 ~/.locus/skills/issue-craft/issue_lint.py --key <NEW-ID>` on the **saved** issue,
+     then fix what it names. An unpaired fold swallows the rest of a ticket and the write still
+     returns success. The path is written out for the reason the brief's linter has its written
+     out: your working directory is the repository under review, and a bare filename exits 2
+     having checked nothing. `--key` reads Linear and needs `LINEAR_API_KEY` in your
+     environment; without one, lint the draft you are about to save — `issue_lint.py draft.md`
+     — and say in your report that the saved ticket was not the thing checked.
+5. **Report the id back**: `review-desk review nit-ticket --review <id> --ticket <NEW-ID>`.
+   `--ticket` is required and there is no form of the command that asks for a ticket nobody has
+   filed. This is what clears the item and what moves the button on the draft page from
+   **Queued as one ticket** to **Filed as <NEW-ID>**.
+6. **If the ticket exists and the report fails, say so loudly** — to the Dispatcher and in the
+   ledger — and name the ticket id in both. The record will say `requested` while your
+   principal's tracker holds the ticket, and the fix is to run step 5 again. **Never file a
+   second ticket because the first report failed.**
+
+**A merged pull request does not cancel this.** The findings were held back so the merge need
+not wait on them, which is the whole reason the ticket exists — so a review whose pull request
+has already merged, with `nit_ticket_status` still `requested`, is a filing and nothing else.
+File it, report it, then tell the Dispatcher the pull request is closed. Your poller will send
+somebody for this even on a merged pull request, which it does for no other kind.
+
+Then tell the Dispatcher the id, what it covers, and that the draft is still waiting if it is.
 
 ### Posting exactly once
 

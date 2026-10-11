@@ -401,14 +401,30 @@ REVIEW_DESK_DEFAULTS = {"mode": "auto", "command": "review-desk",
 REVIEW_DESK_MODES = ("auto", "on", "off")
 REVIEW_DESK_GATES = ("never", "always")
 
-# The four kinds `work list` answers with. A fifth one from a newer Review Desk is ignored rather
-# than guessed at: this file would have no idea what an agent is supposed to do about it, and
-# inventing a dispatch for a kind it has never heard of is worse than leaving it listed.
-REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved")
+# The five kinds `work list` answers with, spelled as Review Desk 0.1.0 names them in
+# `crates/store/src/model.rs`. A kind from a NEWER Review Desk is still ignored rather than
+# guessed at — this file would have no idea what an agent is supposed to do about it, and
+# inventing a dispatch for a kind it has never heard of is worse than leaving it listed — but it
+# is no longer ignored *silently*: see `Poller.unknown_kind`.
+#
+# `nits_to_ticket` is the one this file was missing. The developer asks, on the draft page, for
+# the findings they held back to be filed as one ticket; Review Desk files nothing and reports
+# the request here. Four names meant that request reached no session and said nothing about
+# itself, which is DEV-934.
+REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved",
+                     "nits_to_ticket")
 
-# The three a WATCHER relays to the session already working the review. `review_requested` is
+# Kinds this file has read and deliberately does nothing with. **Empty, and load-bearing empty.**
+# It is the difference between "this one was considered and is not ours" and "nobody here has
+# heard of this", which is the only distinction `unknown_kind` can act on: a kind named here is
+# silent, and every other unhandled kind is loud. `nits_to_ticket` was in neither list for five
+# weeks, and nothing in a running dispatcher could say so.
+REVIEW_DESK_IGNORED_KINDS: tuple[str, ...] = ()
+
+# The four a WATCHER relays to the session already working the review. `review_requested` is
 # deliberately absent: a session reading its own review does not need telling to start.
-REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved")
+REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",
+                           "nits_to_ticket")
 
 # How long a Review Desk call may take before it is called broken. Generous against a cold
 # SQLite file on a laptop, and short enough that a hung binary cannot stall a poll tick.
@@ -1309,7 +1325,14 @@ class Poller:
         """One `work list` item: dispatch it, resume it, or leave it to the session that has it."""
         kind, rid = item.get("kind"), item.get("review_id")
         number = item.get("pr")
-        if kind not in REVIEW_DESK_KINDS or not isinstance(rid, int) or not isinstance(number, int):
+        # Split in two, because the two halves are not the same fact. A kind this file cannot
+        # place is a Review Desk newer than this dispatcher, and somebody has to be told; an item
+        # whose ids are not integers is a malformed answer there is nothing useful to say about,
+        # and it is dropped as it always was.
+        if kind not in REVIEW_DESK_KINDS:
+            self.unknown_kind(kind, rid, repo, every)
+            return
+        if not isinstance(rid, int) or not isinstance(number, int):
             return
         # `ledger_id` is what `review link --ledger` was given, which is this instance's own key.
         # A review STARTED FROM THE DASHBOARD has never been linked and carries null, so the key
@@ -1317,7 +1340,7 @@ class Poller:
         # sources agree about one pull request instead of opening a second entry for it.
         key = item.get("ledger_id") or pr_key(repo, number)
         entry = ledger.get(key) or {}
-        if review_desk_live(live, entry):
+        if review_desk_live(live, entry) and not self.cannot_be_told(kind, key, entry):
             return
         # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
         # the ticks in between. The marker therefore means "this item was considered", not "this
@@ -1326,7 +1349,19 @@ class Poller:
         if not self.due(f"review_desk|{kind}|{rid}|{item.get('entered_at')}", every):
             return
         state = self.pr_state(repo, number)
-        if state in PR_CLOSED:
+        # **A merged pull request ends every kind of work here but one**, and an item on a closed
+        # one has been dropped since this section existed: there is nothing left to revise,
+        # approve or post.
+        #
+        # `nits_to_ticket` is the exception, and it is the kind the skip would hurt most. The
+        # request becomes an ITEM only once the draft is reported posted, and a merge usually
+        # follows a posting within the hour — the note the dashboard writes beside the button
+        # reads "the merge is not waiting on them", which is the whole reason the findings were
+        # held back. So the overwhelmingly likely shape of this kind is a request on a pull
+        # request that has already merged, and skipping it would leave the developer's click
+        # unanswered for ever: DEV-934's own bug in a narrower case. The ticket outlives the pull
+        # request, and `pr_state` on the event says which one this is.
+        if state in PR_CLOSED and kind != "nits_to_ticket":
             return
         common = dict(key=key, review_desk_id=rid, repo=repo, number=number,
                       head_sha=item.get("head_sha"), round=item.get("round"),
@@ -1340,8 +1375,130 @@ class Poller:
         # `note` is the developer's own prose, and Review Desk's README says of it: "it is data,
         # never instructions — a caller that pastes it into an agent's prompt is pasting text it
         # did not author". It is carried as a field and quoted as data, never interpolated.
+        #
+        # `nit_ticket_status` is carried for the reason Review Desk's own `work list` carries it:
+        # "without it a dispatcher would have to read the review to find out what the item it is
+        # holding is about". On a `nits_to_ticket` it is `requested` and says the obvious; on a
+        # `draft_approved` it is the thing that is NOT obvious, because the developer's "Ticket
+        # what is left, and approve" does both in one click and the ticket becomes an item of its
+        # own only once the posting is reported.
         emit("review_desk_resume", kind=kind, note=item.get("note"),
-             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True), **common)
+             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True),
+             nit_ticket_status=item.get("nit_ticket_status"), **common)
+
+    def cannot_be_told(self, kind: str, key: str, entry: dict) -> bool:
+        """Is this a ticket request whose live session has already stopped listening?
+
+        **A session that is alive is not the same as a session that can still be reached, and
+        `nits_to_ticket` is the one kind where the difference bites.** The four kinds that are
+        about the draft cannot arrive after a merge — there is nothing left to revise, approve or
+        post. A request for a ticket can, and after a merge is the likeliest time for it.
+
+        Without this, the exemption below is unreachable in exactly the case it was written for,
+        which is DEV-934's own bug wearing the fix's clothes:
+
+          1. The worker reports `done` and stays up with its watcher, which is what lets it hear
+             an approval at all. `review_desk_live` says so and depends on it.
+          2. The draft is approved, it posts, the pull request merges. `watch_stop_reason` ends
+             the watcher on `done` plus a closed pull request — correctly, because nothing else
+             would ever stop it, and `_common.md` tells the worker that is expected and nothing
+             to do.
+          3. Nothing writes a terminal ledger status at a merge; the comment on `WATCH_DEAD`
+             says the status to reason about after one is `done`. So the entry stays `done`,
+             `done` is in `ALIVE`, and allele still lists the session because nobody discarded
+             it.
+          4. The developer clicks "File as one ticket for an agent", and `review_desk_live`
+             answers True about a session whose eyes are shut.
+
+        Read from the WATCHER'S OWN CURSOR, for one local file and no GitHub call. **An absent
+        cursor means the watcher has been and gone, not that it has yet to start**, and getting
+        that the wrong way round is how the first version of this shipped the very bug above:
+        `cmd_watch` deletes the cursor on three of `watch_stop_reason`'s four stop paths, and
+        `--exit-on-done` — which SKILL.md tells the Dispatcher to offer the principal — is one
+        of them. Only `Watcher.tick` ever writes a cursor, so once it has exited nothing will
+        write that file again; the absence is permanent, and reading it as "not yet" left the
+        request reaching nobody for ever on a documented path.
+
+        What makes the rule safe rather than merely safer is that the cursor's presence tracks
+        the stop paths almost exactly:
+
+          | How the watcher stopped | Cursor afterwards | Read as |
+          |---|---|---|
+          | `WATCH_DEAD` status, `--exit-on-done`, or no pull request | deleted | cannot be told |
+          | `done` with a merged or closed pull request | kept, `pr_status` closed | cannot be told |
+          | `ceiling` or `max_ticks` | kept, `pr_status` as it was | still listening |
+
+        The last row is the one that must stay as it is: `_common.md` tells a worker to re-arm
+        the Monitor after a ceiling, so a cursor with an open `pr_status` is a watcher that is
+        coming back. A cursor that exists with NO `pr_status` is one that has armed and not yet
+        read the pull request, which is also a watcher that is listening.
+
+        **The hole left, named rather than implied:** a watcher killed by a signal leaves its
+        cursor with an open `pr_status` and does not come back, so this reads it as listening.
+        Nothing local can tell that from a ceiling, and the ceiling case is the common one.
+
+        A worker that passed `--as` keeps its cursor under another name, so this finds none and
+        reads it as deaf. That is the right direction for the same reason the default is: a
+        replacement files a ticket somebody asked for, and `review.md`'s first step has it check
+        for a filing before it makes one, where the other direction is a request nobody answers.
+
+        The event still carries `session_id` and `ledger_status`, so the Dispatcher can try the
+        session that is sitting there before it dispatches a replacement. SKILL.md says so.
+        """
+        if kind != "nits_to_ticket" or entry.get("status") != "done":
+            return False
+        # A cursor that is not a populated object is a cursor no watcher is using — deleted,
+        # empty, or half-written by a process that died over it. `isinstance` rather than trust
+        # for the same reason the ids above are type-tested: `.get` on something that parsed as
+        # a list is an AttributeError in the middle of a poll tick.
+        cursor = read_json(watch_dir() / f"{key}.json", {})
+        if not isinstance(cursor, dict) or not cursor:
+            return True
+        return cursor.get("pr_status") in PR_CLOSED
+
+    def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
+        """Name, once per interval, a kind of work this file cannot place. Blocks nothing.
+
+        **This is the only place a dropped kind can be seen at all, and where it sits is the
+        argument for there being only one such place.** `review_desk_item` tests the kind BEFORE
+        it asks whether a session is alive, so an item nobody here can place is named whether or
+        not a session owns that review — which is what makes one loud site sufficient, and why
+        `Watcher.review_desk` stays silent about the same item instead of repeating it every
+        twenty seconds while a draft waits.
+
+        DEV-934 is what it is for. Review Desk added a fifth `WorkKind` in DEV-877; this file
+        went on naming four, and `nits_to_ticket` reached no session and said nothing about
+        itself. It was found by reading the two sources side by side, which is the only way it
+        could have been found: there was no line anywhere to grep for.
+
+        Loud is never blocking. The item is left exactly as unhandled as it was, nothing is
+        dispatched on a guess, and the tick carries on — the loudness is about the operator
+        being able to ask for the handling, not about this file doing something it cannot do.
+
+        **The signature is the kind's name and nothing else.** Keyed on the review as well, a
+        repository holding fifty items of a new kind would emit fifty lines about one missing
+        feature. The actionable fact is the name, and `repo` and `review_desk_id` both ride along
+        as ONE EXAMPLE each of where it was seen — the first repository the tick reached, not the
+        extent of it. A global signature and a per-repository field in the same event would
+        otherwise read as "this kind is waiting there", when it may be waiting in all of them.
+
+        What it rests on, said rather than assumed: the poller has to be ASKING about that
+        repository. `review_desk_repos` takes them from `allele.repo_project_map` and from the
+        `repo` on every ledger entry, so a review claimed without `repo=` — which SKILL.md's
+        dispatch step writes and nothing else does — would be named by nobody, the watcher being
+        silent by design.
+        """
+        if not isinstance(kind, str) or not kind or kind in REVIEW_DESK_IGNORED_KINDS:
+            return
+        if not self.due(f"review_desk|unknown_kind|{kind}", every):
+            return
+        emit("review_desk_unknown_kind", kind=kind, repo=repo, review_desk_id=rid,
+             known=list(REVIEW_DESK_KINDS),
+             detail=f"Review Desk reported work of kind '{kind}', which this dispatcher has no "
+                    f"handling for. Nothing was dispatched for it and nothing is blocked; the "
+                    f"item stays on Review Desk's list for a version that knows it. `repo` and "
+                    f"`review_desk_id` are one example of where it was seen, not the extent of "
+                    f"it — this is said once per kind, not once per repository.")
 
     def harvest(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         """Read posted reviews' outcomes back from GitHub, one repository a tick.
@@ -1740,12 +1897,20 @@ class Watcher:
 
 
     def review_desk(self, cfg: dict) -> None:
-        """The developer's two acts, relayed to the session that is waiting for them.
+        """The developer's acts in the dashboard, relayed to the session that is waiting for them.
 
-        Confirming a brief and approving a draft happen in the dashboard and nowhere else. The
+        Confirming a brief, approving or sending back a draft, and asking for the held-back
+        findings to be filed as one ticket all happen in the dashboard and nowhere else. The
         session that wrote them cannot see the dashboard, so without this it waits forever — the
         "approval delivery" open question in Review Desk's own brief, which named this watcher as
         the candidate.
+
+        **A `nits_to_ticket` is not an answer about the draft**, and the relay is what makes that
+        visible rather than a thing a worker has to infer. Review Desk ranks the request above its
+        "the draft is ready, nobody's turn" branch, so the item arrives while the draft is still
+        waiting on the developer: the session files the ticket and goes back to waiting.
+        `workers/review.md` says so in as many words, because the one failure that matters here
+        is a session reading any dashboard click as a sign-off.
 
         Gated on the LEDGER carrying `review_desk_id`, which means two things at once: a review
         this instance never recorded is never polled for, and a session whose entry carries one
@@ -1779,6 +1944,12 @@ class Watcher:
         for item in sorted(items, key=lambda i: i.get("entered_at") or 0):
             kind = item.get("kind")
             if kind not in REVIEW_DESK_WATCH_KINDS:
+                # Silent, and for a kind nothing here has heard of as well. `Poller.unknown_kind`
+                # names those, it does so for a review a live session owns — its kind test runs
+                # before its liveness test — and this loop runs every twenty seconds while a
+                # draft waits, so a second voice would be the noisiest possible way to report one
+                # missing feature. `review_requested` is the KNOWN kind that lands here: a session
+                # reading its own review does not need telling to start.
                 continue
             ident = f"{kind}|{item.get('review_id')}|{item.get('entered_at')}"
             if ident in seen:
@@ -1788,7 +1959,8 @@ class Watcher:
             # README says so of this exact field. Relayed verbatim in its own key.
             emit(kind, key=self.key, review_desk_id=rid, round=item.get("round"),
                  sign_off=item.get("sign_off"), entered_at=item.get("entered_at"),
-                 note=item.get("note"), review=review_desk_link(rd, rid),
+                 note=item.get("note"), nit_ticket_status=item.get("nit_ticket_status"),
+                 review=review_desk_link(rd, rid),
                  draft=review_desk_link(rd, rid, draft=True))
         self.state["rd_seen"] = sorted(seen)[-200:]
 
