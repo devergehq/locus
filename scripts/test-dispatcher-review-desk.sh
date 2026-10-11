@@ -1244,7 +1244,15 @@ ok "a nits_to_ticket with no live session resumes"     "$(count '"event": "revie
 ok "  naming the kind"                                 "$(says '"kind": "nits_to_ticket"')" yes
 ok "  and the status of the ticket asked for"          "$(says '"nit_ticket_status": "requested"')" yes
 ok "  on the key Review Desk was linked to"            "$(says '"key": "gh-portal-418"')" yes
-session dead-1
+
+# A FRESH instance, and that is the whole of this assertion. Run against the one above, the
+# item's own `due` marker has already been stamped, so it emits nothing whatever liveness says --
+# a check that passes with `review_desk_live` hard-coded to False, which is no check at all.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-8 --by test
+no_sessions
+session live-8
 rc=$(run "$disp" poll 1)
 ok "a live session owns its own nits_to_ticket"        "$(count review_desk)" 0
 no_sessions
@@ -1300,6 +1308,7 @@ ok "  and warns off the command that does not exist"   "$(grep -c 'Not .finding 
 ok "  it never tells a worker to run one"              "$(grep -c 'review-desk finding list' "$worker_md")" 0
 ok "  it names the command that reports the id"        "$(grep -c 'review nit-ticket --review <id> --ticket <NEW-ID>' "$worker_md")" 1
 ok "  and the style the ticket is written in"          "$(grep -c 'issue-craft. skill' "$worker_md")" 1
+ok "  with the linter's installed path, not a bare name" "$(grep -c 'python3 ~/.locus/skills/issue-craft/issue_lint.py --key' "$worker_md")" 1
 ok "  one ticket, not one per finding"                 "$(grep -c 'never one per finding' "$worker_md")" 1
 ok "  the team comes from the review's own ticket"     "$(grep -c 'ticket_id. is null, ask the' "$worker_md")" 1
 ok "  and it checks for a filing before filing"        "$(grep -c 'review.nit_ticket_status' "$worker_md")" 1
@@ -1307,6 +1316,9 @@ ok "  and it checks for a filing before filing"        "$(grep -c 'review.nit_ti
 # permission to post. Said in the row and again in the section.
 ok "  filing is not a sign-off, said twice"            "$(grep -c 'not a sign-off' "$worker_md")" 2
 ok "  and the button text the report moves"            "$(grep -c 'Queued as one ticket' "$worker_md")" 1
+ok "  each event row names its section, not its distance" "$(grep -c 'exactly as \*\*' "$worker_md")" 2
+ok "  and a null ticket blocks the filing, not the session" "$(grep -c 'file nothing until they answer' "$worker_md")" 1
+ok "  a merged pull request does not cancel the ticket"  "$(grep -c 'merged pull request does not cancel' "$worker_md")" 1
 ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1
 ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
 
@@ -1360,7 +1372,11 @@ import json
 d = json.load(open('$work/out'))
 print($1)"; }
 ok "every kind the contract lists is handled or ignored" "$(placed "json.dumps(sorted(d['kinds'] + d['ignored']))")" "$CONTRACT_KINDS"
-ok "  and nothing is handled the contract does not list" "$(placed "json.dumps(sorted(d['kinds']))")" "$CONTRACT_KINDS"
+ok "  and nothing is handled the contract does not list" "$(placed "set(d['kinds']) <= set($CONTRACT_KINDS)")" True
+# A SUBSET, deliberately, where the line above is an equality. Both as an equality would force
+# `REVIEW_DESK_IGNORED_KINDS` to stay empty for ever -- naming a sixth kind as ignored, which is
+# exactly what the comment above instructs, would fail this -- and the escape hatch would be
+# unusable without editing the test that exists to police it.
 ok "  the watcher relays only kinds this file places"  "$(placed "set(d['watch']) <= set(d['kinds'])")" True
 ok "  and relays all but the one it must not"          "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))")" '["review_requested"]'
 
@@ -2589,6 +2605,15 @@ session live-1
 rc=$(run "$work/nolive.py" poll 1)
 ok "no liveness: a live session gets a second one"     "$(count '"event": "review_desk_resume"')" 1
 no_sessions
+# The fifth kind through the same reversal. Its own assertion passed on a reused instance
+# whatever liveness said, which is why this one is here and not only the `draft_approved` above.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-8 --by test
+session live-8
+rc=$(run "$work/nolive.py" poll 1)
+ok "  and so does a live session holding a nits_to_ticket" "$(count '"event": "review_desk_resume"')" 1
+no_sessions
 
 sed 's/^        if not self\.due(f"review_desk|{kind}|{rid}|{item\.get(.entered_at.)}", every):$/        if False:  # RATE LIMIT REVERSED/' \
     "$disp" > "$work/norate.py"
@@ -2761,6 +2786,12 @@ put gh-portal-412 mode=review status=active review_desk_id=7 --by test
 work_doc nits_to_ticket 7 acme/portal 412 1791520400
 rc=$(run "$work/nowatch.py" watch gh-portal-412 1)
 ok "no relay: the session that owns the review is told nothing" "$(count '"event": "nits_to_ticket"')" 0
+
+printf '\n  this file runs every assertion it contains\n'
+ok "no heading in this harness is missing its quote"   "$(grep -c "^printf '[^']*$" "$0")" 0
+sed "s/^printf '\\\\nThe fifth kind -- one ticket for the findings held back (DEV-934)\\\\n'\$/printf '\\\\nThe fifth kind -- one ticket for the findings held back (DEV-934)\\\\n/" \
+    "$0" > "$work/noquote.sh"
+ok "the quote reversal changed one line"               "$(grep -c "^printf '[^']*$" "$work/noquote.sh")" 1
 
 sed 's/^        if state in PR_CLOSED and kind != "nits_to_ticket":$/        if state in PR_CLOSED:  # MERGE EXEMPTION REVERSED/' \
     "$disp" > "$work/nomerged.py"

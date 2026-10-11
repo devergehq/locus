@@ -846,8 +846,13 @@ asked for.
      principal's to choose, as `decompose.md` says of sub-issues.
    - A line naming where it came from: the pull request, the review's dashboard link, and
      `Created by agent:<KEY>/review`.
-   - `python3 issue_lint.py --key <NEW-ID>` on the **saved** issue, then fix what it names. An
-     unpaired fold swallows the rest of a ticket and the write still returns success.
+   - `python3 ~/.locus/skills/issue-craft/issue_lint.py --key <NEW-ID>` on the **saved** issue,
+     then fix what it names. An unpaired fold swallows the rest of a ticket and the write still
+     returns success. The path is written out for the reason the brief's linter has its written
+     out: your working directory is the repository under review, and a bare filename exits 2
+     having checked nothing. `--key` reads Linear and needs `LINEAR_API_KEY` in your environment; without it,
+     lint the draft you are about to save — `issue_lint.py draft.md` — and say in your report
+     that the saved ticket was not the thing checked.
 5. **Report the id back**: `review-desk review nit-ticket --review <id> --ticket <NEW-ID>`.
    `--ticket` is required and there is no form of the command that asks for a ticket nobody has
    filed. This is what clears the item and what moves the button on the draft page from

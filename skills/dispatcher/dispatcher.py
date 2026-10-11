@@ -1409,6 +1409,12 @@ class Poller:
         repository holding fifty items of a new kind would emit fifty lines about one missing
         feature. The actionable fact is the name, and `review_desk_id` rides along as an example
         of a review that is waiting on it.
+
+        What it rests on, said rather than assumed: the poller has to be ASKING about that
+        repository. `review_desk_repos` takes them from `allele.repo_project_map` and from the
+        `repo` on every ledger entry, so a review claimed without `repo=` — which SKILL.md's
+        dispatch step writes and nothing else does — would be named by nobody, the watcher being
+        silent by design.
         """
         if not isinstance(kind, str) or not kind or kind in REVIEW_DESK_IGNORED_KINDS:
             return

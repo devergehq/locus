@@ -97,11 +97,15 @@ refuses to build when they disagree.
   working, which is what lets the watcher stay silent instead of repeating it every 20 seconds.
   `REVIEW_DESK_IGNORED_KINDS` is empty and load-bearing empty: it is the only way to say "read,
   and deliberately not ours" as against "never heard of it", and the fifth kind was in neither
-  list for five weeks with no line anywhere to grep for. 67 new assertions in
-  `scripts/test-dispatcher-review-desk.sh` (496 to 568), including a crossing that fails if Review
-  Desk's contract lists a kind this file neither handles nor names as ignored, and four reversals
-  — one of them showing that the crossing cannot see a kind missing from the *relay* list, which
-  is why the relay test exists beside it. Against a stand-in `review-desk` and a throwaway
+  list for five weeks with no line anywhere to grep for. 79 new assertions in
+  `scripts/test-dispatcher-review-desk.sh` (496 to 575), including a crossing that fails if Review
+  Desk's contract lists a kind this file neither handles nor names as ignored, and six reversals
+  — one showing that the crossing cannot see a kind missing from the *relay* list, which is why
+  the relay test exists beside it, and one showing that a `nits_to_ticket` is dispatched on a
+  **merged** pull request where no other kind is: the request becomes an item only once the draft
+  is reported posted, a merge usually follows that, and the dashboard's own note beside the button
+  is "the merge is not waiting on them", so the skip every other kind wants would have left the
+  developer's click unanswered for ever. Against a stand-in `review-desk` and a throwaway
   instance: no real review, no real ticket, no `~/.review-desk`, no `~/.locus/data/dispatcher`,
   nothing on 7777. (DEV-934)
 
