@@ -404,11 +404,15 @@ printf '\n  what the hand-over refuses, and how the two are told apart\n'
 # instruction, which is the part a worker acts on -- that it exists, that the old body is never
 # posted, and that the discriminator is the STATUS step 1 read rather than the message, because
 # both refusals carry `draft_status`.
+#
+# The patterns are short on purpose: these greps read prose, and prose rewraps. A pattern
+# spanning what is currently one line fails the next time a sentence grows by a word, which
+# reports a missing RULE when all that moved was a line break.
 ok "the stale approved body is named"            "$(grep -c 'not what its blocks compose to' "$brief")" 1
 ok "  and the old body is never posted"          "$(grep -c 'Never post the old' "$brief")" 1
 ok "  nor is it waited on, which never ends"     "$(grep -c 'a session that waits waits forever' "$brief")" 1
-ok "  told apart by the status, not the sentence" "$(grep -c 'Read the status, not the sentence' "$brief")" 1
-ok "  and both refusals carry one code"          "$(grep -c 'carry .draft_status., and the status step 1 read' "$brief")" 1
+ok "  told apart by the status, not the sentence" "$(grep -c 'not the sentence' "$brief")" 1
+ok "  and both refusals carry one code"          "$(grep -c 'refusals carry .draft_status.' "$brief")" 1
 ok "the agent marker goes after Review Desk's"   "$(grep -c 'the .agent:. marker goes after Review Desk' "$brief")" 1
 ok "  because marker_last reads the last line"   "$(grep -c 'threads.marker_last. off the body.s last physical line' "$brief")" 1
 ok "the marker is the join, with the title after" "$(grep -c 'the join is carried by the thing' "$brief")" 1

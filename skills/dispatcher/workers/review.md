@@ -988,11 +988,18 @@ post again, on somebody's pull request, under your principal's name.
    nobody signed off, under your principal's name — the one outcome this arrangement exists to
    prevent.
 
-   **Two different refusals carry `draft_status`, and the status step 1 read is what separates
-   them.** Measured on review-desk `bae4f5e`: an unapproved draft refuses with "the draft of
-   review N is ready, and only an approved draft is handed over"; an approved draft whose body
-   predates the composition refuses with "…is approved, and a draft whose body is what its
-   blocks compose to". Read the status, not the sentence.
+   **Two different refusals carry `draft_status`, and the status separates them.** Measured on
+   review-desk `bae4f5e`: an unapproved draft refuses with "the draft of review N is ready, and
+   only an approved draft is handed over"; an approved draft whose body predates the composition
+   refuses with "…is approved, and a draft whose body is what its blocks compose to". Read the
+   status, not the sentence.
+
+   **Step 1 already refused to go on unless the status read `approved`, so the first row is the
+   race and the second is the ordinary case.** The draft can move between the two reads — your
+   principal sending it back in that window is exactly the thing that does it — and then the
+   hand-over is refusing something that is no longer approved. Re-read `draft show` rather than
+   trusting the status from a moment ago: `sent_back` means go back to waiting, and the
+   `draft_sent_back` your watcher is about to hand you is the same news arriving properly.
 
    **The second one is the one that will not fix itself.** The draft was approved in the old
    shape — every finding a section, no index — and the threads are composed from the record as
