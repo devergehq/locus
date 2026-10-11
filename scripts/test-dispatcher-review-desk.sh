@@ -1274,8 +1274,97 @@ for fragment in ANY.findall(limits):
 print("%d checked; %s" % (checked, " | ".join(missing) or "none missing"))
 LIMITS
 
+cat > "$work/layertable.py" <<'LAYERS'
+"""Read `workers/review.md`'s layer table and measure its own example against its own rule.
+
+The rule is prose a worker obeys, so a grep for the sentence proves only that the sentence is
+there. This measures the TABLE: every `--detail` example in it, and every fact's label and value,
+against the numbers the prose states. An example that breaks the rule it illustrates is the way
+this file has gone wrong before -- a brief that asks for four words and shows nine teaches nine.
+
+A fact is written `Label · `value``, facts separated by ` / `. Rows 2 and 7 carry no fact pairs
+on purpose: the store settles layer 2 and nothing writes layer 7, and the cells say so.
+"""
+import json, pathlib, re, sys
+
+lines = pathlib.Path(sys.argv[1]).read_text().split("\n")
+start = next(i for i, l in enumerate(lines) if l.startswith("| Layer | Which of your steps |"))
+rows = []
+for line in lines[start + 2:]:
+    if not line.startswith("|"):
+        break
+    rows.append([c.strip() for c in line.strip().strip("|").split("|")])
+
+details, facts, empty_facts = [], [], []
+for row in rows:
+    details += [t for t in re.findall(r"`([^`]+)`", row[2])]
+    pairs = [p for p in row[3].split(" / ") if " · " in p]
+    if not pairs:
+        empty_facts.append(row[0])
+    facts.append([(p.split(" · ")[0].strip(),
+                   p.split(" · ")[1].strip().strip("`")) for p in pairs])
+
+print(json.dumps({
+    "rows": len(rows),
+    "columns": sorted({len(r) for r in rows}),
+    "cells_filled": len([r for r in rows if r[2] and r[3]]),
+    "detail_examples": len(details),
+    "longest_detail": max([len(d.split()) for d in details] or [0]),
+    "over_four": [d for d in details if len(d.split()) > 4],
+    "rows_with_facts": len([f for f in facts if f]),
+    "rows_without_facts": empty_facts,
+    "most_facts_on_one_step": max([len(f) for f in facts] or [0]),
+    "longest_fact_label": max([len(l.split()) for f in facts for l, _ in f] or [0]),
+    "longest_fact_value": max([len(v.split()) for f in facts for _, v in f] or [0]),
+}, sort_keys=True))
+LAYERS
+
+cat > "$work/workedexample.py" <<'WORKED'
+"""Measure `understand.md`'s worked example against `brief_lint.py`'s own limits.
+
+The example is markdown, so no linter reads it -- and an example that breaks the rule it sits
+beside teaches the breach. This reads the two tables the new rules touch (the problems' labels,
+and the Solution parts' summaries) and measures them with the linter's own `words` and
+`code_names`, so the numbers cannot drift apart from the ones it enforces.
+"""
+import importlib.util, json, pathlib, sys
+
+spec = importlib.util.spec_from_file_location("brief_lint", sys.argv[2])
+bl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bl)
+
+lines = pathlib.Path(sys.argv[1]).read_text().split("\n")
+
+
+def table(header, column):
+    start = next((i for i, l in enumerate(lines) if l.startswith(header)), None)
+    if start is None:
+        return None
+    out = []
+    for line in lines[start + 2:]:
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) > column:
+            out.append(cells[column])
+    return out
+
+
+labels = table("| | Label | Marked on |", 1)
+summaries = table("| Part | Summary | Fixes | Files |", 1)
+print(json.dumps({
+    "labels": labels,
+    "labels_over_3": [l for l in labels or [] if bl.words(l) > bl.LIMIT["problem.label.words"]],
+    "parts": len(summaries or []),
+    "summaries_over_30": [t for t in summaries or []
+                          if bl.words(t) > bl.LIMIT["part.summary.words"]],
+    "summaries_with_names": [t for t in summaries or [] if bl.code_names(t)],
+}, sort_keys=True))
+WORKED
+
 brief_md="$root/skills/dispatcher/workers/review.md"
 understand_md="$root/skills/review-craft/understand.md"
+house_md="$root/skills/review-craft/house-style.md"
 # `ask <expr> [file]` answers one question about that reading, so an assertion reads as the
 # question it asks.
 ask () { python3 "$work/brieftable.py" "${2:-$brief_md}" "${3:-$understand_md}" | python3 -c "
@@ -1287,6 +1376,101 @@ rc () { set +e; review-desk "$@" > "$work/out" 2>"$work/err"; echo $?; set -e; }
 quiet () { set +e; review-desk "$@" > "$work/ps" 2>"$work/err"; set -e; }
 
 instance '{"mode":"auto"}'
+
+# `layers <expr> [file]` answers one question about the layer table's own example.
+layers () { python3 "$work/layertable.py" "${2:-$brief_md}" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print($1)"; }
+
+printf '\n  a step is a line of a map: four words, and the rest on its card\n'
+ok "the detail rule states four words"              "$(grep -c '`--detail` is at most 4 words and states the outcome' "$brief_md")" 1
+ok "  and nothing anywhere still says eight"        "$(grep -rc 'at most 8 words' "$root/skills" | grep -cv ':0$')" 0
+ok "  with a wrong and a right example beside it"   "$(grep -c '| ✓ | `9 options, C built` |' "$brief_md")" 1
+ok "  and says why the page cannot take more"       "$(grep -c 'a single line that never wraps' "$brief_md")" 1
+ok "the facts rule states all three numbers"        "$(grep -c 'at most 5 of them, each a label of' "$brief_md")" 1
+ok "  and says the store enforces neither"          "$(grep -c 'store enforces no length on either' "$brief_md")" 1
+ok "  and divides them by kind, not by what fits"   "$(grep -c 'The division is by \*kind\*' "$brief_md")" 1
+
+printf '\n  the layer table obeys the rule it teaches\n'
+# The prose above is a sentence; this measures the EXAMPLE. A brief that asks for four words and
+# shows nine teaches nine, and nothing but arithmetic over the table catches that.
+ok "the table has a row for each of the seven steps" "$(layers "d['rows']")" 7
+ok "  every row carrying a detail and its facts"     "$(layers "d['cells_filled']")" 7
+ok "  in four columns, all of them"                  "$(layers "d['columns']")" "[4]"
+ok "every detail example is four words or fewer"     "$(layers "d['over_four']")" "[]"
+ok "  measured, not asserted"                        "$(layers "d['longest_detail'] <= 4 and d['detail_examples'] >= 8")" True
+ok "five steps carry facts"                          "$(layers "d['rows_with_facts']")" 5
+ok "  and the two that do not are the two nobody writes" "$(layers "d['rows_without_facts']")" "['2 understand', '7 harvest']"
+ok "no step carries more than five facts"            "$(layers "d['most_facts_on_one_step'] <= 5")" True
+ok "every fact label is three words or fewer"        "$(layers "d['longest_fact_label'] <= 3")" True
+ok "every fact value is six words or fewer"          "$(layers "d['longest_fact_value'] <= 6")" True
+ok "  and the table says every example is invented"  "$(grep -c 'Every example in that table is invented' "$brief_md")" 1
+
+printf '\n  a step\x27s facts replace, so they are written once\n'
+ok "the brief says the option replaces the list"    "$(grep -c 'the option replaces the whole list' "$brief_md")" 1
+ok "  naming the one rule it breaks"                "$(grep -c 'stops being true' "$brief_md")" 1
+ok "  with the measurement, five against one"       "$(grep -c 'left that step with one fact' "$brief_md")" 1
+ok "  and a row per thing a call can say"           "$(grep -c '^| no fact option at all | the facts it already had' "$brief_md")" 1
+ok "  including the one that empties it"            "$(grep -c '^| the clear option | none |' "$brief_md")" 1
+ok "  so the facts go in the call that finishes"    "$(grep -c 'once the step is done and you know all of them' "$brief_md")" 1
+ok "  and progress loses nothing"                   "$(grep -c 'and loses nothing' "$brief_md")" 1
+
+printf '\n  a field DEV-917 adds is sent only where it is taken\n'
+ok "the brief probes the command, not the version"  "$(grep -c 'Probe the command, never the version number' "$brief_md")" 1
+ok "  with the command that answers it"             "$(grep -c 'review-desk layer set --help' "$brief_md")" 1
+ok "  reading the option name off that help"        "$(grep -c "Read the option's own name off that help" "$brief_md")" 1
+ok "  and carries on without it, silently"          "$(grep -c 'say nothing about it to anyone' "$brief_md")" 1
+ok "  because a review must still be prepared"      "$(grep -c 'never fail to be prepared because a field is' "$brief_md")" 1
+ok "  and the version string cannot answer it"      "$(grep -c 'The version number cannot answer this' "$brief_md")" 1
+ok "  measured: both builds print the same version" "$(grep -c 'both print' "$brief_md")" 1
+ok "a source document refused for the two fields is retried" "$(grep -c 'drop those two' "$brief_md")" 1
+
+printf '\n  write 1 says why in one clause\n'
+ok "the reason is one short clause"                 "$(grep -c 'It is one short clause' "$brief_md")" 1
+ok "  and the whole of it is given"                 "$(grep -c '| ✓ | `problem half only — the full brief follows at step 5` |' "$brief_md")" 1
+ok "  with the long version as the wrong example"   "$(grep -c 'A 52-word reason restating' "$brief_md")" 1
+
+printf '\n  a source is a reference, a state and a line\n'
+ok "the brief has one section for them"             "$(grep -c '^### Where the understanding came from$' "$brief_md")" 1
+ok "  naming the command that writes them"          "$(grep -c 'provenance sources --review <id> --file' "$brief_md")" 1
+ok "  the label is the reference alone"             "$(grep -c '\*\*the reference alone\*\*' "$brief_md")" 1
+ok "  the note is at most 12 words"                 "$(grep -c '| `note` | what it tells us | at most 12 words |' "$brief_md")" 1
+ok "  the ticket's state goes in status"            "$(grep -c "the ticket's state as you read it" "$brief_md")" 1
+ok "  and the code is not a source at all"          "$(grep -c 'The code is not a source, and there is no kind for it' "$brief_md")" 1
+ok "  which is where the commit went instead"       "$(grep -c 'the code at `a1b2c3d`' "$brief_md")" 1
+ok "and step 2 names the command"                   "$(grep -c 'for what you read it \*from\*' "$brief_md")" 1
+
+printf '\n  the three writing rules understand.md owns\n'
+ok "the Problems slot says in flow order"           "$(grep -c '^| \*\*Problems\*\* | What is wrong, numbered \*\*in the order the before flow meets them\*\*' "$understand_md")" 1
+ok "  and Label is a slot of its own"               "$(grep -c '^| \*\*Label\*\* |' "$understand_md")" 1
+ok "  with its number in the slot"                  "$(grep -c 'At most 3 words' "$understand_md")" 1
+ok "the Parts slot carries the summary's cap"       "$(grep -c 'at most 30 words carrying no class name, path or `::`' "$understand_md")" 1
+ok "rule 5 is the numbering and the label"          "$(grep -c '^\*\*5 · A problem is numbered where the before flow first meets it' "$understand_md")" 1
+ok "  and says flow order is not sufficient"        "$(grep -c 'Flow order is necessary and is not sufficient' "$understand_md")" 1
+ok "rule 6 is the part's summary"                   "$(grep -c "^\*\*6 · A part's summary is one plain line" "$understand_md")" 1
+ok "the worked example labels every problem"        "$(grep -c '^| 1 | One transaction | the second row |' "$understand_md")" 1
+ok "  and gives every part a summary"               "$(grep -c '^| Part | Summary | Fixes | Files |' "$understand_md")" 1
+# Measured against the linter's own limits, not grepped. An example that breaks the rule it sits
+# beside teaches the breach, and nothing reads the example because it is markdown.
+worked () { python3 "$work/workedexample.py" "$understand_md" \
+    "$root/skills/review-craft/brief_lint.py" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print($1)"; }
+ok "  three labels, every one inside its limit"     "$(worked "[len(d['labels']), d['labels_over_3']]")" "[3, []]"
+ok "  seven part summaries, every one inside its"   "$(worked "[d['parts'], d['summaries_over_30']]")" "[7, []]"
+ok "  and not one of them naming code"              "$(worked "d['summaries_with_names']")" "[]"
+
+printf '\n  the two rules house-style.md owns\n'
+ok "a finding's title is at most 12 words"          "$(grep -c '\*\*A title is at most 12 words, and it is not the claim' "$house_md")" 1
+ok "  and DEV-891's own title still fits it"        "$(python3 -c "
+import re
+t = 'a correction that throws after the reopen strands the invoice OPEN'
+doc = open('$house_md').read()
+print(len(t.split()) <= 12 and doc.count(t) == 3)")" True
+ok "backticks hold in every prose field"            "$(grep -c 'This holds in every prose field a session writes' "$house_md")" 1
+ok "  and the fields that carry no name are named"  "$(grep -c "a brief's top layer, and a part's summary" "$house_md")" 1
 
 printf '\n  the fields the brief names are ones Review Desk accepts, and cover the pages\n'
 ok "no field named is one the store would refuse"   "$(ask "d['unknown_roots']")" "[]"
@@ -1353,8 +1537,10 @@ cat > "$work/half.json" <<'JSON'
                   [{"title": "The queue retries it", "note": "from the start, as a new post"}],
                   [{"title": "The receiver stores both", "note": "two orders, one event",
                     "problem": 2}]],
-  "problems": [{"number": 1, "was_wrong": "A retry arrives as a second delivery."},
-               {"number": 2, "was_wrong": "Nothing records that it was a retry."}],
+  "problems": [{"number": 1, "label": "A second delivery",
+                "was_wrong": "A retry arrives as a second delivery."},
+               {"number": 2, "label": "No record",
+                "was_wrong": "Nothing records that it was a retry."}],
   "confirmation_required": false,
   "confirmation_not_required_because": "problem half only — the full brief follows at step 5"
 }
@@ -1561,7 +1747,14 @@ ok "and unmarking the flows does not rescue it"     "$(rc brief put --review 1 -
 ok "  the verdict that scored against it refuses too" "$(grep -c 'verdicts\[\].problem names problem 2' "$work/err")" 1
 ok "  and the brief forbids dropping or renumbering" "$(grep -c 'Never drop a problem, and never renumber one' "$brief_md")" 1
 ok "an unknown field is exit 1, not exit 2"         "$(rc brief put --review 4 --file "$work/old.json")" 1
-ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the structured brief' "$brief_md")" 1
+ok "  and the brief reads that as a Review Desk too old" "$(grep -c 'older than the field\*\*, not a broken' "$brief_md")" 1
+ok "  reading how much older out of the refusal"    "$(grep -c 'how much older is in the refusal' "$brief_md")" 1
+ok "  one field behind: drop it and write again"    "$(grep -c 'drop that one field and write again' "$brief_md")" 1
+ok "  older than the brief: the five old fields"    "$(grep -c 'older than the structured brief itself' "$brief_md")" 1
+ok "  and the cases are not to be confused"        "$(grep -c 'Do not read one of the first two as the third' "$brief_md")" 1
+ok "  with the list read for the field's own level" "$(grep -c 'the list for the level the field sits at' "$brief_md")" 1
+ok "  both refusal shapes quoted, nested and top"  "$(grep -c 'unknown field .blind_pass_state., expected one of' "$brief_md")" 1
+ok "  with the measured example that forced it"     "$(grep -c 'dropping .label. from the' "$brief_md")" 1
 
 printf '\n  the brief is linted before it is sent, and never before that\n'
 # The first two assertions RUN the linter over the two documents this harness built, which is
@@ -1578,7 +1771,7 @@ ok "the problem half does NOT pass it"              "$(lint "$work/half.json")" 
 ok "  failing the four the brief names, and no more" "$(grep -c '^FAIL  [a-z]' "$work/lint")" 4
 ok "  which are the change half, every one"         "$(grep '^FAIL  [a-z]' "$work/lint" | awk '{print $2}' | sort | tr '\n' ' ')" "headline.present picture.after problems.marked_after problems.now_line "
 ok "every quotation --limits makes of understand.md is in it" "$(python3 "$work/limitslots.py" \
-    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "8 checked; none missing"
+    "$root/skills/review-craft/brief_lint.py" "$understand_md")" "10 checked; none missing"
 ok "the linter is named for write 2"                "$(grep -c 'Write 2 is linted before it is sent' "$brief_md")" 1
 ok "  with the command a worker can run"            "$(grep -c 'brief_lint.py' "$brief_md")" 4
 ok "  and step 6 checks before it shows"            "$(grep -c 'Check it, then show your principal' "$brief_md")" 1
@@ -1586,7 +1779,7 @@ ok "write 1 is explicitly NOT linted"               "$(grep -c 'Do not lint writ
 # The number in the prose, crossed against the run three assertions above. The first version
 # pinned 6, a count off a malformed fixture that the sentence's own list contradicted; it is 4,
 # and now a document that drifts fails the run rather than only the grep.
-ok "  with the count it would fail by"              "$(grep -c '4 of its 16 checks fail' "$brief_md")" 1
+ok "  with the count it would fail by"              "$(grep -c '4 of its 22 checks fail' "$brief_md")" 1
 ok "the linter needs no Review Desk"                "$(grep -c 'It needs no Review Desk' "$brief_md")" 1
 ok "  so it runs with Review Desk absent too"       "$(grep -c 'with Review Desk absent, write the' "$brief_md")" 1
 ok "an absent linter is a broken install, said loudly" "$(grep -c 'brief_lint.py. that is not there is a broken install' "$brief_md")" 1
@@ -1685,6 +1878,20 @@ sed 's/`support_table\.title`/`support_tables.title`/' "$brief_md" > "$work/badr
 ok "the root reversal changed one line"                "$(grep -c 'support_tables.title' "$work/badroot.md")" 1
 ok "a field the store would refuse is NOT reported ok" "$(ask "d['unknown_roots'] == []" "$work/badroot.md")" False
 
+# The two controls for the layer table's arithmetic. Each breaks the EXAMPLE, not the prose, which
+# is the half a grep for the rule cannot see.
+sed 's/| `9 options, C built` |/| `9 options, 4 of them not on the ticket, C built` |/' \
+    "$brief_md" > "$work/baddetail.md"
+ok "the detail-length reversal changed one line"       "$(grep -c '9 options, 4 of them not on the ticket, C built' "$work/baddetail.md")" 2
+ok "a detail example over four words is NOT reported ok" "$(layers "d['over_four'] == []" "$work/baddetail.md")" False
+ok "  and it is named, so the fix is findable"         "$(layers "len(d['over_four'])" "$work/baddetail.md")" 1
+
+sed 's/^| 4 solution map | step 5 | `right shape, one departure` | Parts · .*$/| 4 solution map | step 5 | `right shape, one departure` | |/' \
+    "$brief_md" > "$work/badfacts.md"
+ok "the facts reversal emptied one cell"               "$(grep -c '^| 4 solution map | step 5 | .right shape, one departure. | |$' "$work/badfacts.md")" 1
+ok "a step with no facts cell is caught"               "$(layers "d['cells_filled']" "$work/badfacts.md")" 6
+ok "  and it drops out of the five that carry them"    "$(layers "d['rows_with_facts']" "$work/badfacts.md")" 4
+
 sed 's/^| \*\*What the pass was given\*\* | `blind_pass\.given` |/| **What the pass was given** | `blind_pass.handed` |/' \
     "$brief_md" > "$work/badfield.md"
 ok "the member reversal changed one line"              "$(grep -c 'blind_pass.handed' "$work/badfield.md")" 1
@@ -1702,9 +1909,9 @@ sed "s/'Options \.\.\. a title of at most 12 words'/'Options ... a title under 1
     "$root/skills/review-craft/brief_lint.py" > "$work/badquote.py"
 ok "the reworded-quotation reversal changed one line"  "$(grep -c "a title under 12 words" "$work/badquote.py")" 1
 ok "a citation reworded where the slot stayed is caught" "$(python3 "$work/limitslots.py" \
-    "$work/badquote.py" "$understand_md")" "8 checked; a title under 12 words"
+    "$work/badquote.py" "$understand_md")" "10 checked; a title under 12 words"
 ok "a limit citing a slot that is gone is caught"      "$(python3 "$work/limitslots.py" \
-    "$work/badlimits.py" "$understand_md")" "8 checked; How it works today (not a slot)"
+    "$work/badlimits.py" "$understand_md")" "10 checked; How it works today (not a slot)"
 
 sed 's/^| \*\*The system\*\* | `how_it_works_today` | \*\*1\*\* |/| **The sytsem** | `how_it_works_today` | **1** |/' \
     "$brief_md" > "$work/badslot.md"

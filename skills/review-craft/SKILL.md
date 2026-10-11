@@ -167,11 +167,15 @@ because a cap stops one line running away and the budget stops the top layer doi
 collectively. When the budget is what failed, the linter names the longest lines to tighten rather
 than saying "shorten it".
 
-**What it never measures: anything behind a click, and anything about the diff.** The budget is the
-top layer — the headline, and each problem's was-wrong and now line. A problem's detail, an
-option's arguments, a part's summary and the blind pass's answer are unbounded, because depth is
-allowed and it is the top that is read at a glance. And there is no limit keyed on how many lines
-the pull request changes, by Patrick's ruling of 9 October 2026.
+**What it never measures: almost anything behind a click, and anything about the diff.** The budget
+is the top layer — the headline, and each problem's was-wrong and now line. A problem's detail, an
+option's arguments and the blind pass's answer are unbounded, because depth is allowed and it is
+the top that is read at a glance. And there is no limit keyed on how many lines the pull request
+changes, by Patrick's ruling of 9 October 2026.
+
+**A part's summary is the one exception**, from 11 October 2026: 30 words, and held to the same
+plain-English rule as the top layer. Seven of them are read down one column at once, so it is
+scanned rather than clicked into — the argument for leaving depth alone does not apply to it.
 
 **A principal's review is linted too.** It carries no `agent:` marker by house style, and the
 linter once found reviews only by that marker, so it checked nothing on the reviews posted most.
@@ -204,6 +208,19 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**11 October 2026 (second change).** Six rules more in `brief_lint.py`, 24 in all, and three
+numbers in its limits table: every numbered problem carries a **label** of at most 3 words, the
+numbers run **in the order the before flow meets them**, and a **part's summary** is at most 30
+words of plain English. All three are writing faults no page can work around — a problem with no
+label leaves the Alternatives matrix heading a column with a whole sentence, and a bare number
+repeated down a flow reads as a step count. Review Desk's real-length brief passes all 24 with no
+change, because the labels were already there. The worker's side of the same change is in
+`workers/review.md`: a step's note is 4 words and the rest is the step's facts, a source is a
+reference with its state and a line of at most 12 words, and the code is not recorded as a source
+at all. Here, a finding's **title is at most 12 words** — DEV-891 gave it a field and a composed
+heading but no length — and the backticks rule now says it holds in every prose field a session
+writes, not only in a posted review.
 
 **11 October 2026.** A finding's **section heading** is now `### {Severity} · {id} · {title}`
 with no severity glyph and the id `F{seq}`, and its `in diff` tag and disposition chip sit on the

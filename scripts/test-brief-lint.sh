@@ -73,6 +73,7 @@ cat > "$work/base.json" <<'EOF'
   "problems": [
     {
       "number": 1,
+      "label": "No expiry",
       "was_wrong": "A reset link worked for as long as the mailbox held it.",
       "now_fixed": "A link is refused an hour after it was sent.",
       "detail_title": "The token with no expiry",
@@ -81,6 +82,7 @@ cat > "$work/base.json" <<'EOF'
     },
     {
       "number": 2,
+      "label": "The older links",
       "was_wrong": "Replacing a password left every earlier link still usable.",
       "now_fixed": "A reset drops every other link for that account.",
       "detail_title": "The links nobody cleared",
@@ -131,7 +133,7 @@ ran () { grep -qE "^(PASS|FAIL)  $1( |\$)" "$work/out" && echo yes || echo no; }
 echo "The base brief"
 ok "a brief written to the slots passes"          "$(run "$work/base.json")" 0
 ok "and no rule is reported as failing"           "$(grep -c '^FAIL' "$work/out" || true)" 0
-ok "18 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 18
+ok "24 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 24
 ok "the header counts the problems and the rows"  "$(says '2 numbered problems, 4 before rows, 5 after rows')" yes
 ok "and names the top-layer budget it measured"   "$(says 'top-layer words of 150')" yes
 ok "stdin is the same document"                   "$(set +e; python3 "$lint" - <"$work/base.json" >"$work/out" 2>&1; echo $?; set -e)" 0
@@ -195,12 +197,143 @@ b["flow_after"][1][0]["problem"] = 3
 b["flow_after"][2][0]["problem"] = 4
 b["flow_after"][4][0]["problem"] = 5'; case_run)" 1
 ok "naming the range"                             "$(says '5 numbered problems against 2 to 4')" yes
+# Marked down the flow, one per row, because the numbers now have to run the way the before flow
+# meets them: the first version of this case marked 4 on row 1 and 3 on row 3, which is the shape
+# problems.order exists to refuse.
 ok "four problems pass"                           "$(mut '
 b["problems"] = [dict(p, number=n) for n, p in enumerate(b["problems"] * 2, 1)][:4]
-b["flow_before"][2][0]["problem"] = 3
-b["flow_before"][0][0]["problem"] = 4
-b["flow_after"][2][0]["problem"] = 3
-b["flow_after"][3][0]["problem"] = 4'; case_run)" 0
+for n in (1, 2, 3, 4):
+    b["flow_before"][n - 1][0]["problem"] = n
+    b["flow_after"][n - 1][0]["problem"] = n'; case_run)" 0
+
+echo "Every problem is named"
+ok "a problem with no label fails"                "$(mut 'b["problems"][1].pop("label")'; case_run)" 1
+ok "as problems.labels"                           "$(rule problems.labels)" yes
+ok "naming the problem and the field"             "$(says 'problem 2 carries no `label`')" yes
+ok "and saying what the flow draws without it"    "$(says 'reads as a step count')" yes
+ok "an empty label is the same as none"           "$(mut 'b["problems"][0]["label"]="  "'; case_run)" 1
+ok "a null label is the same as none"             "$(mut 'b["problems"][0]["label"]=None'; case_run)" 1
+ok "both unlabelled is reported in the plural"    "$(mut '
+for p in b["problems"]: p.pop("label")'; case_run >/dev/null; says 'problems 1, 2 carry no `label`')" yes
+ok "a label of three words passes"                "$(run "$work/base.json")" 0
+ok "and the pass counts the labels it found"      "$(says '2 of 2 problem(s) carry one')" yes
+ok "four words fails against the limit of three"  "$(mut 'b["problems"][0]["label"]="One two three four"'; case_run)" 1
+ok "as problems.label_length"                     "$(rule problems.label_length)" yes
+ok "naming the problem and the count"             "$(says "problem 1's label runs 4 words")" yes
+ok "and where the sentence belongs instead"       "$(says 'leave the sentence to `was_wrong`')" yes
+ok "three words passes"                           "$(mut 'b["problems"][0]["label"]="One two three"'; case_run)" 0
+
+echo "The numbers run the way the before flow meets them"
+ok "two problems in flow order pass"              "$(run "$work/base.json")" 0
+ok "and the pass says how many it ordered"        "$(says '2 numbered problem(s) marked on the before flow, in order')" yes
+ok "numbers reversed down the flow fail"          "$(mut '
+b["flow_before"][1][0]["problem"] = 2
+b["flow_before"][2][0]["problem"] = 2
+b["flow_before"][3][0]["problem"] = 1'; case_run)" 1
+ok "as problems.order"                            "$(rule problems.order)" yes
+ok "naming both problems and both rows"           "$(says 'problem 2 first appears on row 2, after problem 1 on row 4')" yes
+ok "and saying to renumber before anything scores" "$(says 'Renumber here')" yes
+ok "one problem on four boxes is still in order"  "$(mut '
+for row in b["flow_before"]:
+    for box in row: box["problem"] = 1
+b["flow_before"][3][0]["problem"] = 2'; case_run)" 0
+ok "two problems sharing a row are in either order" "$(mut '
+b["flow_before"][1] = [{"title": "A link is mailed out", "note": "No expiry is written", "problem": 2},
+                       {"title": "The row is split", "note": "Two boxes, one step", "problem": 1}]
+b["flow_before"][2][0]["problem"] = 1
+b["flow_before"][3][0]["problem"] = 2'; case_run)" 0
+ok "a problem marked on no before box is not ordered" "$(mut '
+for row in b["flow_before"]:
+    for box in row:
+        if box.get("problem") == 2: box["problem"] = None'; case_run >/dev/null; rule problems.order)" no
+
+echo "A part's summary"
+ok "a brief with no parts passes"                 "$(run "$work/base.json")" 0
+ok "and the pass says it measured none"           "$(says 'longest of 0 part(s)')" yes
+ok "31 words fails against the limit of 30"       "$(mut '
+b["parts"] = [{"title": "A part", "summary": " ".join(["word"]*31), "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "as parts.summaries"                           "$(rule parts.summaries)" yes
+ok "naming the part and the count"                "$(says 'part 1 runs 31 words')" yes
+ok "and where the mechanism goes instead"         "$(says 'leave the mechanism to the files beside it')" yes
+ok "30 words passes"                              "$(mut '
+b["parts"] = [{"title": "A part", "summary": " ".join(["word"]*30), "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
+ok "a class name in a part summary fails"         "$(mut '
+b["parts"] = [{"title": "A part", "summary": "TokenRepository now reads the expiry column.",
+               "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "as parts.plain"                               "$(rule parts.plain)" yes
+ok "naming the part and the name"                 "$(says "part 1's summary carries TokenRepository")" yes
+ok "a path in a part summary fails"               "$(mut '
+b["parts"] = [{"title": "A part", "summary": "The hour is read in app/Http/Reset.php now.",
+               "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "a :: in a part summary fails"                 "$(mut '
+b["parts"] = [{"title": "A part", "summary": "The expiry is read through Token::fresh now.",
+               "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "a plain summary of eight words passes"        "$(mut '
+b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each link.", "fixes": [1],
+               "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
+
+echo "What a source tells us"
+ok "a brief with no sources passes"               "$(run "$work/base.json")" 0
+ok "and the pass says there are none to read"     "$(says 'no sources in this document')" yes
+ok "a 13-word note fails against the limit of 12" "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "status": "Backlog",
+     "note": " ".join(["word"]*13)}]}, open(sys.argv[2], "w"))
+' "$work/base.json" "$work/case.json"; case_run)" 1
+ok "as sources.note"                              "$(rule sources.note)" yes
+ok "naming the source and the count"              "$(says 'source 1 tells us 13 words')" yes
+ok "and saying what the other two fields hold"    "$(says 'the ticket'"'"'s state in `status`')" yes
+ok "12 words passes"                              "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "status": "Backlog",
+     "note": " ".join(["word"]*12)}]}, open(sys.argv[2], "w"))
+' "$work/base.json" "$work/case.json"; case_run)" 0
+ok "and the pass counts the notes it measured"    "$(says 'longest of 1 source note(s): 12 words of 12')" yes
+ok "a source with no note at all passes"          "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "sources": [
+    {"position": 1, "kind": "description", "label": "The pull request description"}]},
+    open(sys.argv[2], "w"))
+' "$work/base.json" "$work/case.json"; case_run)" 0
+# TWO places, because the two documents a worker may hand this disagree. `review show --json`
+# merges the provenance under a key of its own, so a source is at `provenance.sources`; the HTTP
+# response and the contract example carry `sources` at the top level. Reading only one of them
+# reported "no sources in this document" about a review that held three.
+ok "sources under provenance are read too"         "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "note": " ".join(["word"]*13)}]}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 1
+ok "  and measured, not merely found"              "$(says 'source 1 tells us 13 words')" yes
+ok "  a passing note under provenance passes"      "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"sources": [
+    {"position": 1, "kind": "ticket", "label": "ABC-231", "note": "asks for a one-hour link"}]}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 0
+ok "  and the pass says how many it read"          "$(says 'longest of 1 source note(s): 5 words of 12')" yes
+ok "a provenance holding no sources reads as none" "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "provenance": {"criteria": []}},
+    open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run >/dev/null
+says 'no sources in this document')" yes
+
+ok "a long label is not measured"                 "$(python3 -c '
+import json, sys
+b = json.load(open(sys.argv[1]))
+json.dump({"review": {"id": 7}, "brief": b, "sources": [
+    {"position": 1, "kind": "ticket", "label": " ".join(["word"]*40), "note": "short"}]},
+    open(sys.argv[2], "w"))
+' "$work/base.json" "$work/case.json"; case_run)" 0
 
 echo "Every problem carries its now line"
 ok "a null now line fails"                        "$(mut 'b["problems"][1]["now_fixed"]=None'; case_run)" 1
@@ -218,9 +351,9 @@ ok "a date is not a file path"                     "$(mut 'b["problems"][0]["was
 ok "and a slash in and/or is not a path"          "$(mut 'b["problems"][0]["was_wrong"]="A link was accepted whether it was fresh and/or stale."'; case_run)" 0
 ok "a class name in the detail is allowed"        "$(run "$work/base.json")" 0
 ok "and the detail may be any length"             "$(mut 'b["problems"][0]["detail_before"] += [" ".join(["word"]*400)]'; case_run)" 0
-ok "as may an option argument, or a part"         "$(mut '
+ok "as may an option argument"                    "$(mut '
 b["options"][0]["argument_for"] = " ".join(["word"]*300)
-b["parts"] = [{"title": "A part", "summary": " ".join(["word"]*300), "fixes": [1],
+b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each token.", "fixes": [1],
                "files": [{"path": "app/Thing.php", "lines_added": 9000, "lines_removed": 9000,
                           "in_diff": True}], "lines_added": 9000, "lines_removed": 9000}]'; case_run)" 0
 
@@ -329,6 +462,17 @@ import json; json.dump({"review": {"id": 7}, "brief": json.load(open("'"$work/ba
                        open("'"$work/show.json"'", "w"))'
 ok "the saved brief is read and passes"           "$(FIX="$work/show.json" PATH="$work/bin:$PATH" run --review 7)" 0
 ok "and the header names the review"              "$(says 'brief-craft lint: review 7')" yes
+# The shape the real binary actually prints: `FullReview` with the provenance merged in. This is
+# the path `--review N` takes, so it is the one that has to see a source note.
+python3 -c '
+import json, sys
+json.dump({"review": {"id": 7}, "brief": json.load(open(sys.argv[1])),
+           "provenance": {"sources": [
+               {"position": 1, "kind": "ticket", "label": "ABC-231",
+                "note": " ".join(["word"]*13)}]}},
+          open(sys.argv[2], "w"))' "$work/base.json" "$work/showprov.json"
+ok "--review reads a source under provenance"     "$(FIX="$work/showprov.json" PATH="$work/bin:$PATH" run --review 7)" 1
+ok "  and fails it on the note's length"          "$(rule sources.note)" yes
 ok "a review holding no brief is 2, not 1"        "$(echo '{"review":{"id":9},"brief":null}' > "$work/none.json"; FIX="$work/none.json" PATH="$work/bin:$PATH" run --review 9)" 2
 ok "review-desk failing is 2, not 1"              "$(FAKE_FAIL=1 FIX="$work/show.json" PATH="$work/bin:$PATH" run --review 99)" 2
 ok "and its own words are passed on"              "$(shouts 'no review 99')" yes
@@ -363,13 +507,35 @@ ok "a problem mark of true is 2, not problem 1"    "$(mut 'b["flow_before"][0][0
 ok "a headline that is a list is 2"                "$(mut 'b["headline"]=["one","two"]'; case_run)" 2
 ok "a problem with no number is 2"                 "$(mut 'b["problems"][0].pop("number")'; case_run)" 2
 ok "and says why the number is needed"             "$(shouts "one internal identity")" yes
+ok "a label that is a number is 2"                 "$(mut 'b["problems"][0]["label"]=1'; case_run)" 2
+ok "and names the problem's label"                 "$(shouts 'problems\[1\].label')" yes
+ok "a part that is a string is 2"                  "$(mut 'b["parts"]=["A part"]'; case_run)" 2
+ok "and names the part"                            "$(shouts 'parts\[1\]')" yes
+ok "a part summary that is a list is 2"            "$(mut '
+b["parts"] = [{"title": "A part", "summary": ["one", "two"], "fixes": [], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 2
+ok "sources that are not a list is 2"              "$(python3 -c '
+import json, sys
+json.dump({"brief": json.load(open(sys.argv[1])), "sources": "the ticket"},
+          open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 2
+ok "and says nothing was checked"                  "$(shouts 'Nothing was checked')" yes
+ok "a source that is a string is 2"                "$(python3 -c '
+import json, sys
+json.dump({"brief": json.load(open(sys.argv[1])), "sources": ["ABC-231"]},
+          open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 2
+ok "a source note that is a number is 2"           "$(python3 -c '
+import json, sys
+json.dump({"brief": json.load(open(sys.argv[1])),
+           "sources": [{"position": 1, "kind": "ticket", "label": "ABC-231", "note": 12}]},
+          open(sys.argv[2], "w"))' "$work/base.json" "$work/case.json"; case_run)" 2
+ok "and names the source's note"                   "$(shouts 'sources\[1\].note')" yes
 ok "a file that is not UTF-8 is 2"                 "$(printf "\377\376{}" > "$work/case.json"; case_run)" 2
 ok "problems as an object is 2"                   "$(mut 'b["problems"]={"1": "was wrong"}'; case_run)" 2
 ok "a file and --review together is 2"            "$(FIX="$work/show.json" PATH="$work/bin:$PATH" run "$work/base.json" --review 7)" 2
 
 echo "The limits table"
 ok "--limits prints it and exits 0"               "$(run --limits)" 0
-ok "every limit names where it came from"         "$(grep -c 'understand.md\|DEV-884\|Not a budget' "$work/out" || true)" 12
+ok "every limit names where it came from"         "$(grep -c 'understand.md\|workers/review.md\|DEV-884\|Not a budget' "$work/out" || true)" 15
 ok "and no limit is keyed on the diff"            "$(grep -ci 'changed line\|diff size\|lines added' "$work/out" || true)" 0
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

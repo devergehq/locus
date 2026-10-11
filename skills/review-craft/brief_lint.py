@@ -16,8 +16,12 @@ catches the shapes that are unreadable whatever they say.
 
 **The top layer is what is budgeted**: the headline, and each problem's "was wrong" and "now"
 line. Detail behind a click — `problems[].detail_before`, `.detail_after`, an option's arguments,
-a part's summary, the blind pass's answer — is never length-checked, here or anywhere. Depth is
-allowed. It is the top that is budgeted.
+the blind pass's answer — is never length-checked, here or anywhere. Depth is allowed. It is the
+top that is budgeted.
+
+**A part's summary is the one exception, and it is deliberate.** Seven of them are read down a
+single column at once, so a summary is scanned rather than clicked into: it is capped at 30 words
+and held to the same plain-English rule as the top layer. Nothing else behind a fold is measured.
 
 **There is no limit keyed on the size of the diff**, and there is not to be one: Patrick ruled on
 9 October 2026 that the brief gate is `never | always` and not a function of how many lines a pull
@@ -93,6 +97,22 @@ LIMITS: tuple[tuple[str, str, object, str], ...] = (
      "because the name covered both a paragraph of plain words and this table and they are "
      "different fields. Checked only when the brief holds a table: the contract serves null "
      "when it holds none. The approved board ran 3"),
+    ("problem.label.words", "A numbered problem's label", 3,
+     "understand.md, Understand: 'Label ... At most 3 words'. Measured 11 October 2026 from a "
+     "second real review, where the problems carried no label at all and the Alternatives matrix "
+     "headed a column with the whole was-wrong sentence. Review Desk's real-length brief runs 3 "
+     "across its three problems, and its contract says outright that no length is enforced in "
+     "the store because a label that runs long belongs to this linter"),
+    ("part.summary.words", "A solution part's summary", 30,
+     "understand.md, Solution: 'Parts ... at most 30 words carrying no class name, path or "
+     "`::`'. Measured 10 October 2026 from a real review, where seven summaries ran 28 to 48 "
+     "words and carried class names; Review Desk's real-length brief runs 13 across six parts. "
+     "It is the one slot behind the top layer that is length-checked, because seven of them are "
+     "read down one column at once"),
+    ("source.note.words", "What a source tells us", 12,
+     "workers/review.md, 'Where the understanding came from': the table's `note` row. Measured "
+     "11 October 2026 from a second real review, where each source was a sentence of up to 24 "
+     "words in a column heading. The field itself arrives with DEV-917"),
     ("leak.title.words", "Shortest title checked against the problem half", 3,
      "Not a budget. A title of one or two words — 'Web export' — appears in any honest problem "
      "statement, so checking it would make the leak rule untrustworthy rather than strict"),
@@ -221,7 +241,7 @@ class Lint:
         return 1 if bad else 0
 
 
-def lint(brief: dict) -> int:
+def lint(brief: dict, sources: list | None = None) -> int:
     L = Lint()
     problems = brief.get("problems") or []
     before, after = brief.get("flow_before") or [], brief.get("flow_after") or []
@@ -299,6 +319,54 @@ def lint(brief: dict) -> int:
             "with an empty Now column",
             measure=f"{len(problems) - len(no_now)} of {len(problems)} problem(s) carry one")
 
+    # ---- every problem is named, and the numbers run the way the before flow meets them
+    #
+    # Two rules, not one. A problem with no label and a label that runs long fail for different
+    # reasons and are fixed by different edits -- and the first is the one a page cannot work
+    # around: with no label the flow draws "Problem 1" and the matrix heads its column with the
+    # number alone, so four marks for one problem read as four steps.
+    unlabelled = [p.get("number") for p in problems if not (p.get("label") or "").strip()]
+    L.check(not unlabelled, "problems.labels",
+            f"problem{'s' if len(unlabelled) > 1 else ''} "
+            f"{', '.join(str(n) for n in unlabelled)} carr"
+            + ("y" if len(unlabelled) > 1 else "ies")
+            + " no `label`. Every box the problem marks draws its number and its label as one "
+              "tag, and the Alternatives matrix heads a column with it: with no label the flow "
+              "draws a bare number, which down four boxes reads as a step count rather than as "
+              "one problem seen four times. Name it in two or three words",
+            measure=f"{len(problems) - len(unlabelled)} of {len(problems)} problem(s) carry one")
+    long_labels = [f"problem {p.get('number')}'s label runs {words(p.get('label'))} words"
+                   for p in problems
+                   if words(p.get("label")) > LIMIT["problem.label.words"]]
+    L.check(not long_labels, "problems.label_length",
+            "; ".join(long_labels[:3]) + f" against {LIMIT['problem.label.words']}. A label is a "
+            "column heading and a tag in the corner of a flow box, where it cannot wrap: name the "
+            "thing that is wrong, and leave the sentence to `was_wrong`",
+            measure=f"longest of {len(problems)} label(s): "
+                    f"{max([words(p.get('label')) for p in problems] or [0])} words of "
+                    f"{LIMIT['problem.label.words']}")
+    # First appearance by ROW, never by box. A split row is one step drawn as two boxes and its
+    # boxes share a number, so ordering within a row is not a thing the flow can be said to
+    # state -- which is why this is non-decreasing rather than strictly increasing.
+    first_row: dict[int, int] = {}
+    for r, _, box in boxes(before):
+        n = box.get("problem")
+        if n is not None and n not in first_row:
+            first_row[n] = r
+    seen_order = [(p.get("number"), first_row[p.get("number")])
+                  for p in sorted(problems, key=lambda p: p.get("number") or 0)
+                  if p.get("number") in first_row]
+    backwards = [f"problem {n} first appears on row {r}, after problem {pn} on row {pr}"
+                 for (pn, pr), (n, r) in zip(seen_order, seen_order[1:]) if r < pr]
+    L.check(not backwards, "problems.order",
+            "; ".join(backwards[:3]) + ". Number the problems in the order the before flow meets "
+            "them, so the first mark a reader comes to is 1 — a flow whose marks read 1, 4, 3, 2 "
+            "makes the reader doubt the numbering rather than the drawing. Renumber here, before "
+            "anything scores against a number: an option's verdicts and a part's `fixes` use "
+            "these numbers and a brief that has been written twice can no longer change them",
+            measure=f"{len(seen_order)} numbered problem(s) marked on the before flow, in order"
+                    if seen_order else "no problem marked on the before flow")
+
     # ---- the top layer stays plain, stays parallel, and stays inside the budget
     unplain = [(slot, code_names(line)) for slot, line in top_layer(brief) if code_names(line)]
     L.check(not unplain, "top.plain",
@@ -370,6 +438,32 @@ def lint(brief: dict) -> int:
                     f"{max([words(o.get('title') or '') for o in brief.get('options') or []] or [0])}"
                     f" words of {LIMIT['option.title.words']}")
 
+    # ---- a part's summary: the one thing behind a fold that is measured
+    #
+    # Length and plainness are separate rules, because one is fixed by cutting and the other by
+    # moving a name into the part's files, which are listed beside the summary already.
+    parts = brief.get("parts") or []
+    over_parts = [f"part {i} runs {words(p.get('summary'))} words"
+                  for i, p in enumerate(parts, 1)
+                  if words(p.get("summary")) > LIMIT["part.summary.words"]]
+    L.check(not over_parts, "parts.summaries",
+            "; ".join(over_parts[:3]) + f" against {LIMIT['part.summary.words']}. Seven summaries "
+            "are read down one column at once, so this one is scanned rather than clicked into: "
+            "say what the part does, and leave the mechanism to the files beside it",
+            measure=f"longest of {len(parts)} part(s): "
+                    f"{max([words(p.get('summary')) for p in parts] or [0])} words of "
+                    f"{LIMIT['part.summary.words']}")
+    unplain_parts = [(i, code_names(p.get("summary") or ""))
+                     for i, p in enumerate(parts, 1) if code_names(p.get("summary") or "")]
+    L.check(not unplain_parts, "parts.plain",
+            "; ".join(f"part {i}'s summary carries {', '.join(names)}"
+                      for i, names in unplain_parts[:3])
+            + ". A part lists its files, so the summary does not need to name them: say what was "
+              "built in the words the headline is written in. This is the top layer's plain rule, "
+              "applied to the one summary that is read beside six others",
+            measure=f"{len(parts)} part summar{'y' if len(parts) == 1 else 'ies'}, no class "
+                    "name, path or `::`")
+
     # ---- the one small supporting table, when the brief holds one
     #
     # Only when it holds one. The contract serves `support_table` null for a brief with no table
@@ -386,6 +480,28 @@ def lint(brief: dict) -> int:
                f"Past {high} it stops being the one small table beside the flows — keep the "
                "questions whose answer the change moves, and leave the rest"),
             measure=f"{len(rows)} of {low}-{high}" if table is not None else "no supporting table")
+
+    # ---- what a source tells us, when the document carries its sources
+    #
+    # A source is not part of the brief: it is written by `provenance sources` and read back at
+    # the top level of `review show`, beside `brief`. So `--review N` and a whole `review show`
+    # document have them to check and a hand-written `brief.json` does not, which is reported
+    # rather than silently skipped -- the same shape as the supporting table's row.
+    #
+    # `label`, `kind` and `status` are not measured. A reference is as long as the reference is,
+    # and a ticket's state is the tracker's word rather than the session's.
+    long_notes = [f"source {s.get('position', i)} tells us {words(s.get('note'))} words"
+                  for i, s in enumerate(sources or [], 1)
+                  if words(s.get("note")) > LIMIT["source.note.words"]]
+    L.check(not long_notes, "sources.note",
+            "; ".join(long_notes[:3]) + f" against {LIMIT['source.note.words']}. The page draws "
+            "a source as a row — the reference, its state, and this — so a sentence here is a "
+            "sentence in a table cell: say what it tells us about the problem, and leave the "
+            "reference in `label` and the ticket's state in `status`",
+            measure=(f"longest of {len(sources)} source note(s): "
+                     f"{max([words(s.get('note')) for s in sources] or [0])} words of "
+                     f"{LIMIT['source.note.words']}") if sources is not None else
+                    "no sources in this document")
 
     # ---- the problem half is blind-safe
     #
@@ -436,7 +552,7 @@ def structured(brief: dict) -> bool:
     return any(brief.get(k) for k in STRUCTURE)
 
 
-def shaped(brief: dict) -> None:
+def shaped(brief: dict, sources: list | None = None) -> None:
     """Die (2) on a document the checks cannot run over. A malformed brief is not a bad brief.
 
     Exit 1 means "this brief has a fault" and exit 2 means "nothing was checked". A traceback
@@ -490,6 +606,7 @@ def shaped(brief: dict) -> None:
                 "identity — a flow box marks it, an option is judged against it and a part "
                 "fixes it — so there is nothing to check it against. Nothing was checked.")
         whole(p.get("number"), f"problems[{i}].number")
+        text(p.get("label"), f"problems[{i}].label")
         text(p.get("was_wrong"), f"problems[{i}].was_wrong")
         text(p.get("now_fixed"), f"problems[{i}].now_fixed")
 
@@ -510,9 +627,44 @@ def shaped(brief: dict) -> None:
                 "is a row of the Alternatives matrix. Nothing was checked.")
         text(o.get("title"), f"options[{i}].title")
 
+    for i, p in enumerate(brief.get("parts") or [], 1):
+        if not isinstance(p, dict):
+            die(f"`parts[{i}]` is {type(p).__name__}, not an object with a `title` and a "
+                "`summary`. A part is a row of the Solution page. Nothing was checked.")
+        text(p.get("summary"), f"parts[{i}].summary")
 
-def read_file(path: str) -> dict:
-    """A brief from a document on disk or standard input. Needs no `review-desk` at all."""
+    if sources is not None:
+        if not isinstance(sources, list):
+            die(f"`sources` is {type(sources).__name__}, not a list of what the review read the "
+                "problem from. Nothing was checked.")
+        for i, s in enumerate(sources, 1):
+            if not isinstance(s, dict):
+                die(f"`sources[{i}]` is {type(s).__name__}, not an object with a `kind` and a "
+                    "`label`. Nothing was checked.")
+            text(s.get("note"), f"sources[{i}].note")
+
+
+def sources_of(doc: dict):
+    """The sources a whole review document carries, from either of the two places they live.
+
+    `review-desk review show --json` prints the store's `FullReview` and **merges the provenance
+    in under a key of its own**, so a source is at `provenance.sources` there. The HTTP
+    `getReview` response, and the contract example written from it, carry `sources` at the top
+    level beside `brief`. Both are documents a worker may hand this linter, and reading only one
+    of them is how `--review N` came to report "no sources in this document" about a review that
+    held three. Returns None when the document carries neither, which is a brief on its own."""
+    prov = doc.get("provenance")
+    if isinstance(prov, dict) and prov.get("sources") is not None:
+        return prov["sources"]
+    return doc.get("sources")
+
+
+def read_file(path: str) -> tuple[dict, list | None]:
+    """A brief, and its sources where the document has them, from disk or standard input.
+
+    Needs no `review-desk` at all. A source is not part of a brief — it lives beside it, at the
+    top level of a whole `review show` document — so a hand-written `brief.json` carries none and
+    the sources rule reports that rather than inventing a pass."""
     try:
         raw = sys.stdin.read() if path == "-" else open(path, encoding="utf-8").read()
     except (OSError, UnicodeDecodeError) as exc:
@@ -524,17 +676,18 @@ def read_file(path: str) -> dict:
     if not isinstance(doc, dict):
         die(f"{path}: the document is a {type(doc).__name__}, not a brief.")
     if isinstance(doc.get("brief"), dict):
-        return doc["brief"]          # a whole `review show` or `getReview` document
+        # a whole `review show` or `getReview` document, which carries the sources too
+        return doc["brief"], sources_of(doc)
     if "brief" in doc and doc["brief"] is None:
         die(f"{path}: that review holds no brief. Nothing to lint.")
     if not any(k in doc for k in BRIEF_KEYS):
         die(f"{path}: this does not look like a brief — no `problem`, `headline`, `flow_before` "
             "or `problems`. Nothing was checked.")
-    return doc
+    return doc, sources_of(doc)
 
 
-def read_review(review_id: int) -> dict:
-    """The saved brief, through `review-desk`. A missing binary is loud and could-not-run (2).
+def read_review(review_id: int) -> tuple[dict, list | None]:
+    """The saved brief and its sources, through `review-desk`. A missing binary is loud (2).
 
     Loud, because silence here is indistinguishable from a pass: a worker that ran this in a
     pipeline and saw nothing would report a brief checked by nothing at all. Never 1 — exit 1
@@ -566,7 +719,7 @@ def read_review(review_id: int) -> dict:
     brief = doc.get("brief") if isinstance(doc, dict) else None
     if not isinstance(brief, dict):
         die(f"review {review_id} holds no brief. Nothing to lint.")
-    return brief
+    return brief, sources_of(doc)
 
 
 def print_limits() -> None:
@@ -595,14 +748,14 @@ def main() -> int:
               file=sys.stderr)
         return 2
     if a.review is not None:
-        brief, source = read_review(a.review), f"review {a.review}"
+        (brief, sources), source = read_review(a.review), f"review {a.review}"
     elif a.path:
-        brief, source = read_file(a.path), a.path
+        (brief, sources), source = read_file(a.path), a.path
     else:
         ap.print_help()
         return 2
 
-    shaped(brief)
+    shaped(brief, sources)
     if not structured(brief):
         print(f"not structured: {source} records a problem, a diagram and options, and none of "
               "the twelve things the three approved pages draw.")
@@ -620,7 +773,7 @@ def main() -> int:
           f"rows, {sum(words(l) for _, l in top_layer(brief))} top-layer words of "
           f"{LIMIT['top.words']})\n")
     try:
-        return lint(brief)
+        return lint(brief, sources)
     except Exception as exc:                                   # noqa: BLE001 - see below
         # A shape `shaped()` did not anticipate. Python exits 1 on an uncaught exception, and 1
         # is this linter's verdict that the brief has a fault — so a crash would report a fault

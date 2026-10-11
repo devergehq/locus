@@ -36,7 +36,8 @@ prose was not wrong. It was unreadable at the speed someone doing ten reviews a 
 | **Supporting table** | One row per question the system answers and who answers it, with a today column and an after column. The column that changes is the point | 3–4 rows |
 | **Before** | The flow as it is today, one step per row, each with one line of detail. Numbered problems marked on the rows they sit on | 4–6 rows |
 | **After** | The same flow as the change leaves it, with the fixes marked | 4–7 rows |
-| **Problems** | What is wrong, numbered. The numbers are used by every later step and never renumbered | 2–4, numbered |
+| **Problems** | What is wrong, numbered **in the order the before flow meets them**. The numbers are used by every later step and never renumbered | 2–4, numbered |
+| **Label** | Two or three words naming each problem — what the Alternatives matrix heads its column with, and what the flow draws in the corner of every box the problem touches | At most 3 words |
 | **Was wrong / now** | Per problem, one line of what was wrong and one line of what it is now | Two lines each, at most 20 words a line |
 | **Names** | The classes, files, routes, columns and flags — one level down, behind the fold, never on the top layer | As long as it needs |
 
@@ -68,7 +69,7 @@ it is the one who will not see it.
 | **Questions** | What the blind session needed to know and was not told. These are often the best questions in the review |
 | **What the pass was given** | The filled brief you handed the blind session, **verbatim**. Not a description of it |
 | **Looked up** | What the blind session says it read beyond the brief — the word "nothing", or an honest list |
-| **Counts** | How many options each source had, how many are on both, and how many only one side raised |
+| **Counts** | How many options each source had, how many are on both, and how many only one side raised. These are the alternatives step's facts, one count each, not one sentence of four |
 | **Provenance** | Where the problem statement came from: the ticket, the description, and the code at the base sha |
 
 ### The blind options pass
@@ -168,7 +169,7 @@ great deal and is worth nothing at all compared to a review that never arrives.
 
 | Slot | What goes in it |
 |---|---|
-| **Parts** | One row per part of the change: what it is, which numbered problems it fixes, its files with lines added and removed, and **whether the pull request changed each file at all** — a part may claim a file outside the diff, which is how a finding in such a file belongs to a part |
+| **Parts** | One row per part of the change: what it is, a summary of **at most 30 words carrying no class name, path or `::`**, which numbered problems it fixes, its files with lines added and removed, and **whether the pull request changed each file at all** — a part may claim a file outside the diff, which is how a finding in such a file belongs to a part |
 | **Choices** | Where the ticket left a choice: what was open, what was chosen, the one line of why, whether it departs from the ticket, and — where one raises it — the finding |
 | **Disagreements** | Where the description and the code say different things: what the description says, what the code does, and **the finding that raises it**. That one is required, so raise the finding first: a disagreement nothing raises posts a review that never mentions it |
 | **Verdict** | Whether this is the right *shape* for the problem, in a phrase |
@@ -226,6 +227,36 @@ and cannot refer to the second one later.
 **4 · Every number is a count you made, not an adjective.** "7 options, 4 of them not on the
 ticket" and "28 files, +817 −343". Never "several" or "a large change".
 
+**5 · A problem is numbered where the before flow first meets it, and it is named.** Number them
+down the flow, and give each one a label of two or three words. The numbers are the spine, so a
+flow whose marks read out of order makes the reader doubt the spine rather than the drawing.
+
+| | |
+|---|---|
+| ✗ | Four problems numbered 1, 2, 3, 4 in the order they were written up, and drawn on the before flow as 1, 4, 3, 2. |
+| ✓ | Numbered down the flow, so the first mark the reader meets is 1. |
+
+**Flow order is necessary and is not sufficient, which is why the label is a rule beside it.** A
+problem that touches four boxes marks all four, so even a correctly numbered flow can read 1, 1,
+2, 3, 1 — and a bare number repeated down a flow reads as a step count. The label is what makes
+the repetition legible: each mark carries the number *and* the two or three words, so four marks
+reading "1 · One transaction" are plainly one problem seen four times.
+
+| | |
+|---|---|
+| ✗ | No label, so the matrix heads its column with the whole was-wrong sentence. |
+| ✓ | `One transaction`, `Dropped rows`, `Live mid-file` — one per numbered problem. |
+
+**6 · A part's summary is one plain line, at most 30 words.** Seven of them are read together,
+down a column, so the summary is scanned rather than read. It is the one slot behind the top layer
+that **is** length-checked, and rule 1 applies to it: no class name, no path, no `::`. The names
+belong in the part's files, which are listed beside it.
+
+| | |
+|---|---|
+| ✗ | `ImportFileJob` carries one file and writes its rejections to `price_import_rows`, so a failure in `PriceRowValidator` no longer reaches `NightlyImportCommand`'s outer transaction. |
+| ✓ | Each file becomes a job that can fail on its own. |
+
 ---
 
 ## A worked example
@@ -263,11 +294,11 @@ flowchart TD
     class B,C,D bad
 ```
 
-| | Marked on | |
-|---|---|---|
-| 1 | the second row | one transaction for every file |
-| 2 | the third row | an unknown product code is dropped |
-| 3 | the fourth row | prices go live mid-file |
+| | Label | Marked on | What the box does wrong |
+|---|---|---|---|
+| 1 | One transaction | the second row | every file is imported inside one of them |
+| 2 | Dropped rows | the third row | an unknown product code is dropped |
+| 3 | Live mid-file | the fourth row | prices go live while the file is still read |
 
 **After**
 
@@ -320,7 +351,7 @@ line number.
 | **The blind pass would pick** | **C**, the same one. "It is the cheapest option that fixes all three, and a file is the unit the supplier already thinks in." |
 | **Given** | The poured problem half, verbatim — the fold below is the whole of it. |
 | **Looked up** | Nothing. |
-| **Counts** | 4 options on the ticket, 6 from the blind pass, 3 on both; 3 not on the ticket and 1 the blind pass never raised. |
+| **Counts** | Options · `4 ticket, 6 blind` · On both · `3` · Ticket only · `1` · Blind only · `3` |
 | **Provenance** | The ticket, the description, and the code at `a1b2c3d` — an export with no history in it. |
 
 <details><summary>What the pass was given, verbatim</summary>
@@ -369,15 +400,15 @@ What the blind pass needed and was not told:
 
 ### Solution
 
-| Part | Fixes | Files |
-|---|---|---|
-| A record of each import run, and each file in it | 1 | 3 · +180 −0 |
-| The supplier onboarding note, which the import contradicts | 2 | 1 · outside the diff |
-| One job per file, with its own retries | 1 | 2 · +96 −40 |
-| Rejected rows, with a reason and a line number | 2 | 3 · +120 −0 |
-| A staging table for accepted prices | 3 | 2 · +64 −0 |
-| The publish step, one file at a time | 3 | 2 · +75 −12 |
-| The summary email, rewritten, and its tests | 2 | 4 · +210 −96 |
+| Part | Summary | Fixes | Files |
+|---|---|---|---|
+| A record of each import run, and each file in it | Every run and every file in it is now something you can look up. | 1 | 3 · +180 −0 |
+| The supplier onboarding note, which the import contradicts | The note tells suppliers the opposite of what the importer does. | 2 | 1 · outside the diff |
+| One job per file, with its own retries | Each file is carried on its own and retried on its own. | 1 | 2 · +96 −40 |
+| Rejected rows, with a reason and a line number | A price we cannot match is kept, with why and where. | 2 | 3 · +120 −0 |
+| A staging table for accepted prices | Accepted prices wait somewhere the shop front does not read. | 3 | 2 · +64 −0 |
+| The publish step, one file at a time | One file's prices cross to the live list in one go. | 3 | 2 · +75 −12 |
+| The summary email, rewritten, and its tests | The email now counts accepted, rejected and skipped, for each file. | 2 | 4 · +210 −96 |
 
 | The ticket left open | Chosen | Why | Against the ticket |
 |---|---|---|---|
@@ -405,8 +436,9 @@ nothing at all against a review's word budget — mermaid is stripped before the
 **Check it before you show it.** `brief_lint.py` in this skill reads a brief — the document you
 are about to `review-desk brief put`, or the one it already holds — and fails on the mechanical
 shapes this page argues against: a headline that is a paragraph, a flow that is not drawn, a
-numbered problem no box carries, a class name on the top layer, three clauses joined by
-semicolons, and every length limit in the tables above. It needs no `review-desk` to read a file,
+numbered problem no box carries, a problem with no label, numbers that do not run in the order the
+before flow meets them, a class name on the top layer or in a part's summary, three clauses joined
+by semicolons, and every length limit in the tables above. It needs no `review-desk` to read a file,
 so it runs before the brief is saved. The limits are this file's; `--limits` prints them with
 their provenance, and **this file is where they are changed**.
 
@@ -418,6 +450,17 @@ slot lands in, and who is asked to confirm it. The field names are there and not
 is one copy of them.
 
 ## Revision
+
+**11 October 2026.** Two real reviews showed the pages are only as short as what the session sends
+them. The slots gained what they were missing rather than tightening what they had: **Label**, two
+or three words per numbered problem, because the Alternatives matrix was heading a column with a
+whole sentence and a bare number repeated down a flow reads as a step count; the **Problems** slot
+now says numbered in the order the before flow meets them, because a flow marked 1, 4, 3, 2 makes
+a reader doubt the spine; and the **Parts** slot states a 30-word cap on a summary that carries no
+class name — the one slot behind the top layer that is length-checked, because seven of them are
+read down a column at once. Rules 5 and 6 carry the wrong and the right of each, and
+`brief_lint.py` checks all three. A step's note and a source's line are the same change on the
+worker's side and are stated in `workers/review.md`, which owns the field names.
 
 **10 October 2026 (third change).** "Where this lands in the posted review" listed `problem`, `diagram`
 and the counts in `provenance`, which was the whole of what a brief could hold before DEV-882.
@@ -442,8 +485,8 @@ above. Two of them were proposed looser in DEV-884 — 5 numbered problems and 8
 and this file won both, because one fact has one owner and the slots are stated here. The
 headline's slot read "under 20 words" against DEV-884's 25; Patrick ruled on 10 October 2026 that
 it is **at most 20**, which is what it now says and what the linter checks, so Review Desk's
-real-length brief passes on all eighteen rules. The options slot's "under 12 words" is read the
-same way and is checked. The 150-word total and the 20-word line limit both stand, and the
+real-length brief passed on all eighteen rules it then had. The options slot's "under 12 words" is
+read the same way and is checked. The 150-word total and the 20-word line limit both stand, and the
 paragraph above says why the first is tighter than eight of the second. The linter reports what it
 measured either way, so a number that turns out to be wrong is visible rather than argued.
 
