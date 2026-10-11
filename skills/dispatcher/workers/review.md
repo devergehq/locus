@@ -957,6 +957,11 @@ post again, on somebody's pull request, under your principal's name.
    post at all**. `status` must read `approved`; `event` is the GitHub review event the
    developer chose and `approved_at` is when. Nothing else establishes approval — not a
    hand-over that answered, not a message in this session, not the absence of an error.
+
+   **Read it immediately before you post, not once at the top.** A sign-off can be taken back
+   while you work: your principal may send an approved draft back, which clears `event` and
+   `approved_at` with it. An `approved` you read minutes ago is a claim about the past, and
+   step 6 carries the one case where acting on a stale one cannot be undone.
 2. **`review-desk draft handover --review <id> --json` is what you post.** One read — write it
    out to a file, because steps 3, 4 and 5 all work from it — and it is the only thing you post
    from:
@@ -1019,13 +1024,18 @@ post again, on somebody's pull request, under your principal's name.
    this, and a brief that said only "it refused, so wait" would have had sessions sitting on
    dead reviews.
 
-   **One caveat to pass on with the ask, while it is still true.** Measured on review-desk
-   `bae4f5e`: sending back an approved draft was refused `409`, "only a draft that is ready can
-   be sent back", and rewriting its blocks was refused too — which left the draft with no exit
-   at all. Reported and ruled on: a developer may send back any approved draft that has not been
-   posted. **Until that ruling ships, your principal's click will be refused**, so name the
-   review and say that the send-back itself may not work yet. Telling them to click a button
-   that answers `409`, and saying nothing about it, spends their time on a dead end twice.
+   **The sign-off goes back with the draft, which is what makes this safe to wait on.** Measured
+   on review-desk `c17d335`: sending an approved draft back answers `200`, and afterwards
+   `draft show` reads `sent_back` with `event` and `approved_at` **cleared** and the note
+   carried. So the status your watcher polls cannot read `approved` on a draft that is waiting
+   to be rewritten, and `draft put --sections` is accepted again — measured, the draft goes back
+   to `ready`. There is no state here that only a person can see.
+
+   (This was briefly a dead end, and the history is worth one line because the shape of the fix
+   is the reason to trust it: an approved draft could not be sent back at all — `409`, "only a
+   draft that is ready can be sent back" — and could not be rewritten either, so the review had
+   no exit. Raised from this brief's side and fixed in Review Desk rather than worked around
+   here, which is why the refusal above now names a transition that exists.)
 
    **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
    the step after this one, and a session that posted and then died before reporting it needs
@@ -1119,6 +1129,28 @@ post again, on somebody's pull request, under your principal's name.
 6. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
    the ledger. The record will say the draft is approved and unposted while GitHub says
    otherwise, and the check in step 3 is what makes the retry safe rather than duplicative.
+
+   **Unless it failed with `draft_status` reading `sent_back`, and then retrying never works.**
+   That is your principal taking the sign-off back in the window between your post and your
+   report. Measured on review-desk `c17d335`: `draft posted` refuses with "the draft of review N
+   is sent_back, and only an approved draft can be marked posted", and the review is left with
+   **no `github_review_id`** — so nothing in the record says the review you just posted exists.
+
+   Three things follow, and the first is the one that matters:
+
+   - **Name the GitHub review id, to the Dispatcher and in the ledger, in the same breath as the
+     failure.** It is the only place that number will ever be written down. Review Desk will not
+     take it, and `draft posted` will not start working.
+   - **Then treat the send-back as any other**, from the event table: revise the blocks and
+     `draft put --sections` again.
+   - **Say that the pull request already carries a review.** The next sign-off is a different
+     body, so step 3's check — which matches on the body — will not find the first one and will
+     let you post, correctly: it is a new review. Your principal should hear that there will be
+     two, because they are the one who can decide what to do about the first.
+
+   This is not a session getting posting wrong. "Posting exactly once" holds for everything a
+   session controls; this is the one way the count can move that no session can prevent, which
+   is exactly why it is reported rather than guarded against.
 7. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
    "fix what it names by editing the review" governs your own text and nothing else. Your threads
    you may edit freely. **The body you may not touch**, because the developer signed off on those

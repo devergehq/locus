@@ -415,6 +415,16 @@ ok "  told apart by the status, not the sentence" "$(grep -c 'not the sentence' 
 ok "  and both refusals carry one code"          "$(grep -c 'refusals carry .draft_status.' "$brief")" 1
 ok "  and only the developer can clear it"       "$(grep -c 'sent back from the draft page' "$brief")" 1
 ok "  with no command for a session to reach for" "$(grep -c 'Do not look for a' "$brief")" 1
+# A sign-off can be taken back, so the three things that follow from it. All measured on
+# review-desk c17d335: the send-back answers 200 on an approved draft, clears `event` and
+# `approved_at`, and `draft posted` then refuses with `sent_back` and leaves the review with no
+# `github_review_id` -- which is why the GitHub review id has to be said out loud by the only
+# party holding it.
+ok "the sign-off is cleared with the send-back"  "$(grep -c 'approved_at. \*\*cleared\*\*' "$brief")" 1
+ok "  so the status is read just before posting" "$(grep -c 'immediately before you post' "$brief")" 1
+ok "  and a retry cannot fix a taken-back one"   "$(grep -c 'retrying never works' "$brief")" 1
+ok "  the GitHub review id is said out loud"     "$(grep -c 'only place that number will ever be written' "$brief")" 1
+ok "  and the second review is declared, not hidden" "$(grep -c 'should hear that there will be' "$brief")" 1
 ok "the agent marker goes after Review Desk's"   "$(grep -c 'the .agent:. marker goes after Review Desk' "$brief")" 1
 ok "  because marker_last reads the last line"   "$(grep -c 'threads.marker_last. off the body.s last physical line' "$brief")" 1
 ok "the marker is the join, with the title after" "$(grep -c 'the join is carried by the thing' "$brief")" 1
