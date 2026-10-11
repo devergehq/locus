@@ -56,11 +56,11 @@ def visible(md: str) -> str:
     whole budget. Charging it would punish exactly the findings house-style asks to draw.
 
     An HTML comment renders as nothing at all, so charging one is charging a reader for text they
-    cannot see. That becomes load-bearing with DEV-929: Review Desk is adding
-    `<!-- review-desk:F<seq> -->` to the end of every composed thread — the marker a session
-    joins each posted comment to its finding by — so every thread in a composed review will
-    carry one. Stripping it is right either way; the marker is only why it stopped being
-    theoretical."""
+    cannot see. That is load-bearing from DEV-929: Review Desk ends every composed thread with
+    `<!-- review-desk:F<seq> -->`, the marker a session joins each posted comment to its finding
+    by, so every thread in a composed review carries one. Measured on review-desk `bae4f5e`.
+    Stripping it is right either way — a comment has never been readable — and the marker is
+    only what made charging for one stop being theoretical."""
     s = re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
     return COMMENT.sub("", MERMAID.sub("", s))
 

@@ -979,15 +979,29 @@ post again, on somebody's pull request, under your principal's name.
 
    | `error.code` | What it means | What you do |
    |---|---|---|
-   | `draft_status` | the draft is **not approved** | **do not post.** Go back to waiting, and say what it said |
+   | `draft_status`, and step 1 read a status **other than** `approved` | the draft is not signed off | **do not post.** Go back to waiting, and say what it said |
+   | `draft_status`, and step 1 read `approved` | the stored body is **not what its blocks compose to** — it was approved in the older shape, before the composition changed | **do not post, and do not wait.** Say it has to be sent back and written again |
    | `usage` — "unrecognized subcommand 'handover'" | this Review Desk is older than the hand-over | **the fallback below** |
 
    Telling them apart by the code and never by the bare fact that the command failed is the
    whole of this step. A `draft_status` refusal read as an old Review Desk would post a body
    nobody signed off, under your principal's name — the one outcome this arrangement exists to
-   prevent. Step 1 is what makes that safe: you already know from `draft show` that the status
-   reads `approved`, so a hand-over that refuses anyway is a disagreement to report, not a
-   branch to take.
+   prevent.
+
+   **Two different refusals carry `draft_status`, and the status step 1 read is what separates
+   them.** Measured on review-desk `bae4f5e`: an unapproved draft refuses with "the draft of
+   review N is ready, and only an approved draft is handed over"; an approved draft whose body
+   predates the composition refuses with "…is approved, and a draft whose body is what its
+   blocks compose to". Read the status, not the sentence.
+
+   **The second one is the one that will not fix itself.** The draft was approved in the old
+   shape — every finding a section, no index — and the threads are composed from the record as
+   it is now, so handing both over would put each anchored finding on the pull request twice,
+   once as a section and once as a comment, under your principal's name. **Never post the old
+   body**, and do not go back to waiting either: nothing about that draft changes on its own, so
+   a session that waits waits forever. Tell the Dispatcher and say plainly what has to happen —
+   the developer sends the draft back, and then you write the blocks again, which is the
+   ordinary `draft_sent_back` loop. The round is not lost; only the body is.
 
    **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
    the step after this one, and a session that posted and then died before reporting it needs
@@ -1044,11 +1058,16 @@ post again, on somebody's pull request, under your principal's name.
    `pull_request_review_id` is the review you just created. That is the same route
    `review_lint.py` takes to find a review's threads.
 
-   **Join on the marker in the comment's own body, not on where it sits.** Review Desk is adding
-   `<!-- review-desk:F<seq> -->` to the end of every composed thread: settled for DEV-929,
-   **not** in `13a78ee`, so look for it rather than expecting it. GitHub stores it in `body` and
-   hands it back, and it renders as nothing to a reader. Where it is there, it is the join — and
-   the table below is what to do when it is not, which today is every Review Desk there is.
+   **Join on the marker in the comment's own body, not on where it sits.** Every composed
+   thread ends with `<!-- review-desk:F<seq> -->`, and `threads[].finding_key` carries the same
+   `F<seq>` so that nothing has to format it twice. GitHub stores the marker in `body` and hands
+   it back verbatim, and it renders as nothing to a reader: the join is carried by the thing
+   being joined.
+
+   Measured on review-desk `bae4f5e`, on a blocker, a should and a nit: **as Review Desk hands
+   it over**, the body's last line is the marker, the line before it is blank, and it sits
+   outside the alert rail — a nit, which has no rail, carries it the same way. "Last" is true of
+   what you are handed; if you sign your comments, see below for what goes after it.
 
    **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
    line does and a Nit about what it is called — and measured on review-desk `13a78ee`, two such
@@ -1058,11 +1077,18 @@ post again, on somebody's pull request, under your principal's name.
 
    | What the comment carries | Do |
    |---|---|
-   | `<!-- review-desk:F<seq> -->` | join on it; this is the case |
+   | `<!-- review-desk:F<seq> -->` | join on it — the normal case, and the only one that is unambiguous |
    | no marker, but a title naming `**{Severity} · F{seq}**` | an older Review Desk — join on that, and **not** on the body's first line, where an alert marker sits above the title |
    | neither, or two findings for one comment | **link nothing for that comment and say so loudly**, naming the comment id. A wrong link is worse than a missing one: it is silent, and it is on the record |
 
    Never join on a comment's position in the array, which nothing promises.
+
+   **If you sign your comments, the `agent:` marker goes after Review Desk's.** `review_lint.py`
+   reads `threads.marker_last` off the body's last physical line, so appending the signature
+   before the composed marker leaves the HTML comment last and fails that check. Measured both
+   ways: after it, `marker_last` passes; before it, it fails. The join survives either order —
+   the marker does not have to be last to be found — so the ordering is owed to the linter
+   rather than to the join.
 
    Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
    for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.

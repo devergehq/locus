@@ -398,6 +398,22 @@ ok "  and neither says the cap is lifted"            "$(grep -c 'the cap moves t
 ok "  and nothing relaxed for a body you write"      "$(grep -c 'three is still three' "$style")" 1
 ok "  a block is not a section, so the body is short" "$(grep -c 'A block is not a section' "$brief")" 1
 
+printf '\n  what the hand-over refuses, and how the two are told apart\n'
+# The stale-body refusal cannot be driven from here: it fires only on an APPROVED draft, and
+# nothing in this repository may approve one to make a test pass. So what is pinned is the
+# instruction, which is the part a worker acts on -- that it exists, that the old body is never
+# posted, and that the discriminator is the STATUS step 1 read rather than the message, because
+# both refusals carry `draft_status`.
+ok "the stale approved body is named"            "$(grep -c 'not what its blocks compose to' "$brief")" 1
+ok "  and the old body is never posted"          "$(grep -c 'Never post the old' "$brief")" 1
+ok "  nor is it waited on, which never ends"     "$(grep -c 'a session that waits waits forever' "$brief")" 1
+ok "  told apart by the status, not the sentence" "$(grep -c 'Read the status, not the sentence' "$brief")" 1
+ok "  and both refusals carry one code"          "$(grep -c 'carry .draft_status., and the status step 1 read' "$brief")" 1
+ok "the agent marker goes after Review Desk's"   "$(grep -c 'the .agent:. marker goes after Review Desk' "$brief")" 1
+ok "  because marker_last reads the last line"   "$(grep -c 'threads.marker_last. off the body.s last physical line' "$brief")" 1
+ok "the marker is the join, with the title after" "$(grep -c 'the join is carried by the thing' "$brief")" 1
+ok "  and finding_key carries the same string"   "$(grep -c 'finding_key. carries the same' "$brief")" 1
+
 # =============================================================================================
 printf '\nB. the hunk, built from a fixture repository\n'
 # A real repository with a real commit, because the recipe's input is `git diff` and a recorded

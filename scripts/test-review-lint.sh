@@ -399,12 +399,13 @@ print(r.unrowed(['### Should \u00b7 the description says nothing about it'], [ro
 echo "The marker a session joins a comment to its finding by (DEV-929)"
 
 # Two findings on one line is ordinary -- a Should about what a line does, a Nit about what it
-# is called -- so `path` and `line` cannot tell their threads apart. Review Desk is ADDING
-# `<!-- review-desk:F<seq> -->` to the end of every composed thread to be joined on instead:
-# agreed for DEV-929 and not yet in their branch at 598c4df, which is why the fixture below
-# carries the marker rather than being harvested from the binary like the composed body above.
-# The linter's part of that bargain is not to CHARGE it: a comment renders as nothing, and
-# `prose` measures what a reader reads. Measured before the change: each marker spent ~24
+# is called -- so `path` and `line` cannot tell their threads apart. Review Desk ends every
+# composed thread with `<!-- review-desk:F<seq> -->` to be joined on instead, and the two
+# threads below are its real output for a Should and a Nit on ONE line, harvested from
+# review-desk bae4f5e: same path, same line, different marker.
+#
+# The linter's part of that bargain is not to CHARGE the marker: a comment renders as nothing,
+# and `prose` measures what a reader reads. Measured before the change: each marker spent ~24
 # characters of a 700-character single-finding budget.
 ok "an HTML comment is not charged as prose"    "$(python3 -c "
 import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
@@ -435,22 +436,22 @@ Keeping the response is the right shape; the caller needs it to decide whether t
 EOF
 cat > "$work/sameline-t1.md" <<'EOF'
 > [!WARNING]
-> **Should · F1** — the response is returned without checking its status · `Open`
+> **Should · F1** — the response is returned unchecked · `Open`
 >
-> **in diff** · `Open — needs a decision`
+> **in diff** · `Open`
 >
-> **What** · `handle` returns the response without reading its status.
+> **What** · a.
 >
-> **Why it matters** · a 500 is recorded as a delivery.
+> **Why it matters** · b.
 >
-> **What I'd do** · throw on a non-2xx before returning.
+> **What I'd do** · c.
 
 <!-- review-desk:F1 -->
 EOF
 cat > "$work/sameline-t2.md" <<'EOF'
-⚪ **Nit · F2** — `$response` says its type, not its role · `Open`
+⚪ **Nit · F2** — the name says its type, not its role · `Open`
 **in diff** · `Open`
-The name says what it holds, not what it is for.
+short nit.
 
 <!-- review-desk:F2 -->
 EOF
@@ -470,6 +471,38 @@ print(sorted(k[0] for k in keys if len(k) == 1))")" "['F1', 'F2']"
 # `set([...])` rather than a set comprehension: the harness runs under `sh`, and a `{` with a
 # comma in it is brace expansion -- the comprehension was expanded into two broken variants that
 # each raised a SyntaxError, and the assertion then compared empty to empty and "passed".
+# The marker's measured position, which the brief states and a worker relies on: last line,
+# blank line above it, outside the alert rail -- and a nit, which has no rail, the same way.
+ok "  the marker is the body's last line"       "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(all(t['body'].rstrip().splitlines()[-1].startswith('<!-- review-desk:F') for t in threads))")" "True"
+ok "  with a blank line above it"               "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(all(t['body'].rstrip().splitlines()[-2] == '' for t in threads))")" "True"
+ok "  and outside the alert rail, nit included" "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(sorted(set(t['body'].rstrip().splitlines()[-1][0] for t in threads)))")" "['<']"
+
+# A session that signs its comments appends after Review Desk's marker, because
+# `threads.marker_last` reads the body's last physical line. Both orders, so the assertion
+# says which one is wrong rather than only that one is right.
+ok "an agent marker after it keeps marker_last" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = 'x\n\n<!-- review-desk:F3 -->\n<sub>agent:DEV-9/review</sub>'
+print(bool(r.MARKER.search(body.strip().splitlines()[-1])))")" "True"
+ok "  and before it does not"                   "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = 'x\n\n<sub>agent:DEV-9/review</sub>\n<!-- review-desk:F3 -->'
+print(bool(r.MARKER.search(body.strip().splitlines()[-1])))")" "False"
+ok "  while the join survives either order"     "$(python3 -c "
+import re
+one = 'x\n\n<!-- review-desk:F3 -->\n<sub>agent:K/review</sub>'
+two = 'x\n\n<sub>agent:K/review</sub>\n<!-- review-desk:F3 -->'
+print(sorted(set(re.search(r'review-desk:(F\d+)', b).group(1) for b in (one, two))))")" "['F3']"
+
 ok "  which path and line could not be"         "$(python3 -c "
 import json
 threads = json.load(open('$work/fix/comments.json'))
