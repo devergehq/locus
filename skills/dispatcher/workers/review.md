@@ -1139,11 +1139,22 @@ post again, on somebody's pull request, under your principal's name.
 
    Three things follow, and the first is the one that matters:
 
-   - **Name the GitHub review id, to the Dispatcher and in the ledger, in the same breath as the
-     failure.** It is the only place that number will ever be written down. Review Desk will not
-     take it, and `draft posted` will not start working.
+   - **Put the id in the record first: `review-desk review link --review <id> --github-review
+     <the GitHub review id>`.** It writes `reviews.github_review_id` on its own, and that is the
+     whole of what it does here — measured on review-desk `c17d335`: the draft stays
+     `sent_back` with no event, and the review's `session_id` and `ledger_id` are untouched. So
+     the record says which review is on the pull request without anything claiming the draft was
+     posted, and both facts stay true.
+   - **Then name the id to the Dispatcher and in the ledger anyway, in the same breath as the
+     failure** — because the field is not durable. A later `--github-review` overwrites a
+     different id silently and exits 0, and the next successful `draft posted` on this same
+     review does exactly that: measured, the recovered id was replaced by the second review's
+     the moment that one was reported. So the record holds the number until this round posts
+     again, and what you said out loud is what holds it after.
    - **Then treat the send-back as any other**, from the event table: revise the blocks and
-     `draft put --sections` again.
+     `draft put --sections` again. The id you recorded will be overwritten when this round's
+     next review is reported, which is correct — the field names the review that is current —
+     and is why the line above is not redundant.
    - **Say that the pull request already carries a review.** The next sign-off is a different
      body, so step 3's check — which matches on the body — will not find the first one and will
      let you post, correctly: it is a new review. Your principal should hear that there will be
