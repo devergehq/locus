@@ -133,7 +133,7 @@ ran () { grep -qE "^(PASS|FAIL)  $1( |\$)" "$work/out" && echo yes || echo no; }
 echo "The base brief"
 ok "a brief written to the slots passes"          "$(run "$work/base.json")" 0
 ok "and no rule is reported as failing"           "$(grep -c '^FAIL' "$work/out" || true)" 0
-ok "24 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 24
+ok "26 checks ran"                                "$(grep -c '^PASS' "$work/out" || true)" 26
 ok "the header counts the problems and the rows"  "$(says '2 numbered problems, 4 before rows, 5 after rows')" yes
 ok "and names the top-layer budget it measured"   "$(says 'top-layer words of 150')" yes
 ok "stdin is the same document"                   "$(set +e; python3 "$lint" - <"$work/base.json" >"$work/out" 2>&1; echo $?; set -e)" 0
@@ -251,28 +251,94 @@ echo "A part's summary"
 ok "a brief with no parts passes"                 "$(run "$work/base.json")" 0
 ok "and the pass says it measured none"           "$(says 'longest of 0 part(s)')" yes
 ok "31 words fails against the limit of 30"       "$(mut '
-b["parts"] = [{"title": "A part", "summary": " ".join(["word"]*31), "fixes": [1], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": " ".join(["word"]*31), "fixes": [1], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "as parts.summaries"                           "$(rule parts.summaries)" yes
-ok "naming the part and the count"                "$(says 'part 1 runs 31 words')" yes
+ok "naming the line and the count"                "$(says "part 1's summary runs 31 words")" yes
 ok "and where the mechanism goes instead"         "$(says 'leave the mechanism to the files beside it')" yes
 ok "30 words passes"                              "$(mut '
-b["parts"] = [{"title": "A part", "summary": " ".join(["word"]*30), "fixes": [1], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": " ".join(["word"]*30), "fixes": [1], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
 ok "a class name in a part summary fails"         "$(mut '
-b["parts"] = [{"title": "A part", "summary": "TokenRepository now reads the expiry column.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "TokenRepository now reads the expiry column.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "as parts.plain"                               "$(rule parts.plain)" yes
 ok "naming the part and the name"                 "$(says "part 1's summary carries TokenRepository")" yes
 ok "a path in a part summary fails"               "$(mut '
-b["parts"] = [{"title": "A part", "summary": "The hour is read in app/Http/Reset.php now.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "The hour is read in app/Http/Reset.php now.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "a :: in a part summary fails"                 "$(mut '
-b["parts"] = [{"title": "A part", "summary": "The expiry is read through Token::fresh now.",
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "The expiry is read through Token::fresh now.",
                "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
 ok "a plain summary of eight words passes"        "$(mut '
-b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each link.", "fixes": [1],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": "An hour is stamped on each link.", "fixes": [1],
                "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
+
+echo "A part's one-line form"
+# Two rules over one field, the way the label has two: a part with NO one-line form and one that
+# runs long fail differently and are fixed by different edits. The first is the one the Solution
+# page cannot work around -- its row is a single line, and with nothing to draw there it falls
+# back to the summary cut off mid-sentence.
+ok "a brief with no parts passes both rules"      "$(run "$work/base.json")" 0
+ok "and the presence pass says it measured none"  "$(says '0 of 0 part(s) carry one')" yes
+ok "a part with no one-line form fails"           "$(mut '
+b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each link.", "fixes": [1],
+               "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "as parts.one_line"                            "$(rule parts.one_line)" yes
+ok "naming the part and the field"                "$(says 'part 1 carries no `one_line`')" yes
+ok "and what the row falls back to without it"    "$(says 'cut off mid-sentence')" yes
+ok "an empty one-line form is the same as none"   "$(mut '
+b["parts"] = [{"title": "A part", "one_line": "  ", "summary": "An hour is stamped on each link.",
+               "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "a null one-line form is the same as none"     "$(mut '
+b["parts"] = [{"title": "A part", "one_line": None, "summary": "An hour is stamped on each link.",
+               "fixes": [1], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "two parts without one are the plural"         "$(mut '
+b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each link.", "fixes": [1],
+               "files": [], "lines_added": 0, "lines_removed": 0},
+              {"title": "Another", "summary": "The other links are dropped.", "fixes": [2],
+               "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run >/dev/null
+says 'parts 1, 2 carry no `one_line`')" yes
+ok "a part carrying one passes"                   "$(mut '
+b["parts"] = [{"title": "A part", "one_line": "Each link now dies after an hour.",
+               "summary": "An hour is stamped on each link.", "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
+ok "and the pass counts the parts that carry one" "$(says '1 of 1 part(s) carry one')" yes
+ok "13 words fails against the limit of 12"       "$(mut '
+b["parts"] = [{"title": "A part", "one_line": " ".join(["word"]*13),
+               "summary": "An hour is stamped on each link.", "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "as parts.one_line_length"                     "$(rule parts.one_line_length)" yes
+ok "naming the part and the count"                "$(says "part 1's one-line form runs 13 words")" yes
+ok "and where the longer text goes instead"       "$(says 'the reader opens the row to see')" yes
+ok "12 words passes"                              "$(mut '
+b["parts"] = [{"title": "A part", "one_line": " ".join(["word"]*12),
+               "summary": "An hour is stamped on each link.", "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 0
+ok "and the pass counts what it measured"         "$(says 'longest of 1 part(s): 12 words of 12')" yes
+# The plain rule reads BOTH of a part's lines, because the fix is the same edit either way and a
+# one-line form that reads as a class name is that failure in the one place the page cannot hide.
+ok "a class name in a one-line form fails"        "$(mut '
+b["parts"] = [{"title": "A part", "one_line": "TokenRepository reads the expiry now.",
+               "summary": "An hour is stamped on each link.", "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run)" 1
+ok "as parts.plain, not as a length"              "$(rule parts.plain)$(rule parts.one_line_length)" yesno
+ok "naming the line it is on, not the summary"    "$(says "part 1's one-line form carries TokenRepository")" yes
+ok "and the pass measures two lines per part"     "$(mut '
+b["parts"] = [{"title": "A part", "one_line": "Each link now dies after an hour.",
+               "summary": "An hour is stamped on each link.", "fixes": [1], "files": [],
+               "lines_added": 0, "lines_removed": 0}]'; case_run >/dev/null
+says '2 part line(s), no class name')" yes
+ok "a one-line form that is a list is 2"          "$(mut '
+b["parts"] = [{"title": "A part", "one_line": ["one", "two"], "summary": "A summary.",
+               "fixes": [], "files": [], "lines_added": 0, "lines_removed": 0}]'; case_run)" 2
+ok "and names the part's one-line form"           "$(shouts 'parts\[1\].one_line')" yes
 
 echo "What a source tells us"
 ok "a brief with no sources passes"               "$(run "$work/base.json")" 0
@@ -353,7 +419,8 @@ ok "a class name in the detail is allowed"        "$(run "$work/base.json")" 0
 ok "and the detail may be any length"             "$(mut 'b["problems"][0]["detail_before"] += [" ".join(["word"]*400)]'; case_run)" 0
 ok "as may an option argument"                    "$(mut '
 b["options"][0]["argument_for"] = " ".join(["word"]*300)
-b["parts"] = [{"title": "A part", "summary": "An hour is stamped on each token.", "fixes": [1],
+b["parts"] = [{"title": "A part", "one_line": "An hour per token",
+               "summary": "An hour is stamped on each token.", "fixes": [1],
                "files": [{"path": "app/Thing.php", "lines_added": 9000, "lines_removed": 9000,
                           "in_diff": True}], "lines_added": 9000, "lines_removed": 9000}]'; case_run)" 0
 
@@ -512,7 +579,8 @@ ok "and names the problem's label"                 "$(shouts 'problems\[1\].labe
 ok "a part that is a string is 2"                  "$(mut 'b["parts"]=["A part"]'; case_run)" 2
 ok "and names the part"                            "$(shouts 'parts\[1\]')" yes
 ok "a part summary that is a list is 2"            "$(mut '
-b["parts"] = [{"title": "A part", "summary": ["one", "two"], "fixes": [], "files": [],
+b["parts"] = [{"title": "A part", "one_line": "An hour per link",
+               "summary": ["one", "two"], "fixes": [], "files": [],
                "lines_added": 0, "lines_removed": 0}]'; case_run)" 2
 ok "sources that are not a list is 2"              "$(python3 -c '
 import json, sys
@@ -535,7 +603,7 @@ ok "a file and --review together is 2"            "$(FIX="$work/show.json" PATH=
 
 echo "The limits table"
 ok "--limits prints it and exits 0"               "$(run --limits)" 0
-ok "every limit names where it came from"         "$(grep -c 'understand.md\|workers/review.md\|DEV-884\|Not a budget' "$work/out" || true)" 15
+ok "every limit names where it came from"         "$(grep -c 'understand.md\|workers/review.md\|DEV-884\|Not a budget' "$work/out" || true)" 16
 ok "and no limit is keyed on the diff"            "$(grep -ci 'changed line\|diff size\|lines added' "$work/out" || true)" 0
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

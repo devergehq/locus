@@ -173,9 +173,10 @@ option's arguments and the blind pass's answer are unbounded, because depth is a
 the top that is read at a glance. And there is no limit keyed on how many lines the pull request
 changes, by Patrick's ruling of 9 October 2026.
 
-**A part's summary is the one exception**, from 11 October 2026: 30 words, and held to the same
-plain-English rule as the top layer. Seven of them are read down one column at once, so it is
-scanned rather than clicked into — the argument for leaving depth alone does not apply to it.
+**A part's two lines are the one exception**, from 11 October 2026: the `one_line` the Solution
+page draws on the row at 12 words, the summary behind it at 30, and both held to the same
+plain-English rule as the top layer. Seven of them are read down one column at once, so they are
+scanned rather than clicked into — the argument for leaving depth alone does not apply to them.
 
 **A principal's review is linted too.** It carries no `agent:` marker by house style, and the
 linter once found reviews only by that marker, so it checked nothing on the reviews posted most.
@@ -208,6 +209,16 @@ line. **Copy its judgement, not its index**: the index to copy is the template i
 `house-style.md`, which is what the linter checks.
 
 ## Revision
+
+**11 October 2026 (third change).** One rule more, 26 in `brief_lint.py`: every solution part
+carries a `one_line` of at most 12 plain words, which is what the Solution page draws on the
+part's row. Review Desk is becoming a table there with one row per part, the row's line never
+wraps, and nothing the session wrote fitted one — the summary's cap is 30 words and the one real
+review measured ran 33 to 52, so the row would have shown it cut off mid-sentence. The summary
+keeps its cap and becomes the longer text a reader opens the row to see. `understand.md`'s rule 7
+carries the wrong and the right of it; the field and the write it lands in are in
+`workers/review.md`, with what to do when a Review Desk that predates the field refuses the
+write — the reading of that refusal was already there and is not restated.
 
 **11 October 2026 (second change).** Six rules more in `brief_lint.py`, 24 in all, and three
 numbers in its limits table: every numbered problem carries a **label** of at most 3 words, the

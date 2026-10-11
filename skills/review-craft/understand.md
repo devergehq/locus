@@ -169,7 +169,7 @@ great deal and is worth nothing at all compared to a review that never arrives.
 
 | Slot | What goes in it |
 |---|---|
-| **Parts** | One row per part of the change: what it is, a summary of **at most 30 words carrying no class name, path or `::`**, which numbered problems it fixes, its files with lines added and removed, and **whether the pull request changed each file at all** — a part may claim a file outside the diff, which is how a finding in such a file belongs to a part |
+| **Parts** | One row per part of the change: what it is, **a `one_line` of at most 12 plain words**, a summary of **at most 30 words carrying no class name, path or `::`**, which numbered problems it fixes, its files with lines added and removed, and **whether the pull request changed each file at all** — a part may claim a file outside the diff, which is how a finding in such a file belongs to a part |
 | **Choices** | Where the ticket left a choice: what was open, what was chosen, the one line of why, whether it departs from the ticket, and — where one raises it — the finding |
 | **Disagreements** | Where the description and the code say different things: what the description says, what the code does, and **the finding that raises it**. That one is required, so raise the finding first: a disagreement nothing raises posts a review that never mentions it |
 | **Verdict** | Whether this is the right *shape* for the problem, in a phrase |
@@ -256,6 +256,22 @@ belong in the part's files, which are listed beside it.
 |---|---|
 | ✗ | `ImportFileJob` carries one file and writes its rejections to `price_import_rows`, so a failure in `PriceRowValidator` no longer reaches `NightlyImportCommand`'s outer transaction. |
 | ✓ | Each file becomes a job that can fail on its own. |
+
+**7 · Every part also carries a one-line form, at most 12 words.** The Solution page draws the
+parts as a table, one row each, and the one line **is** the row: it never wraps, so a summary put
+there is cut off mid-sentence, and a cap that is generous enough for the longer text is far too
+generous for a row. Plain English, the same way rule 1 is, and the names go where rule 6 already
+sends them — the part's files, listed beside it.
+
+| | |
+|---|---|
+| ✗ | A nullable column on the clients table, a two-value enum and a fail-closed cast. |
+| ✓ | Each client's record lists the delivery methods it allows. |
+
+**It is not the summary shortened, and the two do different jobs.** The one line says what the
+part does, for someone reading seven rows down a column and deciding which to open; the summary
+is what they get when they open it. A one line that reads as the first clause of the summary has
+cost the reader the second.
 
 ---
 
@@ -400,15 +416,15 @@ What the blind pass needed and was not told:
 
 ### Solution
 
-| Part | Summary | Fixes | Files |
-|---|---|---|---|
-| A record of each import run, and each file in it | Every run and every file in it is now something you can look up. | 1 | 3 · +180 −0 |
-| The supplier onboarding note, which the import contradicts | The note tells suppliers the opposite of what the importer does. | 2 | 1 · outside the diff |
-| One job per file, with its own retries | Each file is carried on its own and retried on its own. | 1 | 2 · +96 −40 |
-| Rejected rows, with a reason and a line number | A price we cannot match is kept, with why and where. | 2 | 3 · +120 −0 |
-| A staging table for accepted prices | Accepted prices wait somewhere the shop front does not read. | 3 | 2 · +64 −0 |
-| The publish step, one file at a time | One file's prices cross to the live list in one go. | 3 | 2 · +75 −12 |
-| The summary email, rewritten, and its tests | The email now counts accepted, rejected and skipped, for each file. | 2 | 4 · +210 −96 |
+| Part | One line | Summary | Fixes | Files |
+|---|---|---|---|---|
+| A record of each import run, and each file in it | Every run and every file in it can be looked up. | A run is written down when it starts, with a row per file beside it, so a night that went wrong can be read back afterwards. | 1 | 3 · +180 −0 |
+| The supplier onboarding note, which the import contradicts | The note tells suppliers the opposite of what we do. | The note promises that a whole file is accepted or rejected together, which is what the import stopped doing, so it is corrected in the same change. | 2 | 1 · outside the diff |
+| One job per file, with its own retries | Each file is carried and retried on its own. | A file becomes one piece of work with its own three attempts, so a failure is that file's alone and the rest of the inbox finishes. | 1 | 2 · +96 −40 |
+| Rejected rows, with a reason and a line number | A price we cannot match is kept, not dropped. | A row we cannot match is written down with its reason and the line it came from, so the buying team can see what did not go in. | 2 | 3 · +120 −0 |
+| A staging table for accepted prices | Accepted prices wait where the shop front cannot read them. | Accepted prices are written somewhere the shop front never reads, so nothing a buyer has not published yet can reach a customer. | 3 | 2 · +64 −0 |
+| The publish step, one file at a time | One file's prices cross to the live list at once. | A file's accepted prices move to the live list in one statement, so the shop never shows half of a supplier's price list. | 3 | 2 · +75 −12 |
+| The summary email, rewritten, and its tests | The email counts what went in and what did not. | The email now counts accepted, rejected and skipped rows for each file, so the morning's first question is answered without opening the admin. | 2 | 4 · +210 −96 |
 
 | The ticket left open | Chosen | Why | Against the ticket |
 |---|---|---|---|
@@ -437,8 +453,9 @@ nothing at all against a review's word budget — mermaid is stripped before the
 are about to `review-desk brief put`, or the one it already holds — and fails on the mechanical
 shapes this page argues against: a headline that is a paragraph, a flow that is not drawn, a
 numbered problem no box carries, a problem with no label, numbers that do not run in the order the
-before flow meets them, a class name on the top layer or in a part's summary, three clauses joined
-by semicolons, and every length limit in the tables above. It needs no `review-desk` to read a file,
+before flow meets them, a class name on the top layer or in either of a part's two lines, a part
+with no one-line form at all, three clauses joined by semicolons, and every length limit in the
+tables above. It needs no `review-desk` to read a file,
 so it runs before the brief is saved. The limits are this file's; `--limits` prints them with
 their provenance, and **this file is where they are changed**.
 
@@ -450,6 +467,18 @@ slot lands in, and who is asked to confirm it. The field names are there and not
 is one copy of them.
 
 ## Revision
+
+**11 October 2026 (second change).** The Solution page becomes a table with one row per part, and
+nothing the session wrote fitted a row: the summary's cap is 30 words and the one real review
+measured ran 33 to 52, so the row would have shown it cut off mid-sentence. The **Parts** slot
+gains a `one_line` of at most 12 words and rule 7 carries the wrong and the right of it, beside
+rule 6's cap rather than in place of it — the row shows the one line and the summary is what a
+reader opens the row to see. The worked example's seven parts carry both, and its summaries were
+written out to the length the slot allows, because two columns that say the same thing teach that
+one of them is spare. `brief_lint.py` fails a part with no one-line form, measures it at 12 words,
+and holds it to the same plain rule as the summary. The field and the write it lands in are in
+`workers/review.md`, which owns the field names; so is what to do when a Review Desk that predates
+it refuses the write.
 
 **11 October 2026.** Two real reviews showed the pages are only as short as what the session sends
 them. The slots gained what they were missing rather than tightening what they had: **Label**, two
