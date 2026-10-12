@@ -1661,11 +1661,22 @@ class Poller:
         Returns nothing, because `self.state["recorded"][key]` is the whole answer: the commit
         recorded, the review's id, and whether the developer has dismissed it.
         """
-        if self.record_stopped or not head:
+        if not head:
             # No head commit, no recording: `review open` requires one, and a search row without
             # `headRefOid` is a row this file cannot describe a review of.
             return
+        # Per KEY, not per tick: it is a fact about the build that answered for THIS request,
+        # and as a tick-wide flag it leaked onto every key recorded after the one that set it —
+        # permanently, because the record keeps it and a key marked `old` never has its head
+        # followed again. Found by review of this branch.
+        self.record_old = False  # per key, and the comment above says why
         held = self.state["recorded"].get(key) or {}
+        # **`record_stopped` stops writing and looking. It does not stop reading**, and the
+        # early return it used to sit in did: `find_request` sets it for a new key, and the
+        # dismissal read for every key already recorded was then cancelled for the rest of the
+        # tick — one strange `review find` on one new request killing the dismissal guard for
+        # forty others, every tick, for the life of the install. That is the asymmetry
+        # `read_request` has a paragraph about, in the opposite direction.
         # **Nothing is written to a review this poller has not looked at.** The first call on a
         # key used to be the write, and `review open` on a commit the author has pushed since
         # answers `created: true` with the NEXT ROUND when a session is linked to the review it
@@ -1677,7 +1688,7 @@ class Poller:
         # `review find` is a READ, costs one call per key this instance has no record of, and
         # answers the newest round first — measured at review-desk 82c0a09, dismissed rounds
         # included, which is right: the newest round is the row `review open` would act on.
-        if not held and not self.look_stopped:
+        if not held and not self.look_stopped and not self.record_stopped:
             found = self.find_request(rd, repo, number, every)
             if self.record_stopped or found == "refused":
                 return
@@ -1735,7 +1746,7 @@ class Poller:
         # was written to prevent. `old` is set on the retry path and remembered, so such a build
         # records a request once and then leaves it alone: exactly the behaviour that preceded
         # this branch, which is what every other degradation here falls back to.
-        writing = (not held.get("dismissed") and not linked
+        writing = (not self.record_stopped and not held.get("dismissed") and not linked
                    and not (held.get("old") and held.get("head"))
                    and not same_commit(held.get("head"), head))
         if writing:
@@ -1824,6 +1835,7 @@ class Poller:
             # request stayed open. `--title=-fix the thing` is accepted and stored verbatim.
             facts.append(f"--title={title}")
         state, payload, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
+        retried = False
         if state == "refused" and review_desk_unknown(detail):
             # An older Review Desk: it has `review open` and has never heard of `--ledger`. The
             # request is still worth recording without it — the worker writes the ledger id with
@@ -1831,15 +1843,22 @@ class Poller:
             # so it is retried ONCE, without the flag, and never again. A second refusal is a
             # refusal about something else and is left alone.
             state, payload, detail = review_desk_run(rd, *facts, "--json")
-            # Remembered, because it says more than "no ledger id on this row": the move landed
-            # with the flag, so this build starts a round where a newer one moves a request.
-            self.record_old = True
+            # Remembered only if it ANSWERS, below. Set here, it was a guess: `review_desk_unknown`
+            # is a substring test over a detail that can be raw stderr, so a usage-shaped refusal
+            # about something else would have stamped the build `old` — and `old` is what stops a
+            # head ever being followed again. A retry that succeeds without the flag is the
+            # evidence the refusal was about the flag.
+            retried = True
         if state in ("absent", "broken"):
             # One install answers for every request, so there is nothing to learn from asking
             # again this tick — and a great deal to lose: at a 30s timeout, a hung binary asked
             # once per request is one stalled tick per page of requests. Asked once, it costs
             # what the `review_desk` section's own call already costs.
             self.record_stopped = True
+            if state == "absent":
+                # Nothing on this install can be asked anything, reads included — the same rule
+                # `find_request` and `read_request` apply where they meet it.
+                self.read_stopped = True
             # Kept, not said: `record_unreachable` says it at the end of `review_requests`, and
             # carries the repository this was met on because SKILL.md tells the Dispatcher to
             # name it.
@@ -1867,6 +1886,10 @@ class Poller:
                      command=rd["command"], repo=repo, number=number, call="review open",
                      detail=detail, example=True)
             return None
+        if retried:
+            # The retry answered, so the flag's claim is now evidenced rather than inferred: this
+            # build has no `--ledger`, and therefore no move either — the two landed together.
+            self.record_old = True
         review = review_of(payload)
         if review is None:
             # **Exit 0 with an answer this file cannot read is BROKEN, not nothing.**
@@ -1914,6 +1937,7 @@ class Poller:
                 self.read_stopped = True
             self.record_broken["review find"] = (state, detail, repo)
             return None
+        retried = False
         if state == "refused" and review_desk_unknown(detail):
             # **A build that has never heard of `review find`, which must not take the feature
             # with it.** Looking first is a guard against spending a round on a review somebody

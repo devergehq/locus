@@ -483,6 +483,14 @@ def open_review(argv):
     mode = (work / "rd.open.mode").read_text().strip() \
         if (work / "rd.open.mode").exists() else "ok"
     ledger = opt(argv, "--ledger")
+    # `$RDWORK/rd.open.oldfor` narrows `oldledger` to the pull requests it names, which is the
+    # only way to have ONE tick meet an old answer and a modern one: the mode file is read per
+    # call, and a shell cannot change it between two calls inside one tick. What it is for is
+    # the per-key question -- whether a fact measured about one request leaks onto the next.
+    oldfor = (work / "rd.open.oldfor").read_text().split() \
+        if (work / "rd.open.oldfor").exists() else None
+    if oldfor is not None and (opt(argv, "--pr") or "") not in oldfor:
+        mode = "ok" if mode == "oldledger" else mode
     if mode == "oldledger" and ledger is not None:
         # An older Review Desk: `review open` is there and `--ledger` is not. clap's own usage
         # error, which review-desk's `main.rs` remaps from 2 to 1 and gives the code `usage`.
@@ -737,7 +745,7 @@ PY
   rm -f "$work/rd.nit" "$work/rd.held"
   # DEV-945's three: the recorded reviews, how `review open` answers, and what GitHub shows.
   rm -f "$work/rd.opens.json" "$work/rd.open.mode" "$work/rd.open.argv" "$work/gh.search"
-  rm -f "$work/rd.show.mode" "$work/rd.find.mode" "$work/rd.deleted"
+  rm -f "$work/rd.show.mode" "$work/rd.find.mode" "$work/rd.deleted" "$work/rd.open.oldfor"
   unset NOMAP 2>/dev/null || true
   echo drafting > "$work/rd.draft.status"
 }
@@ -3862,6 +3870,38 @@ age_marker 'review_desk|dismissal|gh-portal-412'
 rc=$(run "$disp" poll 1)
 ok "  so a restore asks before dispatching"            "$(says '"backlog": true')" yes
 
+# **A strange `review find` on one NEW request must not cancel the dismissal read for the keys
+# already recorded.** `find_request` runs only for a key with no record, so the requests it can
+# poison are precisely the ones that never needed it -- and the shape is not transient: it
+# recurs every tick, so the dismissal guard would be dead for the life of the install.
+instance '{"mode":"auto"}'
+search_doc acme/portal 413 sha413 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 413 "closed unmerged"
+search_pair acme/portal 412 sha412 413 sha413
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "a strange look still leaves the read running"      "$(shows)" 1
+ok "  so the dismissal is still learned"               "$(remembered gh-portal-413 dismissed)" True
+ok "  and nothing was written for the new request"     "$(opens)" 1
+ok "  with the look reported once"                     "$(count '"event": "review_desk_unavailable"')" 1
+
+# And the old-build fact belongs to the key that measured it, not to the tick: as a tick-wide
+# flag it stamped every key recorded after it, and a key marked old never has its head followed
+# again.
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo oldledger > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "an old build marks both keys it measured"          "$(remembered gh-portal-413 old)" True
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo oldledger > "$work/rd.open.mode"
+echo 412 > "$work/rd.open.oldfor"
+rc=$(run "$disp" poll 1)
+ok "the key that met the old answer is marked old"     "$(remembered gh-portal-412 old)" True
+ok "  and the one after it is not"                     "$(remembered gh-portal-413 old)" False
+
 # A read that failed does not spend the window: `due` writes its marker when it is evaluated,
 # so without clearing it a Review Desk broken for one tick would put the next read fifteen
 # minutes away -- and a dismissal made in between would be dispatched for all of it.
@@ -4520,7 +4560,7 @@ ok "  without it one cause is reported per request"    "$(count '"event": "revie
 
 sed 's/^                self\.read_stopped = True$/                pass  # READ STOP REMOVED/' \
     "$disp" > "$work/noreadstop.py"
-ok "the ask-once-a-tick reversal changed its lines"    "$(grep -c 'READ STOP REMOVED' "$work/noreadstop.py")" 2
+ok "the ask-once-a-tick reversal changed its lines"    "$(grep -c 'READ STOP REMOVED' "$work/noreadstop.py")" 3
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 rc=$(run "$work/noreadstop.py" poll 1)
@@ -4541,7 +4581,7 @@ age_marker 'gh-portal-412|review_request'
 rc=$(run "$work/noledgersession.py" poll 1)
 ok "  without it a push spends a round immediately"    "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
 
-sed 's/^        writing = (not held\.get("dismissed") and not linked$/        writing = (not linked  # DISMISSAL WRITTEN TO/' \
+sed 's/^        writing = (not self\.record_stopped and not held\.get("dismissed") and not linked$/        writing = (not self.record_stopped and not linked  # DISMISSAL WRITTEN TO/' \
     "$disp" > "$work/nodismisswrite.py"
 ok "the leave-a-dismissal-alone reversal changed one line" "$(grep -c 'DISMISSAL WRITTEN TO' "$work/nodismisswrite.py")" 1
 instance '{"mode":"auto"}'
@@ -4631,7 +4671,7 @@ echo notobject > "$work/rd.show.mode"
 rc=$(run "$work/noreadbroken.py" poll 1)
 ok "  without it one tick reads once per request"      "$(shows)" 2
 
-sed 's/^        if not held and not self\.look_stopped:$/        if False:  # LOOK SKIPPED/' "$disp" > "$work/nolook.py"
+sed 's/^        if not held and not self\.look_stopped and not self\.record_stopped:$/        if False:  # LOOK SKIPPED/' "$disp" > "$work/nolook.py"
 ok "the look-first reversal changed one line"          "$(grep -c 'LOOK SKIPPED' "$work/nolook.py")" 1
 instance '{"mode":"auto"}'
 preopen acme/portal 412 oldhead 7 sess-dash
@@ -4720,6 +4760,30 @@ rc=$(run "$work/noold.py" poll 1)
 search_doc acme/portal 412 sha999 Retry
 rc=$(run "$work/noold.py" poll 1)
 ok "  without it a push opens a second review"         "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 2
+
+sed 's/^        if not head:$/        if self.record_stopped or not head:  # WRITE FAILURE STOPS THE READ/' \
+    "$disp" > "$work/nosplitread.py"
+ok "the stop-the-read reversal changed one line"       "$(grep -c 'WRITE FAILURE STOPS THE READ' "$work/nosplitread.py")" 1
+# The recorded key comes SECOND on the page, which is the ordering that shows it: the flag is
+# set by the new request's look, and everything after it in the loop is what gets cancelled.
+instance '{"mode":"auto"}'
+search_doc acme/portal 413 sha413 Retry
+rc=$(run "$work/nosplitread.py" poll 1)
+dismiss acme/portal 413 "closed unmerged"
+search_pair acme/portal 412 sha412 413 sha413
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$work/nosplitread.py" poll 1)
+ok "  without it one new request kills every read"     "$(shows)" 0
+
+sed 's/^        self\.record_old = False  # per key, and the comment above says why$/        pass  # OLD LEAKS ACROSS KEYS/' \
+    "$disp" > "$work/noperkeyold.py"
+ok "the per-key reversal changed one line"             "$(grep -c 'OLD LEAKS ACROSS KEYS' "$work/noperkeyold.py")" 1
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo oldledger > "$work/rd.open.mode"
+echo 412 > "$work/rd.open.oldfor"
+rc=$(run "$work/noperkeyold.py" poll 1)
+ok "  without it the flag leaks onto another key"      "$(remembered gh-portal-413 old)" True
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
