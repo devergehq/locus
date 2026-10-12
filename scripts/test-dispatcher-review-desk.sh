@@ -521,6 +521,13 @@ def open_review(argv):
         created, moved = False, None
         if ledger is not None:
             held["ledger"] = ledger
+    elif mode == "oldledger":
+        # A build from before DEV-945: no `--ledger`, and no MOVE either -- the two landed in
+        # review-desk 0e0bf1b together. Measured against the installed 0.1.0: a new head on an
+        # unstarted request answers `created: true`, round 2, a second row for one request.
+        held = {"id": max(h["id"] for h in store.values()) + 1, "head": head, "ledger": None,
+                "round": held["round"] + 1}
+        created, moved = True, None
     elif held.get("session"):
         # Started: the next round, with an id of its own and no session on it.
         held = {"id": max(h["id"] for h in store.values()) + 1, "head": head, "ledger": ledger,
@@ -3373,6 +3380,25 @@ ok "  and the second call carries no ledger id"        "$(last_open)" \
 ok "  the request is recorded all the same"            "$(remembered gh-portal-412 head)" sha412
 ok "  and nothing extra is said about it"              "$(count review_desk_unavailable)" 0
 
+# **A build with no `--ledger` has no MOVE either**, so the head is not followed on it: one
+# `review open` on a new commit would be a second unstarted review for one request, which is
+# the thing DEV-945's other half exists to prevent. Recorded once, then left alone -- the
+# behaviour that preceded this branch, which is where every degradation here lands.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo oldledger > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "an older build records the request once"           "$(opens)" 2
+ok "  and is remembered as old"                        "$(remembered gh-portal-412 old)" True
+search_doc acme/portal 412 sha999 Retry
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+# The ROUND, not the number of rows: this store keeps one row per pull request because a new
+# round replaces the one before it, so a second review shows as round 2. The first draft of
+# this counted rows and would have passed without the guard.
+ok "  a push on it opens no second review"             "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 1
+ok "  and the request is still dispatched"             "$(count '"event": "review_request"')" 1
+
 instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 Retry
 echo refused > "$work/rd.open.mode"
@@ -3626,6 +3652,20 @@ for decided in skipped deferred merged; do
   rc=$(run "$disp" poll 1)
   ok "a $decided key is not offered for dispatch"      "$(count '"event": "review_desk_requested"')" 0
 done
+
+# **A status the GitHub pass says nothing about is not suppressed.** `done`, `stopped` and
+# `blocked` are ALIVE, so the GitHub pass emits nothing for them and the recording never runs;
+# if the Review Desk pass went quiet too, a review whose worker stopped before writing a brief
+# would stall with no source speaking for it. SKILL.md names that fifteen-minute re-offer as
+# the net under a session that keeps dying.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=stopped repo=acme/portal number=412 session_id=gone-1 --by test
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a stopped review GitHub still requests is offered" "$(count '"event": "review_desk_requested"')" 1
+ok "  and the GitHub pass said nothing for it"         "$(count '"event": "review_request"')" 0
 
 # A lost session's review, which carries a ledger id AND an entry: still work, and the one case
 # that tells the ledger-entry test apart from a test on the ledger id alone.
@@ -4184,7 +4224,7 @@ work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
 rc=$(run "$work/nospoken.py" poll 1)
 ok "no guard: one request reaches the Dispatcher twice" "$(( $(count '"event": "review_request"') + $(count '"event": "review_desk_requested"') ))" 2
 
-sed 's/^        if requested_key(key) in self\.requested:$/        if False:  # TICK TEST REVERSED/' \
+sed 's/^        if requested_key(key) in self\.requested and entry\.get("status") in REDISPATCHABLE:$/        if False:  # TICK TEST REVERSED/' \
     "$disp" > "$work/notick.py"
 ok "the this-tick reversal changed one line"           "$(grep -c 'TICK TEST REVERSED' "$work/notick.py")" 1
 # With a ledger entry, so the no-such-entry guard cannot pass this one for it.
@@ -4317,6 +4357,14 @@ if [ -z "${REVIEW_DESK_BIN:-}" ]; then
   printf '  skipped -- set REVIEW_DESK_BIN=/path/to/review-desk to run this section\n'
 elif [ ! -x "${REVIEW_DESK_BIN}" ]; then
   fail=$((fail + 1)); printf '  FAIL  REVIEW_DESK_BIN is not executable: %s\n' "$REVIEW_DESK_BIN"
+elif ! "${REVIEW_DESK_BIN}" review open --help 2>/dev/null | grep -q -- '--ledger'; then
+  # **The section asserts DEV-945's own half, so it needs a Review Desk that has it.** `--ledger`
+  # is the probe because it landed with the rest of it -- the move, the dismissal field -- in
+  # review-desk 0e0bf1b, so a build without the flag fails four of these assertions by being
+  # older rather than by anything being wrong. Said once, rather than four confusing failures:
+  # a developer pointing this at the binary on their PATH is the likeliest way to meet it, and
+  # that binary is usually whatever was last built next door.
+  printf '  skipped -- %s predates DEV-945 (no `--ledger` on `review open`)\n' "$REVIEW_DESK_BIN"
 else
   real=$(python3 -c 'import json,sys;print(json.dumps({"mode":"auto","command":sys.argv[1]}))' \
     "$REVIEW_DESK_BIN")
@@ -4364,6 +4412,14 @@ else
   rc=$(run "$disp" poll 1)
   ok "a second request is recorded on its own review"     "$(count '"event": "review_request"')" 1
   dismissed_id=$(remembered gh-portal-611 review)
+  # Guarded, because a review-desk without migration 16 has no such column and `set -eu` would
+  # take the remaining assertions and the summary line down with the statement -- a developer
+  # who set REVIEW_DESK_BIN would get a truncated report rather than the failures this section
+  # promises. Skipped loudly instead.
+  has_dismissal=$(sqlite3 "$REVIEW_DESK_DB" "PRAGMA table_info(reviews);" | grep -c dismissed_at || true)
+  if [ "$has_dismissal" -eq 0 ]; then
+    printf '  skipped -- this review-desk has no dismissal column (migration 16)\n'
+  else
   sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = 1791780000, dismissed_reason = 'the pull request was closed unmerged' WHERE id = $dismissed_id;"
   ok "  a dismissed review leaves the real work list"     "$("$REVIEW_DESK_BIN" work list --repo acme/portal --json | python3 -c 'import json,sys;print(len([w for w in json.load(sys.stdin)["work"] if w["pr"] == 611]))')" 0
   age_marker 'gh-portal-611|review_request'
@@ -4379,6 +4435,7 @@ else
   rc=$(run "$disp" poll 1)
   ok "a restored review is dispatched again"              "$(count '"event": "review_request"')" 1
   ok "  and is no longer remembered as dismissed"         "$(remembered gh-portal-611 dismissed)" False
+  fi
 
   # Nothing this harness ran could have dismissed, restored or deleted anything: the binary has
   # no such command. Asserted against the real one's own help rather than claimed.
@@ -4652,6 +4709,17 @@ ok "  offers none of the five dead ones as evidence" "$(grep -cE 'review-desk `(
 # and its pull request rebased again before merging, so it died within hours. The citations now
 # name master, where a merge commit is not rewritten, and this asserts the brief got there.
 ok "  and cites master instead"                     "$([ "$(grep -c '41bbc10' "$brief_md")" -gt 0 ] && echo yes || echo no)" yes
+
+sed 's/^                   and not (held\.get("old") and held\.get("head"))$/                   and True  # OLD BUILD FOLLOWS THE HEAD/' \
+    "$disp" > "$work/noold.py"
+ok "the old-build reversal changed one line"           "$(grep -c 'OLD BUILD FOLLOWS THE HEAD' "$work/noold.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo oldledger > "$work/rd.open.mode"
+rc=$(run "$work/noold.py" poll 1)
+search_doc acme/portal 412 sha999 Retry
+rc=$(run "$work/noold.py" poll 1)
+ok "  without it a push opens a second review"         "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

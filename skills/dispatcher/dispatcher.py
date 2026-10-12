@@ -1078,6 +1078,9 @@ class Poller:
         # subprocess per request per tick for ever. Separate from `record_stopped` because such
         # a build records perfectly well — it is only the dismissal it cannot be asked about.
         self.read_stopped = False
+        # Whether the install answering this tick refused `--ledger`, which dates it before the
+        # move as well. See `record_request`.
+        self.record_old = False
         # Whether LOOKING before the first write has been given up on for this tick: a build
         # with no `review find` answers the same way for every request, and the recording goes
         # on without the look rather than stopping. See `find_request`.
@@ -1265,6 +1268,7 @@ class Poller:
         self.read_stopped = False
         self.read_unsupported = False
         self.look_stopped = False
+        self.record_old = False
         self.record_broken = {}
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
@@ -1704,6 +1708,14 @@ class Poller:
         # deliberately, which is whose job it is. `session_id` on the review is the fact, so the
         # fact is what this reads rather than inferring it from a status.
         #
+        # **What `linked` cannot see, and it is review-desk's to close.** That store refuses to
+        # move a round that holds a brief, a finding, a draft, a layer past `pending` or round
+        # commits -- "started" is wider than "a session is linked" -- and `review find`'s row
+        # carries none of those. So in the window where a session has written a brief and not
+        # yet called `review link --session`, on a review this instance has no ledger entry
+        # for, a push can still have this poller start a round. Narrowing it needs `started` on
+        # the row rather than a guess from here, which is asked of DEV-945's other half.
+        #
         # **A dismissal THIS POLLER HAS READ is never written to again**, whatever the author
         # pushes to the pull request. The claim is deliberately that narrow: `dismissed` is
         # learned by the read below, so a push that lands before the first read — or after the
@@ -1715,7 +1727,16 @@ class Poller:
         # and it arrived here by the head test running first. The record goes on naming the
         # commit Review Desk was TOLD, so a restore puts the two out of step and the very next
         # tick moves it, which is where moving it belongs.
+        # **A head that moved is only followed on a build that can MOVE one.** The move and
+        # `--ledger` landed in the same review-desk commit (0e0bf1b), so a build that refuses
+        # the flag is a build where `review open` on a new commit creates a new ROUND instead —
+        # measured against the installed 0.1.0: `created: true`, round 2, a second row for one
+        # request, which is the "two unstarted reviews for one request is wrong" the other half
+        # was written to prevent. `old` is set on the retry path and remembered, so such a build
+        # records a request once and then leaves it alone: exactly the behaviour that preceded
+        # this branch, which is what every other degradation here falls back to.
         writing = (not held.get("dismissed") and not linked
+                   and not (held.get("old") and held.get("head"))
                    and not same_commit(held.get("head"), head))
         if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
@@ -1740,9 +1761,10 @@ class Poller:
             # already recorded stands, including a dismissal: a Review Desk that cannot be
             # reached is not the developer changing their mind.
             return
-        self.remember(key, review, head if writing else (held.get("head") or head))
+        self.remember(key, review, head if writing else (held.get("head") or head),
+                      old=self.record_old or bool(held.get("old")))
 
-    def remember(self, key: str, review: dict, head: str) -> dict:
+    def remember(self, key: str, review: dict, head: str, old: bool = False) -> dict:
         """Write what one Review Desk answer says about a request into the poll state.
 
         One place, because three callers answer the same question — `review find` before the
@@ -1776,6 +1798,10 @@ class Poller:
             # from the dashboard, or one a session linked itself to without this dispatcher
             # claiming it.
             "session": review.get("session_id"),
+            # Whether the build that answered has no `--ledger`, and so no move either. Kept on
+            # the record rather than on the Poller because it is a fact about the install this
+            # KEY was recorded against, and a tick that records nothing should not forget it.
+            "old": old,
         }
         self.state["recorded"][key] = held
         return held
@@ -1805,6 +1831,9 @@ class Poller:
             # so it is retried ONCE, without the flag, and never again. A second refusal is a
             # refusal about something else and is left alone.
             state, payload, detail = review_desk_run(rd, *facts, "--json")
+            # Remembered, because it says more than "no ledger id on this row": the move landed
+            # with the flag, so this build starts a round where a newer one moves a request.
+            self.record_old = True
         if state in ("absent", "broken"):
             # One install answers for every request, so there is nothing to learn from asking
             # again this tick — and a great deal to lose: at a 30s timeout, a hung binary asked
@@ -2051,10 +2080,20 @@ class Poller:
         compares them through `requested_key`. The other two read this instance's own ledger,
         and that lookup is left as it was — see `requested_key` for what it leaves uncovered.
 
-          1. **GitHub showed it this tick.** One request, one event. The GitHub pass is already
-             telling the Dispatcher about this request, on its own cadence and with its own
-             backlog flag, and Review Desk's copy is the record rather than a second source. Two
-             events for one request is two sessions on one review.
+          1. **GitHub showed it this tick, AND the GitHub pass speaks for its status.** One
+             request, one event: that pass is already telling the Dispatcher about this request,
+             on its own cadence and with its own backlog flag, and Review Desk's copy is the
+             record rather than a second source. Two events for one request is two sessions on
+             one review.
+
+             The second half of the condition is not decoration. The GitHub pass emits for a
+             status in `REDISPATCHABLE` and for a `skipped` key that came back, and for
+             `done`, `stopped` and `blocked` it says NOTHING — they are ALIVE, so they are
+             never recorded, and `returned` is false while the pull request stays present. A
+             review whose worker stopped before writing a brief is exactly that shape, and
+             suppressing Review Desk for it left both sources silent and the review stalled.
+             SKILL.md names the fifteen-minute re-offer as the net under a session that keeps
+             dying; this keeps it.
           2. **Somebody has already decided about this key** — `skipped` by the principal,
              `deferred` or `merged` by the work itself (`DECIDED`). They decided about the
              REQUEST, and the row this poller wrote is not a second opinion. Without this,
@@ -2086,7 +2125,7 @@ class Poller:
         The retry is the ticket's own instruction, so this is a stated limit rather than a
         choice reopened here.
         """
-        if requested_key(key) in self.requested:
+        if requested_key(key) in self.requested and entry.get("status") in REDISPATCHABLE:
             return True
         if entry.get("status") in DECIDED:
             return True
