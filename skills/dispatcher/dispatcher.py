@@ -545,6 +545,13 @@ REVIEW_DESK_TIMEOUT = 30
 # `{"error":{"code":"usage","message":"error: unexpected argument '--ledger' found ..."}}`.
 REVIEW_DESK_USAGE_REFUSAL = "usage:"
 
+# And the one refusal that means "there is no such review". `review_desk_run`'s own docstring
+# says an unknown review id is the only refusal this file asks for on purpose, so every OTHER
+# refusal — a locked database, a validation this file has not met — must not be read as a
+# record that has been deleted. Read off review-desk's `error.code` for a missing row, the same
+# code its `work list --review` refuses an unknown id with.
+REVIEW_DESK_MISSING_REFUSAL = "not_found:"
+
 # `harvest` gets its own, and the reason is that it is the one Review Desk command that is not a
 # local read: it asks GitHub for every open pull request a posted review is waiting on, so its
 # duration is a function of the network and of how many reviews a repository has, where every
@@ -681,6 +688,24 @@ def review_desk_run(rd: dict, *args: str, json_out: bool = True,
     state = "refused" if done.returncode == 1 else "broken"
     return state, None, (review_desk_detail(text) or fallback[:200]
                          or f"{argv[0]} {said} exited {done.returncode}")
+
+
+def review_id(value) -> int | None:
+    """A Review Desk review id as an int, from wherever it came from, or None.
+
+    **Two sources spell it differently and both are legitimate.** Review Desk answers `id` as a
+    number; the LEDGER carries `review_desk_id` as whatever `D ledger put review_desk_id=7` was
+    given, which is the string `"7"`. `Watcher.review_desk` already copes by calling `str()` on
+    it, and this is the same coping in the other direction. `bool` is excluded first because it
+    is an `int` in Python and `True` is not review 1.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
 
 def review_of(payload) -> dict | None:
@@ -1343,15 +1368,23 @@ class Poller:
             # something gives that repository a ledger entry the row is one the developer can
             # see and this poller will not dispatch from. The GitHub pass dispatches it, which
             # is what creates that entry.
-            if recording and status not in ALIVE and not entry.get("session_id"):
+            if recording and status not in ALIVE:
                 self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
-                                    pr.get("title"), every)
+                                    pr.get("title"), every, entry)
                 # **A dismissed review is not dispatched**, and nothing below this line runs
                 # for one: not the backlog, not the request, not the re-request. The developer
                 # took it out of play, in the dashboard, with a reason — the one decision of
                 # theirs that reaches this file as a reason not to act. GitHub goes on
                 # requesting the review either way, which is why the GitHub source needs
                 # telling at all: Review Desk's own list already leaves a dismissed review out.
+                #
+                # **Asked of every request that could be dispatched, which is not the same set
+                # as the requests that are written to.** Found in review: the two were one
+                # condition for a commit, and a `lost` entry carrying a `session_id` — a
+                # dismissed review whose worker died — fell outside it. Nothing read the
+                # dismissal, nothing said it, and a replacement was dispatched onto a review the
+                # developer had taken out of play, which is the one thing this is here to stop.
+                # Whether to WRITE is `record_request`'s question and is narrower.
                 if self.dismissed_request(rd, key, repo, pr):
                     continue
             common = dict(key=key, repo=repo, number=pr["number"], title=pr["title"], url=pr["url"],
@@ -1372,6 +1405,12 @@ class Poller:
                     emit("review_request", backlog=key in self.state["review_backlog"], **common)
             elif returned and status in ALIVE:
                 emit("review_rerequested", **common)
+        # Said here rather than after the commit below, because the commit is the thing a
+        # truncated page skips — and a truncated page is a FULL one, so the loop above ran,
+        # attempted its recordings, and may be holding the only evidence anybody has that the
+        # install is broken. Reported for 50 requests and lost for want of a return statement
+        # was found in review.
+        self.record_unreachable(rd, cfg, ledger, every)
         if not trusted:
             # Everything below this line commits "nothing is requested" as fact: it prunes the
             # start-up backlog, tells the Dispatcher that live reviews were cleared, and overwrites
@@ -1433,7 +1472,6 @@ class Poller:
         # entry is small and the write is on a row somebody said to leave alone.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
                                   if k in present or v.get("dismissed")}
-        self.record_unreachable(rd, cfg, ledger, every)
 
     def record_unreachable(self, rd: dict, cfg: dict, ledger: dict, every: int) -> None:
         """Say that Review Desk could not be reached, but only if nobody else will.
@@ -1462,7 +1500,7 @@ class Poller:
                  command=rd["command"], detail=detail)
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
-                       title: str | None, every: int) -> None:
+                       title: str | None, every: int, entry: dict) -> None:
         """Keep Review Desk's record of one review request current. Says nothing.
 
         `review open` is the command, and Review Desk's own README says why there is not one of
@@ -1513,6 +1551,19 @@ class Poller:
             return
         held = self.state["recorded"].get(key) or {}
         asked = f"review_desk|dismissal|{key}"
+        # **The ledger is a second source for the review's id, and the only one for a review
+        # this poller never recorded.** A worker writes `review_desk_id` on its entry before it
+        # records anything else, so a request picked up before this change existed — or one
+        # whose session opened the review itself — can still be READ for a dismissal here. With
+        # no id from either source there is nothing to read, and the window is left alone rather
+        # than spent: re-entering this branch every tick to learn nothing was found in review.
+        rid = review_id(held.get("review")) or review_id(entry.get("review_desk_id"))
+        # **A review a session has been linked to is never written to**, and the LEDGER is what
+        # says so first: the worker links its session a minute after it starts, where a read of
+        # the record is `reemit_after_secs` away. `session_id` on the entry rather than its
+        # status, because `lost`, `failed`, `discarded`, `merged` and `deferred` are all keys a
+        # session has held and the field survives every one of them.
+        linked = bool(entry.get("session_id")) or bool(held.get("session"))
         # **A review a session has been linked to is read and never written to either, and that
         # is a harder rule than the ledger's.** Review Desk moves an unstarted request's head and
         # starts a NEW ROUND once a session is linked — measured at review-desk 2180224: link a
@@ -1532,12 +1583,11 @@ class Poller:
         # and it arrived here by the head test running first. The record goes on naming the
         # commit Review Desk was TOLD, so a restore puts the two out of step and the very next
         # tick moves it, which is where moving it belongs.
-        writing = (not held.get("dismissed") and not held.get("session")
-                   and held.get("head") != head)
+        writing = not held.get("dismissed") and not linked and held.get("head") != head
         if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
-        elif not self.read_stopped and self.due(asked, every):
-            review = self.read_request(rd, key, held.get("review"))
+        elif rid is not None and not self.read_stopped and self.due(asked, every):
+            review = self.read_request(rd, key, rid)
             if review is None and not self.read_stopped:
                 # **The window is not spent on a read that did not happen.** `due` writes its
                 # marker when it is evaluated, so a Review Desk broken for one tick would
@@ -1577,7 +1627,10 @@ class Poller:
             "dismissed": bool(review.get("dismissed_at")),
             "reason": review.get("dismissed_reason"),
             # Whether a session has been linked to it, which is what makes a push the next ROUND
-            # rather than a move. Read, never written: `review link --session` is the worker's.
+            # rather than a move. Read, never written: `review link --session` is the
+            # worker's, and it covers what this instance's ledger cannot know — a review opened
+            # from the dashboard, or one a session linked itself to without this dispatcher
+            # claiming it.
             "session": review.get("session_id"),
         }
 
@@ -1586,7 +1639,14 @@ class Poller:
         """`review open`: the request, written. Returns the review, or None if it was not."""
         facts = ["review", "open", "--repo", repo, "--pr", str(number), "--head", head]
         if title:
-            facts += ["--title", title]
+            # `--title=<value>`, ONE argument, because a pull request may legitimately be called
+            # `-fix the thing` and clap reads a separate value beginning with `-` as a flag it
+            # has never heard of. Measured against review-desk 82c0a09: `--title "-fix the
+            # thing"` is refused with `usage: error: unexpected argument '-f' found`, which this
+            # file would then read as "this build has never heard of `--ledger`", retry without
+            # the flag, fail identically, and report a refusal — for every tick that pull
+            # request stayed open. `--title=-fix the thing` is accepted and stored verbatim.
+            facts.append(f"--title={title}")
         state, payload, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
         if state == "refused" and detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
             # An older Review Desk: it has `review open` and has never heard of `--ledger`. The
@@ -1627,7 +1687,23 @@ class Poller:
                      command=rd["command"], repo=repo, number=number, detail=detail,
                      example=True)
             return None
-        return review_of(payload)
+        review = review_of(payload)
+        if review is None:
+            # **Exit 0 with an answer this file cannot read is BROKEN, not nothing.**
+            # `review_desk_work` calls the same shape "too old to use" and so does this, and the
+            # reason it cannot be passed over quietly is what happens next: nothing is recorded,
+            # so the commit never matches, so `writing` is true again on the following tick and
+            # on every tick after it — one WRITE per request per tick, for ever, which is the
+            # churn this whole path is arranged around. Found in review; the test that covered
+            # this shape ran one tick, which is exactly how it passed.
+            self.record_stopped = True
+            detail = (f"{rd.get('command')} review open exited 0 with an answer carrying no "
+                      f"review — too old to use")
+            self.record_broken = ("broken", detail)
+            if self.due(f"review_desk|record_unreadable|{repo}", every):
+                emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                     command=rd["command"], repo=repo, detail=detail)
+        return review
 
     def read_request(self, rd: dict, key: str, rid) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
@@ -1637,9 +1713,10 @@ class Poller:
         fifteen minutes on a request nobody has started is the `last_activity_at` problem the
         once-per-commit rule above exists to avoid. Nothing in Review Desk moves on a read.
 
-        A review that is GONE is forgotten rather than remembered as missing: the developer
-        deleted a review that never started, which they may only do while it never started, and
-        the next tick records the request again from GitHub. That is the intended shape rather
+        A review that is GONE — and only that refusal, `not_found` and no other — is forgotten
+        rather than remembered as missing: the developer deleted a review that never started,
+        which they may only do while it never started, and the next tick records the request
+        again from GitHub. That is the intended shape rather
         than a hole in it — delete is for a row that should not exist, and the way to tell this
         poller to leave a real request alone is to dismiss it.
         """
@@ -1666,7 +1743,14 @@ class Poller:
                 # well, which is why `record_stopped` is the wrong flag for it.
                 self.read_stopped = True
                 return None
-            self.state["recorded"].pop(key, None)
+            if detail.startswith(REVIEW_DESK_MISSING_REFUSAL):
+                self.state["recorded"].pop(key, None)
+                return None
+            # Any other refusal is not a review that is gone — a locked database, a validation
+            # this file has not met — and forgetting the record for one would send the next tick
+            # to `review open`, which writes, possibly on a dismissed row. `review_desk_run`
+            # says an unknown review id is the only refusal this file asks for on purpose, so
+            # the rest are nothing learned and nothing forgotten.
             return None
         return review_of(payload)
 
@@ -1730,6 +1814,17 @@ class Poller:
         that IS still being made looks like a withdrawn one and nothing is dispatched for it.
         That tick says `source_empty` for its own reason, and the next healthy tick shows the
         request again.
+
+        **And what shape 3 cannot see, said plainly: a Review Desk too old for `--ledger`.** On
+        that build the recording is retried without the flag, so a request this poller recorded
+        and nobody claimed carries no ledger id at all — indistinguishable here from a review
+        opened in the dashboard, which must still be dispatched. So on such an install a
+        withdrawn, never-started request goes on being offered every `reemit_after_secs` until
+        somebody acts on it, which is the behaviour this shape removes everywhere else. Closing
+        it needs either a record that outlives the request — the growth this file's prune exists
+        to bound — or Review Desk saying who recorded a review, which is its side of the line.
+        The retry is the ticket's own instruction, so this is a stated limit rather than a
+        choice reopened here.
         """
         if requested_key(key) in self.requested:
             return True
