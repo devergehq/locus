@@ -3291,11 +3291,12 @@ def watch_stop_reason(key: str, state: dict,
     `review` buys DEV-959's fix without making any other worker deaf, and `key_mode` is where
     the two readers of that word agree.
 
-    **The worker always hears the merge before its eyes close.** `cmd_watch` tests this
-    function, then ticks, then sleeps — so the tick that first reads `merged` has already
-    emitted `pr_state` and written the cursor, and this stops on the pass after it. That
-    ordering is what lets `review.md` tell the worker to act on `pr_state`: the event is never
-    the one lost to the stop.
+    **The worker always hears the merge before its eyes close, and in the same pass.**
+    `Watcher.tick` runs `pull_request` — which emits `pr_state` and writes `pr_status` to the
+    cursor — and `cmd_watch` asks this question again immediately afterwards, so the stop and the
+    event the worker acts on come out of one pass rather than two. That ordering is what lets
+    `review.md` tell the worker to act on `pr_state`: the event is never the one lost to the
+    stop. See `cmd_watch`'s `stopped` for why the question is asked twice a pass.
 
     The third element of the return is **whether the ledger alone decided it**, which is what tells
     `cmd_watch` it may delete the cursor. Terminality read from the ledger is reconstructible on the
@@ -3365,12 +3366,37 @@ def cmd_watch(args) -> None:
     # first pass skipped them would have nothing to suppress and would report a ticket's whole
     # backlog the first time it did run them.
     last_full = 0.0
-    while True:
+
+    def stopped() -> bool:
+        """Emit and report, if this watcher is finished with its key. Read the cursor it holds.
+
+        **Called twice a pass, before the tick and after it, and the two answer different
+        questions.** The one before is about a key that was ALREADY finished when this process
+        started — `_common.md` arms the watcher inside a persistent Monitor, so an exiting
+        watcher may be relaunched at once, and a relaunch onto a dead key has to cost one file
+        read rather than the six GitHub calls a tick makes.
+
+        The one after is about a key this pass has just finished, and DEV-959 is why it is here:
+        the ticket asks that a worker whose pull request merges end "within one watch interval",
+        and with the check only at the top of the loop the stop waited out a whole sleep as well
+        — up to `watch_interval_secs` twice over, which on `tc-portal`'s 300 is ten minutes of a
+        watcher polling a pull request that has shipped. The tick that reads the merge has
+        already written `pr_status` to the cursor, so the answer costs one more `open()`.
+
+        After `--once`, deliberately. That flag means one pass and exit, and it already exits;
+        a stop reason on a run whose caller asked for exactly one pass would be a new emission
+        on a path that reads as "tick and go".
+        """
         stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
-        if stop:
-            status, why, from_ledger, reason = stop
-            emit("watch_stopped", key=args.key, reason=reason, status=status, ticks=ticks,
-                 cursor_removed=from_ledger and watcher.forget(), detail=why)
+        if not stop:
+            return False
+        status, why, from_ledger, reason = stop
+        emit("watch_stopped", key=args.key, reason=reason, status=status, ticks=ticks,
+             cursor_removed=from_ledger and watcher.forget(), detail=why)
+        return True
+
+    while True:
+        if stopped():
             return
         full = full_pass_due(last_full, load_config())
         if full:
@@ -3378,6 +3404,8 @@ def cmd_watch(args) -> None:
         watcher.tick(full=full)
         ticks += 1
         if args.once:
+            return
+        if stopped():
             return
         if args.max_ticks and ticks >= args.max_ticks:
             emit("watch_stopped", key=args.key, reason="max_ticks", ticks=ticks, cursor_removed=False,

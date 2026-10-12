@@ -1945,6 +1945,8 @@ ok "_common.md routes the pull_request stop reason"    "$(grep -c '\*\*.pull_req
 ok "  and no longer calls a merge nothing to do"       "$(grep -c 'expected after .discarded., .failed. or a merged PR' "$common_md")" 0
 ok "  its pr_state row separates review from the rest" "$(grep -c 'On a review, your work is over' "$common_md")" 1
 ok "  and the arming step says a review stops early"   "$(grep -c 'On a review it stops as soon as the PR merges or closes' "$common_md")" 1
+ok "  in the same pass that read the merge"            "$(grep -c 'it stops in the .same. pass that read the merge' "$common_md")" 1
+ok "  and no stale claim that it waits a pass"         "$(grep -c 'on the pass .after. the one that read' "$common_md")" 0
 ok "SKILL.md handles the worker's merge report"        "$(grep -c 'A review worker saying its pull request merged or closed' "$skill_md")" 1
 ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_request_closed. |' "$skill_md")" 1
 ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1

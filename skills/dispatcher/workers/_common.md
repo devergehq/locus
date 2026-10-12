@@ -31,8 +31,8 @@ wrong ledger or none at all.
    watching until the PR closes, which is what lets you answer a review that lands
    afterwards. **On a review it stops as soon as the PR merges or closes, whatever your
    status is**, because reviewing is the one mode where a closed PR means the work itself is
-   over — and it stops on the pass *after* the one that read the merge, so the `pr_state`
-   telling you is never the event lost to the stop.
+   over — and it stops in the *same* pass that read the merge, after emitting the `pr_state`
+   that tells you. So the event you act on is never the one lost to the stop.
 4. Read the ticket in full with the Linear MCP — the workspace is named in your dispatch block:
    `linear_get_issue` with `include: ["comments", "attachments"]`, plus its parent, sub-issues
    and relations.

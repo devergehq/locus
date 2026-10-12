@@ -277,6 +277,27 @@ put impl-test-1 mode=implement status=active --by test
 fresh
 ok "an implement worker is NOT told on arming"    "$(ghwatch impl-test-1 --pr o/r#1 --once)" 0
 ok "  so it writes no false done"                 "$(says '"event": "pr_state"')" no
+# The merge is seen and acted on in the SAME pass, which is what the ticket's "within one watch
+# interval" asks for. With the stop check only at the top of the loop it waited out a sleep as
+# well -- on tc-portal's 300-second interval, ten minutes of a watcher polling a shipped pull
+# request. `--max-ticks 5` bounds the run; the stop must beat it to the exit.
+echo '{"head":{"sha":"deadbee"},"state":"open","merged":false}' > "$work/pr.json"
+put gh-test-1 mode=review status=active --by test
+fresh
+run_gh=$(ghwatch gh-test-1 --pr o/r#1 --once)
+echo '{"head":{"sha":"deadbee"},"state":"closed","merged":true}' > "$work/pr.json"
+interval 1
+ok "a merge stops the watcher in the same pass"   "$(ghwatch gh-test-1 --pr o/r#1 --max-ticks 5)" 0
+ok "  after one tick, not two"                    "$(python3 -c "
+import json
+print(*[e['ticks'] for e in map(json.loads, open('$work/out')) if e['event'] == 'watch_stopped'])")" 1
+ok "  with the pull_request reason"               "$(says '"reason": "pull_request"')" yes
+ok "  and not by running out of ticks"            "$(says max_ticks)" no
+# `--once` is left alone: it means one pass and exit, and it already exits.
+fresh
+ok "--once over a merge still just ticks"         "$(ghwatch gh-test-1 --pr o/r#1 --once)" 0
+ok "  and emits no stop reason"                   "$(says watch_stopped)" no
+
 # It still hears the TRANSITION, which is the path implement.md was written against and which
 # this must not have taken away: arm over an open pull request, then merge it under the watcher.
 echo '{"head":{"sha":"deadbee"},"state":"open","merged":false}' > "$work/pr.json"
