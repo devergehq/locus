@@ -263,5 +263,250 @@ import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint a
 head = '### Should · F1 · a title'
 print(bool(r.HEAD_SEV.search(head)), bool(r.SEV.search(head)))")" "True False"
 
+
+echo "The shape Review Desk composes (DEV-929)"
+
+# The body and the four threads below are not written by hand: they are what
+# `review-desk draft handover --review <id> --json` printed for an approved draft of six
+# findings, four of them carrying a line inside the diff, built on review-desk 13a78ee. That
+# is the shape every posted review now has, so it is the shape this linter has to read.
+#
+# What it caught: `verdict.{blocker,should,nit}_split` added every section heading to the
+# table's rows, and in this shape a finding with nowhere to anchor has BOTH an index row and
+# a section. The two unanchored findings here were each counted twice, so a correct verdict
+# line failed twice over - "says 2 Should, rows hold 3" and "says 2 Nits, rows hold 3".
+# Before `unrowed`, this fixture scored 24/27 and exited 1.
+cat > "$work/composed.md" <<'EOF'
+**2 Blockers · 2 Should · 2 Nits — 6 open.** The export path ships columns the policy forbids.
+
+**Method** · read the export path and its callers · ran the suite · **0 suppressed** · **0 not verified** · **2 areas not reviewed** — detail at the end
+
+### Problem fit
+The change puts a column policy in front of the export path. That is the right shape for the problem.
+
+### Open — needs a decision
+
+| | Where | Finding | Status |
+| -- | -- | -- | -- |
+| 🔴 Blocker · F1 | [`ColumnPolicy.php:52`](https://github.com/acme/portal/blob/d41c8e2abc/app/Reporting/ColumnPolicy.php#L52) | The column policy is skipped when the definition names no columns | Open · on the code |
+| 🔴 Blocker · F2 | [`DeliverWebhook.php:57`](https://github.com/acme/portal/blob/d41c8e2abc/jobs/DeliverWebhook.php#L57) | A retried delivery carries no idempotency key | Open · on the code |
+| 🟠 Should · F3 | [`Writer.php:31`](https://github.com/acme/portal/blob/d41c8e2abc/app/Export/Writer.php#L31) | The export status is not checked before the file is written | Open · on the code |
+| 🟠 Should · F5 | [the pull request](https://github.com/acme/portal/pull/514) | The description does not say what happens to a skipped export | Open · in the body |
+| ⚪ Nit · F4 | [`WriterTest.php:12`](https://github.com/acme/portal/blob/d41c8e2abc/tests/WriterTest.php#L12) | The test name says what it does, not what it proves | Open · on the code |
+| ⚪ Nit · F6 | [the pull request](https://github.com/acme/portal/pull/514) | The changelog entry is missing | Open · in the body |
+
+### Should · F5 · The description does not say what happens to a skipped export
+
+**pre-existing** · `Open`
+
+**What** · the description says nothing about a skipped export.
+
+**Why it matters** · a reader cannot tell whether skipping is intended.
+
+**What I'd do** · say what a skipped export does.
+
+### Nit · F6 · The changelog entry is missing
+
+**pre-existing** · `Open`
+The changelog says nothing about the policy.
+
+<details><summary>How this review was made</summary>
+
+Suppressed: none. Not verified: none. Not reviewed: the migration, the seed data.
+</details>
+EOF
+cat > "$work/composed-t1.md" <<'EOF'
+> [!CAUTION]
+> **Blocker · F1** — The column policy is skipped when the definition names no columns · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t2.md" <<'EOF'
+> [!CAUTION]
+> **Blocker · F2** — A retried delivery carries no idempotency key · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t3.md" <<'EOF'
+> [!WARNING]
+> **Should · F3** — The export status is not checked before the file is written · `Open`
+>
+> **in diff** · `Open — needs a decision`
+>
+> **What** · the guard returns before the policy is read.
+>
+> **Why it matters** · an export ships columns the policy forbids.
+>
+> **What I'd do** · treat a definition naming no columns as deny.
+EOF
+cat > "$work/composed-t4.md" <<'EOF'
+⚪ **Nit · F4** — The test name says what it does, not what it proves · `Open`
+**in diff** · `Open`
+The name says what the test does, not what it proves.
+EOF
+# A thread comment as GitHub returns it, anchored where the hand-over said it sits.
+anchored_at () { python3 -c 'import json,sys; print(json.dumps({"id":int(sys.argv[1]),"user":{"login":"principal"},"pull_request_review_id":900,"path":sys.argv[2],"line":int(sys.argv[3]),"body":open(sys.argv[4]).read()}))' "$@"; }
+composed_threads="$(anchored_at 1000 app/Reporting/ColumnPolicy.php 52 "$work/composed-t1.md"), $(anchored_at 1001 jobs/DeliverWebhook.php 57 "$work/composed-t2.md"), $(anchored_at 1002 app/Export/Writer.php 31 "$work/composed-t3.md"), $(anchored_at 1003 tests/WriterTest.php 12 "$work/composed-t4.md")"
+
+# The shape before Review Desk composed anything: sections and no index at all. A section is
+# the only record of its finding there, so it still counts -- the fix narrows what is added to
+# the rows, and must not stop adding it. The second assertion is the control: with the count
+# wrong on the same body, the check still fails, so the first is not passing vacuously.
+fixture "[$(review 899 principal "$work/sectioned.md")]" '[]'
+run >/dev/null
+ok "with no index, a section still counts"      "$(rule verdict.should_split)" no
+ok "  and the check is live, not vacuous"       "$(ran verdict.should_split)" yes
+sed 's/^\*\*1 Should · 1 open\.\*\*/**2 Should · 1 open.**/' "$work/sectioned.md" > "$work/miscount.md"
+fixture "[$(review 899 principal "$work/miscount.md")]" '[]'
+run >/dev/null
+ok "  a wrong count on that body still fails"   "$(rule verdict.should_split)" yes
+ok "  naming what the body holds"               "$(says 'says 2 Should, rows hold 1')" yes
+
+fixture "[$(review 900 principal "$work/composed.md")]" "[$composed_threads]"
+ok "the composed body passes whole"             "$(run)" 0
+ok "a finding with a row and a section counts once" "$(rule verdict.should_split)" no
+ok "and so does an unanchored nit"              "$(rule verdict.nit_split)" no
+ok "the anchored findings still count"           "$(says 'says 2 Blockers, rows hold 2')" yes
+ok "six rows, two sections, four threads"       "$(says '6 open rows, 0 resolved rows, 2 body sections')" yes
+
+# The pairing itself, so that a change to the heading's or the row's shape fails here rather
+# than in a verdict count nobody can read.
+ok "a section whose finding has a row is dropped" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should \u00b7 F5 | [x](http://y) | the description says nothing | Open |'
+print(r.unrowed(['### Should \u00b7 F5 \u00b7 the description says nothing'], [row]))")" "[]"
+ok "a section whose finding has none is kept"   "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should \u00b7 F5 | [x](http://y) | the description says nothing | Open |'
+print(len(r.unrowed(['### Should \u00b7 F9 \u00b7 something else entirely'], [row])))")" "1"
+ok "with no number, the title pairs it"         "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+row = '| \U0001f7e0 Should | [x](http://y) | the description says nothing about it | Open |'
+print(r.unrowed(['### Should \u00b7 the description says nothing about it'], [row]))")" "[]"
+
+echo "The marker a session joins a comment to its finding by (DEV-929)"
+
+# Two findings on one line is ordinary -- a Should about what a line does, a Nit about what it
+# is called -- so `path` and `line` cannot tell their threads apart. Review Desk ends every
+# composed thread with `<!-- review-desk:F<seq> -->` to be joined on instead, and the two
+# threads below are its real output for a Should and a Nit on ONE line, harvested from
+# review-desk bae4f5e: same path, same line, different marker.
+#
+# The linter's part of that bargain is not to CHARGE the marker: a comment renders as nothing,
+# and `prose` measures what a reader reads. Measured before the change: each marker spent ~24
+# characters of a 700-character single-finding budget.
+ok "an HTML comment is not charged as prose"    "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = '> **Should · F3** — a title · \`Open\`\n>\n> **What** · x.\n\n<!-- review-desk:F3 -->'
+print('review-desk' in r.prose(body))")" "False"
+ok "  and the prose around it survives"         "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = '> **Should · F3** — a title · \`Open\`\n>\n> **What** · x.\n\n<!-- review-desk:F3 -->'
+print(r.prose(body))")" "Should · F3 — a title · Open What · x."
+ok "  a multi-line comment too"                 "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+print(r.prose('a <!-- one\ntwo --> b'))")" "a b"
+
+# Two threads on one line, each marked, and the body's index row count is still right.
+cat > "$work/sameline.md" <<'EOF'
+**1 Should · 1 Nit — 2 open.** The response is returned without checking its status.
+
+**Method** · read `DeliverWebhook` and its callers · ran the job's tests · **0 suppressed** · **1 area not reviewed** — Suppressed: none.
+
+### Problem fit
+Keeping the response is the right shape; the caller needs it to decide whether to retry.
+
+### Open — needs a decision
+| | Where | Finding | Status |
+| -- | -- | -- | -- |
+| 🟠 Should · F1 | [`DeliverWebhook.php:16`](https://github.com/o/r/blob/abc/jobs/DeliverWebhook.php#L16) | the response is returned without checking its status | Open · on the code |
+| ⚪ Nit · F2 | [`DeliverWebhook.php:16`](https://github.com/o/r/blob/abc/jobs/DeliverWebhook.php#L16) | `$response` says its type, not its role | Open · on the code |
+EOF
+cat > "$work/sameline-t1.md" <<'EOF'
+> [!WARNING]
+> **Should · F1** — the response is returned unchecked · `Open`
+>
+> **in diff** · `Open`
+>
+> **What** · a.
+>
+> **Why it matters** · b.
+>
+> **What I'd do** · c.
+
+<!-- review-desk:F1 -->
+EOF
+cat > "$work/sameline-t2.md" <<'EOF'
+⚪ **Nit · F2** — the name says its type, not its role · `Open`
+**in diff** · `Open`
+short nit.
+
+<!-- review-desk:F2 -->
+EOF
+fixture "[$(review 910 principal "$work/sameline.md")]" \
+  "[$(anchored_at 8001 jobs/DeliverWebhook.php 16 "$work/sameline-t1.md"), \
+    $(anchored_at 8002 jobs/DeliverWebhook.php 16 "$work/sameline-t2.md")]"
+ok "two threads on one line lint clean"         "$(run)" 0
+ok "  and the marker is in the body GitHub returns" "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(sum('<!-- review-desk:F' in t['body'] for t in threads))")" 2
+ok "  one marker each, so the join is unique"   "$(python3 -c "
+import json, re
+threads = json.load(open('$work/fix/comments.json'))
+keys = [re.findall(r'<!-- review-desk:(F\d+) -->', t['body']) for t in threads]
+print(sorted(k[0] for k in keys if len(k) == 1))")" "['F1', 'F2']"
+# `set([...])` rather than a set comprehension: the harness runs under `sh`, and a `{` with a
+# comma in it is brace expansion -- the comprehension was expanded into two broken variants that
+# each raised a SyntaxError, and the assertion then compared empty to empty and "passed".
+# The marker's measured position, which the brief states and a worker relies on: last line,
+# blank line above it, outside the alert rail -- and a nit, which has no rail, the same way.
+ok "  the marker is the body's last line"       "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(all(t['body'].rstrip().splitlines()[-1].startswith('<!-- review-desk:F') for t in threads))")" "True"
+ok "  with a blank line above it"               "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(all(t['body'].rstrip().splitlines()[-2] == '' for t in threads))")" "True"
+ok "  and outside the alert rail, nit included" "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(sorted(set(t['body'].rstrip().splitlines()[-1][0] for t in threads)))")" "['<']"
+
+# A session that signs its comments appends after Review Desk's marker, because
+# `threads.marker_last` reads the body's last physical line. Both orders, so the assertion
+# says which one is wrong rather than only that one is right.
+ok "an agent marker after it keeps marker_last" "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = 'x\n\n<!-- review-desk:F3 -->\n<sub>agent:DEV-9/review</sub>'
+print(bool(r.MARKER.search(body.strip().splitlines()[-1])))")" "True"
+ok "  and before it does not"                   "$(python3 -c "
+import sys; sys.path.insert(0,'$root/skills/review-craft'); import review_lint as r
+body = 'x\n\n<sub>agent:DEV-9/review</sub>\n<!-- review-desk:F3 -->'
+print(bool(r.MARKER.search(body.strip().splitlines()[-1])))")" "False"
+ok "  while the join survives either order"     "$(python3 -c "
+import re
+one = 'x\n\n<!-- review-desk:F3 -->\n<sub>agent:K/review</sub>'
+two = 'x\n\n<sub>agent:K/review</sub>\n<!-- review-desk:F3 -->'
+print(sorted(set(re.search(r'review-desk:(F\d+)', b).group(1) for b in (one, two))))")" "['F3']"
+
+ok "  which path and line could not be"         "$(python3 -c "
+import json
+threads = json.load(open('$work/fix/comments.json'))
+print(len(set([(t['path'], t['line']) for t in threads])), 'key for', len(threads), 'threads')")" "1 key for 2 threads"
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

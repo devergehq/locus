@@ -1823,7 +1823,12 @@ ok "  and it checks for a filing before filing"        "$(grep -c 'review.nit_ti
 # permission to post. Said in the row and again in the section.
 ok "  filing is not a sign-off, said twice"            "$(grep -c 'not a sign-off' "$worker_md")" 2
 ok "  and the button text the report moves"            "$(grep -c 'Queued as one ticket' "$worker_md")" 1
-ok "  each event row names its section, not its distance" "$(grep -c 'exactly as \*\*' "$worker_md")" 2
+# Counted by name rather than by the prefix `exactly as **`. The prefix is good practice
+# anywhere -- DEV-929 added a third use of it, pointing at **The draft, and then wait** from the
+# posting steps -- so counting it made a correct cross-reference look like a regression here.
+# What this assertion is for is that each of the two event rows names its section.
+ok "  the approved row names its section"            "$(grep -c 'exactly as \*\*Posting exactly once\*\*' "$worker_md")" 1
+ok "  and the nits row names its own"                "$(grep -c 'exactly as \*\*Filing the held-back' "$worker_md")" 1
 ok "  and a null ticket blocks the filing, not the session" "$(grep -c 'file nothing until they answer' "$worker_md")" 1
 ok "  a merged pull request does not cancel the ticket"  "$(grep -c 'merged pull request does not cancel' "$worker_md")" 1
 ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1
@@ -4632,6 +4637,21 @@ restore acme/portal 412
 age_marker 'review_desk|dismissal|gh-portal-412'
 rc=$(run "$work/nobacklog.py" poll 1)
 ok "  without it a restored request auto-dispatches"   "$(says '"backlog": false')" yes
+# A citation's hash is a commit on a Review Desk branch, and a rebase rewrites it. On 12 October
+# 2026 all four this brief cited had stopped resolving at once, so a reader following any of them
+# found nothing and could not tell whether the claim had ever been true. These two assertions are
+# the guard: the brief says what a hash is and what to do when it has gone, and no citation points
+# at one of the four known-dead ones. Short single-line substrings, because the prose rewraps.
+ok "the brief says what its hashes are"             "$(grep -c 'hashes in this file are where a claim was measured' "$brief_md")" 1
+ok "  and that a rebase deletes them"               "$(grep -c 'a rebase rewrites them' "$brief_md")" 1
+# Matched as `review-desk <hash>`, the form a citation takes, NOT as a bare hash: the note names
+# f762e61 on purpose as the case that died within hours of being written, and an assertion that
+# forbade the mention would delete the evidence for the rule it is guarding.
+ok "  offers none of the five dead ones as evidence" "$(grep -cE 'review-desk `(a64f8a9|13a78ee|bae4f5e|c17d335|f762e61)`' "$brief_md" || true)" 0
+# f762e61 joined that list the day it was written: it replaced one of the four on 12 October 2026
+# and its pull request rebased again before merging, so it died within hours. The citations now
+# name master, where a merge commit is not rewritten, and this asserts the brief got there.
+ok "  and cites master instead"                     "$([ "$(grep -c '41bbc10' "$brief_md")" -gt 0 ] && echo yes || echo no)" yes
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
