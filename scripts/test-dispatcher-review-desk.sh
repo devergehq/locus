@@ -4,6 +4,9 @@
 # Three things are stood in for, and nothing else is:
 #
 #   review-desk  a shell script on PATH that answers from a recorded document and a mode file.
+#                Since DEV-945 one of its commands is a small STORE rather than a recorded
+#                answer -- `review open`, whose whole behaviour is what a second call does --
+#                and the run at the bottom of this file drives the real binary instead.
 #                The real binary is Rust and needs a database; a recorded answer is what lets
 #                the four kinds, an empty list, exit 1 and exit 2 all be driven from one place.
 #                Every call it receives is appended to $work/rd.calls, so "the poller asked per
@@ -34,6 +37,13 @@ mkdir -p "$work/bin"
 PATH="$work/bin:$PATH"
 export PATH
 export RDWORK="$work"
+# A temporary database, before anything in this file can run a review-desk command. The
+# stand-in ignores it and the real binary at the bottom of this file needs it, and between
+# those two there is one case this line exists for: a real `review-desk` that reaches PATH by
+# some route $MINPATH did not anticipate would otherwise open the live store under
+# `~/.review-desk` -- and since DEV-945 the poller WRITES to it, which is how review 13 got
+# into Patrick's real database in the first place.
+export REVIEW_DESK_DB="$work/test.db"
 # Two PATHs, because "no review-desk on PATH" has to mean no review-desk on ANY entry. The
 # developer who runs this harness is the one most likely to have the real binary installed —
 # `~/.local/bin/review-desk` — and `hide` used to remove only the stand-in, so every absent-command
@@ -420,7 +430,80 @@ def document(review):
     }
 
 
+def opened():
+    path = work / "rd.opens.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def open_review(argv):
+    """`review open`, as review-desk 0e0bf1b answers it. DEV-945.
+
+    Every rule here was read off a binary built from that commit and run against a temporary
+    database, not off its prose:
+
+      the same head again      one review, `created` false, no round spent
+      a new head, unstarted    the review MOVES, `head_moved_from` naming the commit before
+      `--ledger`               written on the review, and the SECOND call with it writes again
+
+    A new head on a round somebody has STARTED is the next round, and this stand-in does not
+    model it, deliberately: the poller never records a review a session holds, so there is
+    nothing here that could exercise it, and the one thing that would -- a brief in the store --
+    is what the run against the real binary at the bottom of this file is for.
+
+    `$RDWORK/rd.open.mode` is this ONE command's health, so an older or refusing `review open`
+    can be driven while `work list` still answers. A whole install that is absent or broken is
+    `$RDWORK/rd.mode` and governs this command too, from the stand-in above.
+    """
+    # One argument per line, which is the only way an assertion can tell a title that arrived
+    # whole from one the shell split in two. `rd.calls` holds `"$*"`, and `$*` cannot say.
+    (work / "rd.open.argv").write_text("\n".join(argv) + "\n")
+    mode = (work / "rd.open.mode").read_text().strip() \
+        if (work / "rd.open.mode").exists() else "ok"
+    ledger = opt(argv, "--ledger")
+    if mode == "oldledger" and ledger is not None:
+        # An older Review Desk: `review open` is there and `--ledger` is not. clap's own usage
+        # error, which review-desk's `main.rs` remaps from 2 to 1 and gives the code `usage`.
+        refuse("usage", "error: unexpected argument '--ledger' found\n\nUsage: review-desk "
+                        "review open --repo <OWNER/REPO> --pr <N> --head <SHA>")
+    if mode == "broken":
+        refuse("cannot_open_database", "scripted broken review open", 2)
+    if mode == "refused":
+        # A refusal that is NOT about an argument this build has never heard of, so nothing may
+        # retry it: it is about this request.
+        refuse("not_found", "no repository acme/portal")
+    repo, pr, head = opt(argv, "--repo"), opt(argv, "--pr"), opt(argv, "--head")
+    if not repo or not pr or not head:
+        refuse("usage", "the following required arguments were not provided: --repo --pr --head")
+    store = opened()
+    slot = "%s#%s" % (repo, pr)
+    held = store.get(slot)
+    if held is None:
+        held = {"id": len(store) + 1, "head": head, "ledger": ledger, "round": 1}
+        created, moved = True, None
+    elif held["head"] == head:
+        created, moved = False, None
+        if ledger is not None:
+            held["ledger"] = ledger
+    else:
+        created, moved = False, held["head"]
+        held["head"] = head
+        if ledger is not None:
+            held["ledger"] = ledger
+    store[slot] = held
+    (work / "rd.opens.json").write_text(json.dumps(store))
+    review = {"id": held["id"], "repo": repo, "pr": int(pr), "head_sha": head,
+              "round": held["round"], "title": opt(argv, "--title"),
+              "ticket_id": opt(argv, "--ticket"), "ledger_id": held["ledger"],
+              "session_id": None}
+    print(json.dumps({"review": review, "created": created, "head_moved_from": moved,
+                      "carryable": None}))
+    raise SystemExit(0)
+
+
 argv = sys.argv[1:]
+if argv[:2] == ["review", "open"]:
+    open_review(argv)
+
 review = opt(argv, "--review")
 if review is None:
     refuse("missing_argument", "--review is required")
@@ -461,7 +544,12 @@ cat > "$work/bin/gh" <<'GHSTANDIN'
 printf '%s\n' "$*" >> "$RDWORK/gh.calls"
 case "$*" in
   *"api graphql"*)
-    echo '{"data":{"search":{"issueCount":0,"nodes":[]}}}'; exit 0 ;;
+    # A page of review requests, from a document when one has been written and an empty page
+    # otherwise. Empty is the default on purpose: every assertion in this file that predates
+    # DEV-945 was written against a dispatcher whose GitHub source said nothing, and a page of
+    # rows appearing under them would change what they are testing.
+    cat "$RDWORK/gh.search" 2>/dev/null || echo '{"data":{"search":{"issueCount":0,"nodes":[]}}}'
+    exit 0 ;;
   "pr view "*)
     # Real `gh pr view` has NO `merged` field -- that one belongs to the REST API -- and it
     # exits 1 on an unknown one. The first version of this stand-in answered whatever it was
@@ -524,6 +612,8 @@ PY
   rm -f "$work/rd.parts"
   rm -f "$work/rd.harvest" "$work/rd.harvest.mode" "$work/rd.draft.mode"
   rm -f "$work/rd.nit" "$work/rd.held"
+  # DEV-945's three: the recorded reviews, how `review open` answers, and what GitHub shows.
+  rm -f "$work/rd.opens.json" "$work/rd.open.mode" "$work/rd.open.argv" "$work/gh.search"
   echo drafting > "$work/rd.draft.status"
 }
 
@@ -546,6 +636,46 @@ p.write_text(json.dumps(s))
 PY
 }
 no_sessions () { echo '{"sessions":[],"archived_sessions":[]}' > "$work/allele.json"; }
+
+# search_doc <repo> <pr> <head> [title] [draft]: the page of review requests GitHub answers
+# with. One row, because what is under test is what the poller does with a request rather than
+# how it pages. `title` of `-` is a row with no title at all, which `review open` must then not
+# be given a `--title` for.
+search_doc () {
+  python3 - "$work/gh.search" "$@" <<'PY'
+import json, sys, pathlib
+dest = pathlib.Path(sys.argv[1])
+repo, pr, head = sys.argv[2], int(sys.argv[3]), sys.argv[4]
+title = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5] else "Retry failed webhook deliveries"
+draft = len(sys.argv) > 6 and sys.argv[6] == "draft"
+node = {"number": pr, "title": None if title == "-" else title,
+        "url": "https://github.com/%s/pull/%d" % (repo, pr), "isDraft": draft,
+        "headRefOid": head, "createdAt": "2026-10-01T00:00:00Z",
+        "author": {"login": "someone"}, "repository": {"nameWithOwner": repo}}
+dest.write_text(json.dumps({"data": {"search": {"issueCount": 1, "nodes": [node]}}}))
+PY
+}
+
+# search_pair <repo> <pr1> <head1> <pr2> <head2>: two rows on one page, for the assertions
+# about what ONE install answering badly costs the rest of the page.
+search_pair () {
+  python3 - "$work/gh.search" "$@" <<'PY'
+import json, sys, pathlib
+dest = pathlib.Path(sys.argv[1])
+repo = sys.argv[2]
+rows = [(int(sys.argv[3]), sys.argv[4]), (int(sys.argv[5]), sys.argv[6])]
+nodes = [{"number": pr, "title": "Retry", "url": "https://github.com/%s/pull/%d" % (repo, pr),
+          "isDraft": False, "headRefOid": head, "createdAt": "2026-10-01T00:00:00Z",
+          "author": {"login": "someone"}, "repository": {"nameWithOwner": repo}}
+         for pr, head in rows]
+dest.write_text(json.dumps({"data": {"search": {"issueCount": len(nodes), "nodes": nodes}}}))
+PY
+}
+
+# Every `review open` the stand-in was asked for, one per line, and the whole argv of the last
+# one. `rd.calls` is the record; these two are how an assertion reads it.
+opens () { grep -c '^review open ' "$work/rd.calls" 2>/dev/null || true; }
+last_open () { grep '^review open ' "$work/rd.calls" | tail -1; }
 
 # work_doc <kind> <review_id> <repo> <pr> [entered_at] [ledger_id] [note]
 work_doc () {
@@ -592,6 +722,23 @@ if scenario == "poll":
     for i in range(ticks):
         print(json.dumps({"tick": i + 1}))
         p.tick()
+
+elif scenario == "poll_order":
+    # One tick with every emission APPENDED TO THE SAME FILE the stand-in logs its calls to, so
+    # "recorded before the request was emitted" is an assertion about one ordered record rather
+    # than about two files nobody can interleave. The events still go to stdout, so the usual
+    # `says` and `count` assertions work on this scenario too.
+    import pathlib
+    calls = pathlib.Path(os.environ["RDWORK"]) / "rd.calls"
+    spoke = m.emit
+
+    def tee(event, **fields):
+        with calls.open("a") as handle:
+            handle.write("emit %s\n" % event)
+        spoke(event, **fields)
+
+    m.emit = tee
+    m.Poller().tick()
 
 elif scenario == "poll_fresh":
     # One tick per PROCESS-equivalent: a new Poller each time, as a host driving `poll --once`
@@ -2724,6 +2871,237 @@ ok "  nor the problem-only read"                      "$(count 'problem-statemen
 show
 
 # =============================================================================================
+printf '\nDEV-945 -- the request is recorded the moment the poller sees it\n'
+# Review Desk heard nothing about a review request until a session ran `review open`, so it
+# could not say how many requests came in or which were never started. These assertions are
+# about the GitHub source, which is why they are the first in this file to put a row in the
+# search page: `$RDWORK/gh.search`, through the real `gh()` wrapper.
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "a request GitHub shows exits clean"                "$rc" 0
+ok "  and is emitted as a review_request"              "$(count '"event": "review_request"')" 1
+ok "  and is recorded in Review Desk"                  "$(opens)" 1
+ok "  with the repository, pull request, head and ledger" "$(last_open)" \
+  "review open --repo acme/portal --pr 412 --head sha412 --title Retry --ledger gh-portal-412 --json"
+ok "  the ledger id is this instance's own key"        "$(grep -c '^gh-portal-412$' "$work/rd.open.argv")" 1
+ok "  and no ticket is invented for it"                "$(grep -c '^--ticket$' "$work/rd.open.argv")" 0
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 "Retry failed webhook deliveries"
+rc=$(run "$disp" poll 1)
+ok "a title with spaces is ONE argument"               "$(grep -c '^Retry failed webhook deliveries$' "$work/rd.open.argv")" 1
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 -
+rc=$(run "$disp" poll 1)
+ok "a row with no title is still recorded"             "$(opens)" 1
+ok "  and --title is not passed empty"                 "$(grep -c '^--title$' "$work/rd.open.argv")" 0
+
+# The ordering the ticket is actually about: the record exists before anybody could have been
+# dispatched. One file, so this is a comparison of line numbers rather than of two logs.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll_order)
+first_open=$(grep -n '^review open ' "$work/rd.calls" | head -1 | cut -d: -f1)
+first_said=$(grep -n '^emit review_request$' "$work/rd.calls" | head -1 | cut -d: -f1)
+ok "the recording happens BEFORE the request is emitted" "$([ -n "$first_open" ] && [ -n "$first_said" ] && [ "$first_open" -lt "$first_said" ] && echo yes || echo no)" yes
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 session_id=live-9 --by test
+session live-9
+rc=$(run "$disp" poll 1)
+ok "a request a live session holds is NOT recorded"    "$(opens)" 0
+no_sessions
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$disp" poll 1)
+ok "a request whose session was lost IS recorded"      "$(opens)" 1
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 3)
+ok "three ticks on one commit record once"             "$(opens)" 1
+ok "  and the state remembers the commit"              "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+
+# A new commit on a request nobody started MOVES it in Review Desk, which is why the mark is
+# the pair and not the key: a dispatcher that recorded once per key would leave the record
+# pointing at a commit the author has replaced.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+search_doc acme/portal 412 sha999 Retry
+rc=$(run "$disp" poll 1)
+ok "a new head commit is recorded again"               "$(opens)" 2
+ok "  on the new commit"                               "$(last_open)" \
+  "review open --repo acme/portal --pr 412 --head sha999 --title Retry --ledger gh-portal-412 --json"
+ok "  and the review did not move round"               "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 1
+
+printf '\n  a Review Desk that is off, absent, broken or older\n'
+
+instance '{"mode":"off"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "off records nothing"                               "$(opens)" 0
+ok "  and says nothing about review_desk"              "$(count review_desk)" 0
+ok "  and still emits the request"                     "$(count '"event": "review_request"')" 1
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+hide
+rc=$(run "$disp" poll 1)
+ok "an absent Review Desk exits clean"                 "$rc" 0
+ok "  records nothing"                                 "$(opens)" 0
+ok "  adds no notice under auto"                       "$(count review_desk_unavailable)" 0
+ok "  and still emits the request"                     "$(count '"event": "review_request"')" 1
+show
+
+instance '{"mode":"on"}'
+search_doc acme/portal 412 sha412 Retry
+hide
+rc=$(run "$disp" poll 1)
+ok "under \`on\` an absent one is loud exactly once"     "$(count '"event": "review_desk_unavailable"')" 1
+ok "  which is the notice this file already had"       "$(says '"state": "absent"')" yes
+show
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo broken > "$work/rd.mode"
+rc=$(run "$disp" poll 1)
+ok "a broken Review Desk exits clean"                  "$rc" 0
+ok "  nothing is recorded"                             "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "  and the notice is still one notice"              "$(count '"event": "review_desk_unavailable"')" 1
+
+# Broken on one tick, mended on the next. The mark is written only when the call succeeded, so
+# an install that is fixed is used on the very next poll -- the rule the rest of this file keeps
+# for READING Review Desk, kept here for writing to it.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo broken > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "a \`review open\` that fails records nothing"        "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+echo ok > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "  and is tried again on the next tick"             "$(opens)" 2
+ok "  which records it"                                "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+
+# One install answers for every request, so an absent or broken one is asked ONCE a tick. At a
+# 30s timeout the alternative is one stalled tick per page of requests.
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo broken > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "two requests and a broken \`review open\`: asked once" "$(opens)" 1
+echo ok > "$work/rd.open.mode"
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+rc=$(run "$disp" poll 1)
+ok "  where a working one records both"                "$(opens)" 2
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo oldledger > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "an older Review Desk refusing --ledger exits clean" "$rc" 0
+ok "  is retried once, without the flag"               "$(opens)" 2
+ok "  and the second call carries no ledger id"        "$(last_open)" \
+  "review open --repo acme/portal --pr 412 --head sha412 --title Retry --json"
+ok "  the request is recorded all the same"            "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+ok "  and nothing extra is said about it"              "$(count review_desk_unavailable)" 0
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo refused > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "a refusal that is not about the flag is not retried" "$(opens)" 1
+ok "  records nothing"                                 "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "  says nothing"                                    "$(count review_desk_unavailable)" 0
+ok "  and does not stop the next tick trying"          "$(opens)" 1
+
+printf '\n  one request reaches the Dispatcher once\n'
+# A recorded request IS `review_requested` on `work list`, so without these three guards the
+# same request arrives as `review_request` from GitHub and `review_desk_requested` from Review
+# Desk in one tick, and two sessions could land on one review.
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+rc=$(run "$disp" poll 1)
+ok "a request GitHub showed is emitted once"           "$(count '"event": "review_request"')" 1
+ok "  and not a second time by Review Desk"            "$(count '"event": "review_desk_requested"')" 0
+
+# The same, with a ledger entry on the key, which is what tells THIS guard apart from the
+# no-such-entry one below: a review whose session was lost is work either source may name, and
+# the only thing stopping it being named twice is that GitHub named it first.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$disp" poll 1)
+ok "a lost review GitHub still requests is emitted once" "$(count '"event": "review_request"')" 1
+ok "  and not a second time by Review Desk"            "$(count '"event": "review_desk_requested"')" 0
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=skipped repo=acme/portal number=412 --by principal
+rc=$(run "$disp" poll 1)
+ok "a skipped request is recorded"                     "$(opens)" 1
+ok "  and offered to nobody"                           "$(count '"event": "review_desk_requested"')" 0
+ok "  nor emitted as a request"                        "$(count '"event": "review_request"')" 0
+
+# The same skip with GitHub silent, which is the shape that outlives the request: the poller's
+# own row stays on the work list for ever until the developer dismisses it.
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=skipped repo=acme/portal number=412 --by principal
+rc=$(run "$disp" poll 1)
+ok "a skipped request GitHub no longer shows stays quiet" "$(count '"event": "review_desk_requested"')" 0
+
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+rc=$(run "$disp" poll 1)
+ok "a recorded request with no ledger entry is not offered" "$(count '"event": "review_desk_requested"')" 0
+# The control, and without it the assertion above would pass for a dispatcher that had simply
+# stopped dispatching from Review Desk: a review the DASHBOARD opened carries no ledger id, and
+# it must still reach a session.
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412
+rc=$(run "$disp" poll 1)
+ok "  where a dashboard review still is"               "$(count '"event": "review_desk_requested"')" 1
+
+# A lost session's review, which carries a ledger id AND an entry: still work, and the one case
+# that tells the ledger-entry test apart from a test on the ledger id alone.
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$disp" poll 1)
+ok "  and so is one whose session was lost"            "$(count '"event": "review_desk_requested"')" 1
+
+# The other four kinds are about a review in progress, and GitHub goes on showing the request
+# for the whole of it. None of the three guards may touch them.
+for kind in brief_settled draft_sent_back draft_approved nits_to_ticket; do
+  instance '{"mode":"auto"}'
+  search_doc acme/portal 412 sha412 Retry
+  work_doc "$kind" 11 acme/portal 412 1791520282 gh-portal-412
+  echo '{"state":"OPEN"}' > "$work/pr.412.json"
+  rc=$(run "$disp" poll 1)
+  ok "a requested PR still relays $kind"               "$(count '"event": "review_desk_resume"')" 1
+done
+
+printf '\n  only the developer signs off\n'
+ok "nothing in the dispatcher dismisses, deletes, restores or approves" \
+   "$(grep -cE '"(dismiss|delete|restore|approve)"' "$disp")" 0
+ok "  and the only commands it runs of Review Desk are these" \
+   "$(grep -o 'review_desk_run(rd, [^,)]*' "$disp" | sed 's/.*run(rd, //' | sort -u | tr '\n' ' ')" \
+   '"--version" "db" "draft" "harvest" "work" *facts '
+ok "  where \`facts\` is \`review open\` and nothing else"  "$(grep -c '"review", "open", "--repo"' "$disp")" 1
+
+# =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'
 # Without these, every assertion above could be passing for a reason unrelated to the behaviour.
 # Each substitution is counted rather than assumed: a sed that matched nothing would turn a
@@ -3003,6 +3381,83 @@ echo '{"state":"OPEN"}' > "$work/pr.418.json"
 rc=$(run "$work/nokindhalf.py" poll 1)
 ok "no kind half: draft_approved takes the bypass too" "$(count '"event": "review_desk_resume"')" 1
 no_sessions
+
+printf '\n  DEV-945: recording on sight, and the three guards it needs\n'
+
+sed 's/^        if kind == "review_requested" and self\.request_spoken_for(key, entry, item):$/        if False:  # SPOKEN FOR REVERSED/' \
+    "$disp" > "$work/nospoken.py"
+ok "the whole-guard reversal changed one line"         "$(grep -c 'SPOKEN FOR REVERSED' "$work/nospoken.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+rc=$(run "$work/nospoken.py" poll 1)
+ok "no guard: one request reaches the Dispatcher twice" "$(( $(count '"event": "review_request"') + $(count '"event": "review_desk_requested"') ))" 2
+
+sed 's/^        if key in self\.requested:$/        if False:  # TICK TEST REVERSED/' \
+    "$disp" > "$work/notick.py"
+ok "the this-tick reversal changed one line"           "$(grep -c 'TICK TEST REVERSED' "$work/notick.py")" 1
+# With a ledger entry, so the no-such-entry guard cannot pass this one for it.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$work/notick.py" poll 1)
+ok "  without it Review Desk offers it again"          "$(count '"event": "review_desk_requested"')" 1
+
+sed 's/^        if entry\.get("status") == "skipped":$/        if False:  # SKIP TEST REVERSED/' \
+    "$disp" > "$work/noskip.py"
+ok "the skip reversal changed one line"                "$(grep -c 'SKIP TEST REVERSED' "$work/noskip.py")" 1
+# GitHub silent, so the this-tick guard cannot pass this one for it.
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+put gh-portal-412 mode=review status=skipped repo=acme/portal number=412 --by principal
+rc=$(run "$work/noskip.py" poll 1)
+ok "  without it a human skip is overridden"           "$(count '"event": "review_desk_requested"')" 1
+
+sed 's/^        return bool(item\.get("ledger_id")) and not entry$/        return False  # ORPHAN TEST REVERSED/' \
+    "$disp" > "$work/noorphan.py"
+ok "the no-such-entry reversal changed one line"       "$(grep -c 'ORPHAN TEST REVERSED' "$work/noorphan.py")" 1
+instance '{"mode":"auto"}'
+work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+rc=$(run "$work/noorphan.py" poll 1)
+ok "  without it a withdrawn request is dispatched"    "$(count '"event": "review_desk_requested"')" 1
+
+sed 's/^        if self\.state\["recorded"\]\.get(key) == head:$/        if False:  # MARK REVERSED/' \
+    "$disp" > "$work/nomark.py"
+ok "the mark reversal changed one line"                "$(grep -c 'MARK REVERSED' "$work/nomark.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nomark.py" poll 3)
+ok "no mark: three ticks record the same request thrice" "$(opens)" 3
+
+sed 's/^            if recording and status not in ALIVE:$/            if recording:  # ALIVE TEST REVERSED/' \
+    "$disp" > "$work/noalive.py"
+ok "the live-session reversal changed one line"        "$(grep -c 'ALIVE TEST REVERSED' "$work/noalive.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 session_id=live-9 --by test
+session live-9
+rc=$(run "$work/noalive.py" poll 1)
+ok "  without it a live session's review is written to" "$(opens)" 1
+no_sessions
+
+sed 's/^            self\.record_stopped = True$/            pass  # STOP REVERSED/' \
+    "$disp" > "$work/nostop.py"
+ok "the stop-once reversal changed one line"           "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 1
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo broken > "$work/rd.open.mode"
+rc=$(run "$work/nostop.py" poll 1)
+ok "  without it a broken install is asked per request" "$(opens)" 2
+
+sed 's/^            state, _, detail = review_desk_run(rd, \*facts, "--json")$/            pass  # RETRY REMOVED/' \
+    "$disp" > "$work/noretry.py"
+ok "the retry reversal changed one line"               "$(grep -c 'RETRY REMOVED' "$work/noretry.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo oldledger > "$work/rd.open.mode"
+rc=$(run "$work/noretry.py" poll 1)
+ok "  without it an older Review Desk records nothing" "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
