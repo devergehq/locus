@@ -18,14 +18,16 @@ signature unless they ask for one.
 ## The hashes in this file are where a claim was measured
 
 **They are commits on Review Desk's branches, and a rebase rewrites them.** `6b61a3f` is the
-DEV-929 branch rebased onto master `30eec73`; `f762e61` is the DEV-936 branch. Every one of the four hashes this
-file cited before 12 October 2026 had stopped resolving, which is the failure this note exists
-to stop repeating: a hash a reader cannot find looks checkable and is
+DEV-929 branch rebased onto master `30eec73`; `f762e61` is the DEV-936 branch. Every one of the
+four hashes this file cited before 12 October 2026 had stopped resolving at once, which is the
+failure this note exists to stop repeating: a hash a reader cannot find looks checkable and is
 not. So read a missing hash as a date rather than as a contradiction, and re-measure the claim
-beside it — each is one `--help`, one `--json` refusal or one `draft handover` away, and
-`scripts/test-review-lint.sh` and `scripts/test-review-desk-hunks-and-parts.sh` re-check the
-composed shape on every push. **Never read a flag's name or an error code off this file when the
-command will tell you.**
+beside it. Most are one `--help`, one `--json` refusal or one `draft handover` away; **the
+send-back has no command line at all** and is measured by posting to the dashboard's API on
+127.0.0.1, which is the developer's route and not yours. `scripts/test-review-lint.sh`
+re-checks the composed shape on every push, and `scripts/test-review-desk-hunks-and-parts.sh`
+re-checks it against a real binary whenever one is on PATH. **Never read a flag's name or an
+error code off this file when the command will tell you.**
 
 ## Steps
 
