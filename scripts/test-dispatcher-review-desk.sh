@@ -3586,6 +3586,18 @@ rc=$(run "$disp" poll 1)
 ok "a non-string ledger id does not throw"             "$(count '"event": "error"')" 0
 ok "  and exits clean"                                 "$rc" 0
 
+# **The look, on a repository GitHub spells with capitals.** `review find` is the one `--repo`
+# Review Desk does not normalise, and it echoes the query back, so a mismatch answers "no review
+# here" and looks like an answer. The stand-in is case-sensitive in the same way the real binary
+# is -- measured -- which is what makes this assertion mean anything.
+instance '{"mode":"auto"}'
+preopen acme/portal 412 oldhead 7 sess-dash
+search_doc Acme/Portal 412 Retry
+rc=$(run "$disp" poll 1)
+ok "the look finds a review on a mixed-case slug"      "$(remembered gh-Portal-412 review)" 7
+ok "  so nothing is written to it"                     "$(opens)" 0
+ok "  and no round is spent"                           "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 1
+
 # **A repository GitHub spells with capitals.** The two sources key the same pull request
 # differently — GitHub's `nameWithOwner` as registered, Review Desk's `repo` lower-cased — so
 # this is the case where comparing the keys as strings misses and both sources speak. No ledger
@@ -3790,6 +3802,20 @@ rc=$(run "$disp" poll 1)
 ok "a broken read still records a new request"         "$(remembered gh-portal-413 head)" sha413
 ok "  and says so against the call that failed"        "$(says '"call": "review show"')" yes
 ok "  naming the repository, not just its name"        "$(says '"repo": "acme/portal"')" yes
+
+# A request dismissed on the first tick still counts as backlog, so a restore later in the same
+# process asks before dispatching like everything else that was waiting when the poller started.
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+dismiss acme/portal 412 "closed unmerged"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "a request dismissed at start-up is not dispatched" "$(count '"event": "review_request"')" 0
+ok "  but is remembered as backlog"                    "$(python3 -c 'import json,sys;print("gh-portal-412" in json.load(open(sys.argv[1]))["review_backlog"])' "$inst/runtime/poll-state.json")" True
+restore acme/portal 412
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$disp" poll 1)
+ok "  so a restore asks before dispatching"            "$(says '"backlog": true')" yes
 
 # A read that failed does not spend the window: `due` writes its marker when it is evaluated,
 # so without clearing it a Review Desk broken for one tick would put the next read fifteen
@@ -4580,6 +4606,32 @@ rc=$(run "$work/nosayread.py" poll 1)
 echo oldshow > "$work/rd.show.mode"
 rc=$(run "$work/nosayread.py" poll 1)
 ok "  without it a build that cannot read is silent"   "$(count review_desk_unavailable)" 0
+
+sed 's|^    return (repo or "")\.strip()\.lower()$|    return repo  # REPO AS HANDED|' \
+    "$disp" > "$work/norepocase.py"
+ok "the canonical-repository reversal changed one line" "$(grep -c 'REPO AS HANDED' "$work/norepocase.py")" 1
+instance '{"mode":"auto"}'
+preopen acme/portal 412 oldhead 7 sess-dash
+search_doc Acme/Portal 412 Retry
+rc=$(run "$work/norepocase.py" poll 1)
+ok "  without it the look answers nothing and writes"  "$(opens)" 1
+ok "  spending a round on a review with a session"     "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
+
+sed 's/^                self.state\["review_backlog"\]\.append(key)$/                pass  # BACKLOG AFTER THE DISMISSAL/' \
+    "$disp" > "$work/nobacklog.py"
+# ONE line. `linear_triggers` appends to the same list, but from inside an `if backlog:` whose
+# body is indented differently, so this pattern reaches only the review path -- which is the
+# one under test. Pinning the count is what stops the sed quietly matching neither.
+ok "the backlog-order reversal changed one line"      "$(grep -c 'BACKLOG AFTER THE DISMISSAL' "$work/nobacklog.py")" 1
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+dismiss acme/portal 412 "closed unmerged"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nobacklog.py" poll 1)
+restore acme/portal 412
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$work/nobacklog.py" poll 1)
+ok "  without it a restored request auto-dispatches"   "$(says '"backlog": false')" yes
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

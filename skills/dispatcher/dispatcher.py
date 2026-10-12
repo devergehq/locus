@@ -722,6 +722,26 @@ def review_desk_run(rd: dict, *args: str, json_out: bool = True,
                          or f"{argv[0]} {said} exited {done.returncode}")
 
 
+def canonical_repo(repo: str) -> str:
+    """A repository as Review Desk stores it: trimmed and lower-cased.
+
+    **`review find` does not normalise its `--repo` and every other call here does, which is
+    how the look before the first write came to be dead on half the instances that have one.**
+    Measured against review-desk 82c0a09: `review open --repo Trilogy-Care/tc-portal` stores
+    `trilogy-care/tc-portal`, `work list --repo Trilogy-Care/tc-portal` finds it, and
+    `review find --repo Trilogy-Care/tc-portal` answers `reviews: []` — echoing the query back,
+    so the mismatch is invisible in the answer. GitHub hands this file `nameWithOwner` as the
+    repository is registered, and `Trilogy-Care/tc-portal` is the live instance's own slug, so
+    the look answered "no review here" for every request on it and the blind write it exists to
+    prevent happened anyway.
+
+    `review_desk_repos` has said this for its own callers since DEV-865 — "`DevergeHQ/Locus`
+    from a config would answer with an empty list and read as nothing waiting" — and the lesson
+    is the same one: send the canonical form, never the spelling you were handed.
+    """
+    return (repo or "").strip().lower()
+
+
 def same_commit(a, b) -> bool:
     """Are these the same commit, however the two sides spell it?
 
@@ -1397,6 +1417,14 @@ class Poller:
             self.requested.add(requested_key(key))
             entry = ledger.get(key) or {}
             status = entry.get("status")
+            # **Before the dismissal check below, which `continue`s.** Backlog-ness is a fact
+            # about this poller having started with work already waiting, and a dismissed
+            # request that is RESTORED later in the same process must still read as backlog —
+            # otherwise it alone auto-dispatches while every request seen on the same tick asks
+            # first, which is SKILL.md step 4's contract. Found by review of this branch.
+            returned = previous is not None and key not in previous
+            if backlog:
+                self.state["review_backlog"].append(key)
             # **Recorded before the request is emitted, which is the whole of DEV-945's first
             # gap.** Review Desk could not say how many requests had come in or which were never
             # started, because it heard nothing until a session ran `review open`. Now the
@@ -1455,9 +1483,6 @@ class Poller:
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
                           opened=(pr.get("createdAt") or "")[:10],
                           ledger_status=status, session_id=entry.get("session_id"))
-            returned = previous is not None and key not in previous
-            if backlog:
-                self.state["review_backlog"].append(key)
             if status == "skipped":
                 # The principal said skip. It stays quiet until the request is withdrawn and made again.
                 if returned:
@@ -1758,7 +1783,11 @@ class Poller:
     def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,
                      title: str | None, every: int) -> dict | None:
         """`review open`: the request, written. Returns the review, or None if it was not."""
-        facts = ["review", "open", "--repo", repo, "--pr", str(number), "--head", head]
+        # Canonical here as well. This one the store normalises for itself, so it is the same
+        # row either way — but two calls about one pull request spelling it two ways is the
+        # inconsistency the bug above grew in, and the cost of consistency is nothing.
+        facts = ["review", "open", "--repo", canonical_repo(repo), "--pr", str(number),
+                 "--head", head]
         if title:
             # `--title=<value>`, ONE argument, because a pull request may legitimately be called
             # `-fix the thing` and clap reads a separate value beginning with `-` as a flag it
@@ -1846,8 +1875,9 @@ class Poller:
         this call is part of the write path, the install answers the same way for every request,
         and a write nobody could look at first is the thing this exists to prevent.
         """
-        state, payload, detail = review_desk_run(rd, "review", "find", "--repo", repo,
-                                                 "--pr", str(number), "--json")
+        state, payload, detail = review_desk_run(rd, "review", "find", "--repo",
+                                                 canonical_repo(repo), "--pr", str(number),
+                                                 "--json")
         if state in ("absent", "broken"):
             self.record_stopped = True
             if state == "absent":
