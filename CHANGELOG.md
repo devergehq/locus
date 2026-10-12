@@ -13,6 +13,36 @@ refuses to build when they disagree.
 
 ### Added
 
+- **A review request reaches Review Desk the moment the poller sees it, and a review the
+  developer dismissed is not dispatched.** Review Desk heard nothing about a request until a
+  session ran `review open`, so it could not say how many requests had come in, which were never
+  started, or which were dropped — DEV-945's first gap, filed after a stray review nobody could
+  remove. `Poller.review_requests` now calls `review open --repo … --pr … --head … --title …
+  --ledger <its own key>` for each request no live session holds, **before** it emits the
+  request, and says nothing whatever about it: the `review_desk` pass asks the same install in
+  the same tick and is what reports it absent, broken or too old. A request the principal
+  skipped, or one nobody got to, is now a row on the Reviews list. Recorded once per key and
+  head commit, marked only on success, because a repeat `review open --ledger` writes the links
+  again and would leave every never-started request looking freshly touched for ever. An older
+  Review Desk that refuses `--ledger` (`error.code` `usage`) is retried once without it; the
+  first answer that is not `ok` stops recording for the rest of the tick, since one install
+  answers for every request and at a 30s timeout asking per request is one stalled tick per
+  page. **A recorded request is `review_requested` on Review Desk's own work list**, so three
+  guards keep one request reaching the Dispatcher once: a request GitHub showed this tick, one
+  the principal skipped, and one whose ledger entry does not exist — the last being a request
+  recorded on sight, never claimed, and no longer shown by GitHub, which stays in the record for
+  the developer rather than being offered for ever. **A dismissed review stops the dispatch**
+  (review-desk `dismissed_at`): `review_dismissed` names the review, its page and the
+  developer's own reason, once per request, and nothing below it runs. Whether a review is
+  dismissed has no commit of its own, so it is asked by reading — `review show`, at
+  `reemit_after_secs` — and a Review Desk that cannot be reached leaves the dismissal standing,
+  because not knowing is not a restore. A restore clears the said-once mark, so a second
+  dismissal is said again. A build older than the field answers without it, which reads as not
+  dismissed, which is exactly how this behaved before dismissal existed. **Dismissing, restoring
+  and deleting are the developer's, from the page**: all three are the dashboard's API and have
+  no command-line path at all, so no session can perform one. Nothing exits 2, and an instance
+  with Review Desk off, absent or older behaves exactly as it did.
+
 - **Every session the dispatcher starts says which allele group it belongs in.** On 12 October
   2026 the `tc-portal` project held 56 sessions in one flat list, and finding "the review of PR
   9586" meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,

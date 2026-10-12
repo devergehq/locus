@@ -486,6 +486,11 @@ def open_review(argv):
     repo, pr, head = opt(argv, "--repo"), opt(argv, "--pr"), opt(argv, "--head")
     if not repo or not pr or not head:
         refuse("usage", "the following required arguments were not provided: --repo --pr --head")
+    # NORMALISED, as the real store does: `normalise::head_sha` trims and lower-cases, and
+    # `normalise::repo` does the same to the slug. It matters to the caller rather than to the
+    # record -- a dispatcher that remembered this echo and compared it with GitHub's own
+    # spelling would read any difference as "the commit moved", every tick, for ever.
+    repo, head = repo.strip().lower(), head.strip().lower()
     store = opened()
     slot = "%s#%s" % (repo, pr)
     held = store.get(slot)
@@ -554,6 +559,10 @@ elif argv[:2] == ["review", "show"]:
         refuse("cannot_open_database", "scripted broken review show", 2)
     if show == "refused":
         refuse("not_found", "no review with id %s" % review)
+    if show == "oldshow":
+        # A build that has never heard of `review show`: clap's own refusal, code `usage`, which
+        # is a different fact from a review that is gone.
+        refuse("usage", "error: unrecognized subcommand 'show'")
     print(json.dumps(document(review)))
 else:
     # Loud, not null: a call site this stand-in has never seen must not pass by being answered.
@@ -3017,6 +3026,17 @@ ok "  on the new commit"                               "$(last_open)" \
   "review open --repo acme/portal --pr 412 --head sha999 --title Retry --ledger gh-portal-412 --json"
 ok "  and the review did not move round"               "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 1
 
+# The commit is remembered as GITHUB spelled it, which is the side the next tick compares. A
+# head GitHub gave in upper case is still one recording: Review Desk lower-cases what it stores,
+# so a dispatcher that remembered the answer rather than the question would see its own record
+# disagree with the search on every tick and write to the store on every tick.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 SHA412UPPER Retry
+rc=$(run "$disp" poll 3)
+ok "a head GitHub spells in upper case records once"   "$(opens)" 1
+ok "  remembered as GitHub spelled it"                 "$(remembered gh-portal-412 head)" SHA412UPPER
+ok "  and Review Desk stored its own form"             "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["head"])' "$work/rd.opens.json")" sha412upper
+
 printf '\n  a Review Desk that is off, absent, broken or older\n'
 
 instance '{"mode":"off"}'
@@ -3254,6 +3274,18 @@ age_marker 'gh-portal-412|review_request'
 rc=$(run "$disp" poll 1)
 ok "  and the request is recorded again"               "$(opens)" 2
 ok "  and still dispatched"                            "$(count '"event": "review_request"')" 1
+
+# A build with no `review show` at all refuses it as a usage error, which must not be read as a
+# review that is gone: forgetting the record would send every tick back to `review open`, and
+# that writes.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+echo oldshow > "$work/rd.show.mode"
+rc=$(run "$disp" poll 2)
+ok "a build with no \`review show\` is not a deleted review" "$(remembered gh-portal-412 head)" sha412
+ok "  so nothing is recorded again"                    "$(opens)" 1
+ok "  and the request is still dispatched"             "$(remembered gh-portal-412 dismissed)" False
 
 # A read that cannot be made leaves the dismissal where it was. Not knowing is not a restore.
 instance '{"mode":"auto"}'
@@ -3647,7 +3679,7 @@ ok "  without it an older Review Desk records nothing" "$(recorded_count)" 0
 
 printf '\n  DEV-945: and the dismissal that stops a dispatch\n'
 
-sed 's/^                if self\.dismissed_request(rd, key, repo, pr\["number"\], pr):$/                if False:  # DISMISSAL IGNORED/' \
+sed 's/^                if self\.dismissed_request(rd, key, repo, pr):$/                if False:  # DISMISSAL IGNORED/' \
     "$disp" > "$work/nodismiss.py"
 ok "the dismissal reversal changed one line"           "$(grep -c 'DISMISSAL IGNORED' "$work/nodismiss.py")" 1
 instance '{"mode":"auto"}'
@@ -3765,6 +3797,24 @@ else
 
   export REVIEW_DESK_DB="$work/test.db"
 fi
+
+sed 's/^            "head": head,$/            "head": review.get("head_sha") or head,  # HEAD ECHOED/' \
+    "$disp" > "$work/noheadq.py"
+ok "the remembered-commit reversal changed one line"   "$(grep -c 'HEAD ECHOED' "$work/noheadq.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 SHA412UPPER Retry
+rc=$(run "$work/noheadq.py" poll 3)
+ok "  without it one request is written three times"   "$(opens)" 3
+
+sed 's/^            if detail\.startswith(REVIEW_DESK_USAGE_REFUSAL):$/            if False:  # SHOW USAGE REVERSED/' \
+    "$disp" > "$work/noshowusage.py"
+ok "the no-such-command reversal changed one line"     "$(grep -c 'SHOW USAGE REVERSED' "$work/noshowusage.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/noshowusage.py" poll 1)
+echo oldshow > "$work/rd.show.mode"
+rc=$(run "$work/noshowusage.py" poll 2)
+ok "  without it an older build is written to again"   "$(opens)" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

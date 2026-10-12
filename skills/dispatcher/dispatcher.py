@@ -512,8 +512,8 @@ REVIEW_DESK_TIMEOUT = 30
 # only refusal in this file that means "too old for that argument" rather than "no".
 #
 # Read off the detail string rather than the document because `review_desk_run` hands back a
-# detail and not a payload on a non-zero exit, and the `f"{code}: {message}"` it composes is
-# three lines above. Measured against a binary built from review-desk 0e0bf1b:
+# detail and not a payload on a non-zero exit, and `review_desk_detail` below composes that
+# detail as `f"{code}: {message}"`. Measured against a binary built from review-desk 0e0bf1b:
 # `{"error":{"code":"usage","message":"error: unexpected argument '--ledger' found ..."}}`.
 REVIEW_DESK_USAGE_REFUSAL = "usage:"
 
@@ -1270,7 +1270,7 @@ class Poller:
                 # theirs that reaches this file as a reason not to act. GitHub goes on
                 # requesting the review either way, which is why the GitHub source needs
                 # telling at all: Review Desk's own list already leaves a dismissed review out.
-                if self.dismissed_request(rd, key, repo, pr["number"], pr):
+                if self.dismissed_request(rd, key, repo, pr):
                     continue
             common = dict(key=key, repo=repo, number=pr["number"], title=pr["title"], url=pr["url"],
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
@@ -1383,8 +1383,8 @@ class Poller:
         in this file re-asks on. Both keep `recorded[key]` current, and the caller decides from
         that record rather than from whichever call happened this tick.
 
-        Writes nothing and returns nothing: `self.state["recorded"][key]` is the whole answer,
-        and it carries the commit recorded, the review's id, and whether it is dismissed.
+        Returns nothing, because `self.state["recorded"][key]` is the whole answer: the commit
+        recorded, the review's id, and whether the developer has dismissed it.
         """
         if self.record_stopped or not head:
             # No head commit, no recording: `review open` requires one, and a search row without
@@ -1403,7 +1403,14 @@ class Poller:
             # reached is not the developer changing their mind.
             return
         self.state["recorded"][key] = {
-            "head": review.get("head_sha") or head,
+            # **GitHub's spelling of the commit, not Review Desk's.** This value exists to be
+            # compared against the next tick's `headRefOid`, and Review Desk normalises what it
+            # is given -- `normalise::head_sha` trims it and lower-cases it. Storing the echo
+            # would mean comparing a normalised commit with an unnormalised one, and any case
+            # that ever differed would read as "the commit moved" on every tick for ever: one
+            # `review open` WRITE per tick, which is the `last_activity_at` harm the
+            # once-per-commit rule exists to prevent, arriving silently by another door.
+            "head": head,
             "review": review.get("id"),
             # `dismissed_at` is the fact and the reason is for the reader, so they are kept
             # apart: a build older than migration 16 has neither key, which reads as not
@@ -1457,17 +1464,25 @@ class Poller:
         """
         if not isinstance(rid, int):
             return None
-        state, payload, _ = review_desk_run(rd, "review", "show", "--review", str(rid), "--json")
+        state, payload, detail = review_desk_run(rd, "review", "show", "--review", str(rid),
+                                                 "--json")
         if state in ("absent", "broken"):
             self.record_stopped = True
             return None
         if state == "refused":
+            if detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
+                # A build with no `review show` to run, which is a different fact from a review
+                # that is gone and must not be read as one. Forgetting the record here would
+                # send every following tick back to `review open`, and that WRITES: an older
+                # Review Desk would be given the `last_activity_at` churn this whole path is
+                # arranged to avoid. Nothing is learned and nothing is forgotten.
+                return None
             self.state["recorded"].pop(key, None)
             return None
         review = (payload or {}).get("review")
         return review if isinstance(review, dict) else None
 
-    def dismissed_request(self, rd: dict, key: str, repo: str, number: int, pr: dict) -> bool:
+    def dismissed_request(self, rd: dict, key: str, repo: str, pr: dict) -> bool:
         """Has the developer dismissed this request's review? Says so once if they have.
 
         **A dismissal is a decision, and the only one of the developer's decisions that reaches
@@ -1491,7 +1506,7 @@ class Poller:
             self.state["once"].pop(mark, None)
             return False
         if self.once(mark):
-            emit("review_dismissed", key=key, repo=repo, number=number,
+            emit("review_dismissed", key=key, repo=repo, number=pr["number"],
                  review_desk_id=held.get("review"), reason=held.get("reason"),
                  review=review_desk_link(rd, held.get("review")),
                  title=pr.get("title"), url=pr.get("url"))
