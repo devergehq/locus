@@ -3009,5 +3009,14 @@ rc=$(run "$work/nokindhalf.py" poll 1)
 ok "no kind half: draft_approved takes the bypass too" "$(count '"event": "review_desk_resume"')" 1
 no_sessions
 
+# A citation's hash is a commit on a Review Desk branch, and a rebase rewrites it. On 12 October
+# 2026 all four this brief cited had stopped resolving at once, so a reader following any of them
+# found nothing and could not tell whether the claim had ever been true. These two assertions are
+# the guard: the brief says what a hash is and what to do when it has gone, and no citation points
+# at one of the four known-dead ones. Short single-line substrings, because the prose rewraps.
+ok "the brief says what its hashes are"             "$(grep -c 'hashes in this file are where a claim was measured' "$brief_md")" 1
+ok "  and that a rebase deletes them"               "$(grep -c 'a rebase rewrites them' "$brief_md")" 1
+ok "  and cites none of the four dead ones"         "$(grep -cE 'a64f8a9|13a78ee|bae4f5e|c17d335' "$brief_md" || true)" 0
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

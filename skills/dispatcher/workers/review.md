@@ -15,6 +15,18 @@ this session, to post. Then post exactly what they approved, as a single review 
 they name (COMMENT / REQUEST_CHANGES / APPROVE) through `gh api`. It is their review. No agent
 signature unless they ask for one.
 
+## The hashes in this file are where a claim was measured
+
+**They are commits on Review Desk's branches, and a rebase rewrites them.** `6b61a3f` is the
+DEV-929 branch rebased onto master `30eec73`; `f762e61` is the DEV-936 branch. Every one of the four hashes this
+file cited before 12 October 2026 had stopped resolving, which is the failure this note exists
+to stop repeating: a hash a reader cannot find looks checkable and is
+not. So read a missing hash as a date rather than as a contradiction, and re-measure the claim
+beside it — each is one `--help`, one `--json` refusal or one `draft handover` away, and
+`scripts/test-review-lint.sh` and `scripts/test-review-desk-hunks-and-parts.sh` re-check the
+composed shape on every push. **Never read a flag's name or an error code off this file when the
+command will tell you.**
+
 ## Steps
 
 **The understanding comes first — all of it, before a test is run or a lens applied — because its
@@ -137,7 +149,7 @@ API can approve a draft, and reaching for it would be signing off in your princi
    **Pass it only in a call that also passes `--ticket`**, unless you know the record already
    holds the id from an earlier round. The page draws the address *as* the id, so an address
    with no id to draw has nothing to be — and Review Desk refuses that call rather than storing
-   a link nothing can render. Measured on review-desk `a64f8a9`: an address alone is refused
+   a link nothing can render. Measured on review-desk `f762e61`: an address alone is refused
    with `invalid_value` naming **`ticket_id`**, and the store held zero reviews afterwards.
 
    **Read the flag's name from the command, not from this file.** `review-desk review open
@@ -788,8 +800,10 @@ regrade change the heading instead of leaving a second copy of the severity to a
 rather than its whole.** Review Desk builds the index from the findings themselves, hands each
 finding with a line inside the diff to GitHub as its own thread in the alert its live severity
 picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the body
-it composes for a six-finding draft with four of them anchored, on review-desk `13a78ee`:
-**27 of 27 checks in this repository's `review_lint.py` pass.** Nothing in the house style is
+it composes, on review-desk `6b61a3f`: a six-finding draft with four of them anchored hands
+over four threads, and keeps the other two as sections under a six-row index. **27 of 27 checks
+in this repository's `review_lint.py` pass** on that composed shape, which the fixture in
+`scripts/test-review-lint.sh` re-checks on every push. Nothing in the house style is
 relaxed here, and nothing in it is overridden here. The linter needed one fix of its own to get
 there — a finding with both a row and a section was counted twice — so an older copy of it
 reports two failures on a body that is correct.
@@ -994,7 +1008,7 @@ post again, on somebody's pull request, under your principal's name.
    prevent.
 
    **Two different refusals carry `draft_status`, and the status separates them.** Measured on
-   review-desk `bae4f5e`: an unapproved draft refuses with "the draft of review N is ready, and
+   review-desk `6b61a3f`: an unapproved draft refuses with "the draft of review N is ready, and
    only an approved draft is handed over"; an approved draft whose body predates the composition
    refuses with "…is approved, and a draft whose body is what its blocks compose to". Read the
    status, not the sentence.
@@ -1025,7 +1039,7 @@ post again, on somebody's pull request, under your principal's name.
    dead reviews.
 
    **The sign-off goes back with the draft, which is what makes this safe to wait on.** Measured
-   on review-desk `c17d335`: sending an approved draft back answers `200`, and afterwards
+   on review-desk `6b61a3f`: sending an approved draft back answers `200`, and afterwards
    `draft show` reads `sent_back` with `event` and `approved_at` **cleared** and the note
    carried. So the status your watcher polls cannot read `approved` on a draft that is waiting
    to be rewritten, and `draft put --sections` is accepted again — measured, the draft goes back
@@ -1098,14 +1112,14 @@ post again, on somebody's pull request, under your principal's name.
    it back verbatim, and it renders as nothing to a reader: the join is carried by the thing
    being joined.
 
-   Measured on review-desk `bae4f5e` and again on `c17d335`, on a blocker, a should and a nit:
+   Measured on review-desk `6b61a3f`, on a blocker, a should and a nit:
    **as Review Desk hands it over**, the body's last line is the marker, the line before it is
    blank, and it sits outside the alert rail — a nit, which has no rail, carries it the same
    way. "Last" is true of
    what you are handed; if you sign your comments, see below for what goes after it.
 
    **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
-   line does and a Nit about what it is called — and measured on review-desk `13a78ee`, two such
+   line does and a Nit about what it is called — and measured on review-desk `6b61a3f`, two such
    threads come back carrying one `path` and one `line` between them. Pairing on those has
    nothing to choose with, and `finding link` would attach each comment to whichever finding was
    found first: both calls return success, the record is wrong, and nothing says so.
@@ -1133,7 +1147,7 @@ post again, on somebody's pull request, under your principal's name.
 
    **Unless it failed with `draft_status` reading `sent_back`, and then retrying never works.**
    That is your principal taking the sign-off back in the window between your post and your
-   report. Measured on review-desk `c17d335`: `draft posted` refuses with "the draft of review N
+   report. Measured on review-desk `6b61a3f`: `draft posted` refuses with "the draft of review N
    is sent_back, and only an approved draft can be marked posted", and the review is left with
    **no `github_review_id`** — so nothing in the record says the review you just posted exists.
 
@@ -1141,7 +1155,7 @@ post again, on somebody's pull request, under your principal's name.
 
    - **Put the id in the record first: `review-desk review link --review <id> --github-review
      <the GitHub review id>`.** It writes `reviews.github_review_id` on its own, and that is the
-     whole of what it does here — measured on review-desk `c17d335`: the draft stays
+     whole of what it does here — measured on review-desk `6b61a3f`: the draft stays
      `sent_back` with no event, and the review's `session_id` and `ledger_id` are untouched. So
      the record says which review is on the pull request without anything claiming the draft was
      posted, and both facts stay true.
