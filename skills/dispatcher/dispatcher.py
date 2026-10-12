@@ -683,6 +683,24 @@ def review_desk_run(rd: dict, *args: str, json_out: bool = True,
                          or f"{argv[0]} {said} exited {done.returncode}")
 
 
+def review_of(payload) -> dict | None:
+    """The `review` object out of a Review Desk document, or None if there is not one.
+
+    **The `isinstance` is the point of the function.** `review_desk_run` hands back anything that
+    PARSES, so a document that is a top-level array or a string — an older build, a wrapper
+    script, a shell that printed something before the JSON — would make `payload.get` an
+    `AttributeError` in the middle of a poll tick. On this path that would throw out of
+    `review_requests` and emit no review request at all that tick, every tick: the opposite of
+    what every other answer from a strange build does here, which is to be called broken, said
+    once, and dispatched around. `review_desk_work` type-checks its own array for the same
+    reason and `cannot_be_told` names the failure in as many words.
+    """
+    if not isinstance(payload, dict):
+        return None
+    review = payload.get("review")
+    return review if isinstance(review, dict) else None
+
+
 def review_desk_work(rd: dict, *narrow: str) -> tuple[str, list, str]:
     """`work list`, which is the found test and the answer in the same call.
 
@@ -963,6 +981,15 @@ class Poller:
         # answers for every request, so an absent or broken one is asked once. See
         # `record_request`.
         self.record_stopped = False
+        # And whether READING a request's dismissal has been given up on: a build with no
+        # `review show` refuses every one of them, and asking per recorded request would be a
+        # subprocess per request per tick for ever. Separate from `record_stopped` because such
+        # a build records perfectly well — it is only the dismissal it cannot be asked about.
+        self.read_stopped = False
+        # The install-level failure the recording path met, as `(state, detail)`, kept for the
+        # one case where the `review_desk` pass will not report it: an instance with no
+        # repository for that pass to ask about. See the end of `review_requests`.
+        self.record_broken: tuple | None = None
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1128,6 +1155,8 @@ class Poller:
         # arbitrary.
         self.requested = set()
         self.record_stopped = False
+        self.read_stopped = False
+        self.record_broken = None
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
         # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
@@ -1392,6 +1421,33 @@ class Poller:
         # entry is small and the write is on a row somebody said to leave alone.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
                                   if k in present or v.get("dismissed")}
+        self.record_unreachable(rd, cfg, ledger, every)
+
+    def record_unreachable(self, rd: dict, cfg: dict, ledger: dict, every: int) -> None:
+        """Say that Review Desk could not be reached, but only if nobody else will.
+
+        **"Broken is loud in every mode but `off`" had a hole, and recording opened it wider.**
+        The `review_desk` pass is what reports an install absent or broken, and it returns
+        BEFORE probing anything when `review_desk_repos` is empty — an instance with an unedited
+        `repo_project_map` and no reviews in its ledger. That silence was defensible while
+        nothing else touched the install: there was nothing to be silent about. This path now
+        runs `review open` on such an instance, so the fact exists and was being thrown away —
+        a fresh `mode: on` instance could meet a broken Review Desk, record nothing, and say
+        nothing.
+
+        Said through the `review_desk` pass's own event, mode rule and rate-limit marks, so an
+        instance where BOTH could speak still hears one line: whichever runs first takes the
+        mark, and this one runs first.
+        """
+        if self.record_broken is None or review_desk_repos(cfg, ledger):
+            return
+        state, detail = self.record_broken
+        if state == "absent" and not review_desk_loud_when_absent(rd):
+            return
+        mark = "review_desk|absent" if state == "absent" else f"review_desk|{state}|{detail[:60]}"
+        if self.due(mark, every):
+            emit("review_desk_unavailable", state=state, mode=rd["mode"],
+                 command=rd["command"], detail=detail)
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
                        title: str | None, every: int) -> None:
@@ -1419,10 +1475,14 @@ class Poller:
         the one thing the dashboard reads that field for. Marking on success only is what keeps
         "an install you fix is used on the very next poll" true of this path as well.
 
-        **Silent in every mode, in every outcome.** The `review_desk` section asks the same
-        install about the same repositories in this same tick and is what reports it absent,
-        broken or too old, with its own rate limit. A second voice here would be the "nothing
-        extra said" that an instance without Review Desk is owed.
+        **Silent about the install, with one exception each way.** The `review_desk` section asks
+        the same install about the same repositories in this same tick and is what reports it
+        absent, broken or too old, so a second voice here would be the "nothing extra said" that
+        an instance without Review Desk is owed. The two exceptions are the outcomes nobody else
+        covers: a refusal of ONE recording, which that section never sees, and an install that is
+        absent or broken on an instance where that section has no repository to ask about and so
+        returns without probing at all. Both are said through the same event and the same rate
+        limit it uses, so an instance that has both voices still hears one line.
 
         **Two calls on two cadences, and the second is what makes a dismissal reach this
         poller.** `review open` runs when the recorded commit is not the one GitHub is showing,
@@ -1441,17 +1501,30 @@ class Poller:
             return
         held = self.state["recorded"].get(key) or {}
         asked = f"review_desk|dismissal|{key}"
-        if held.get("head") != head:
+        # **A record the developer has taken out of play is read and never written to**, whatever
+        # the author pushes to the pull request. `review open` on a new commit would move the
+        # dismissed review's head — Review Desk allows it, and a push is not the developer
+        # changing their mind — but it WRITES, which moves `last_activity_at` on a row somebody
+        # said to leave alone. That is the same harm the prune above keeps a dismissal to avoid,
+        # and it arrived here by the head test running first. The record goes on naming the
+        # commit Review Desk was TOLD, so a restore puts the two out of step and the very next
+        # tick moves it, which is where moving it belongs.
+        writing = not held.get("dismissed") and held.get("head") != head
+        if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
-        elif self.due(asked, every):
+        elif not self.read_stopped and self.due(asked, every):
             review = self.read_request(rd, key, held.get("review"))
-            if review is None:
+            if review is None and not self.read_stopped:
                 # **The window is not spent on a read that did not happen.** `due` writes its
                 # marker when it is evaluated, so a Review Desk broken for one tick would
                 # otherwise put the next read a whole `reemit_after_secs` away — and a
                 # dismissal made in between would go on being dispatched for that long. Cleared
                 # here, the next tick asks again, which is what makes "an install you fix is
                 # used on the very next poll" true of this branch as well as the other.
+                #
+                # Not when `read_stopped` is set, though: that read DID happen and answered that
+                # this build has no `review show` to run. Clearing the window there would ask
+                # again every tick, for every recorded request, for ever.
                 self.state["emitted"].pop(asked, None)
         else:
             return
@@ -1461,6 +1534,10 @@ class Poller:
             # reached is not the developer changing their mind.
             return
         self.state["recorded"][key] = {
+            # The commit Review Desk was TOLD, which on a read is the one it was told before: a
+            # dismissed row is not moved, so recording the commit GitHub is showing would claim
+            # a head the store does not hold and no restore would ever move it.
+            #
             # **GitHub's spelling of the commit, not Review Desk's.** This value exists to be
             # compared against the next tick's `headRefOid`, and Review Desk normalises what it
             # is given -- `normalise::head_sha` trims it and lower-cases it. Storing the echo
@@ -1468,7 +1545,7 @@ class Poller:
             # that ever differed would read as "the commit moved" on every tick for ever: one
             # `review open` WRITE per tick, which is the `last_activity_at` harm the
             # once-per-commit rule exists to prevent, arriving silently by another door.
-            "head": head,
+            "head": head if writing else (held.get("head") or head),
             "review": review.get("id"),
             # `dismissed_at` is the fact and the reason is for the reader, so they are kept
             # apart: a build older than migration 16 has neither key, which reads as not
@@ -1497,6 +1574,9 @@ class Poller:
             # once per request is one stalled tick per page of requests. Asked once, it costs
             # what the `review_desk` section's own call already costs.
             self.record_stopped = True
+            # Kept, not said: whether anybody says it is decided at the end of `review_requests`,
+            # where the repositories the `review_desk` pass would ask about are known.
+            self.record_broken = (state, detail)
             return None
         if state != "ok":
             # A refusal about THIS request rather than about the install, so the rest of the page
@@ -1507,14 +1587,20 @@ class Poller:
             # absent, broken and too-old, and a refusal of a recording is none of those. A
             # refusal that repeats records nothing at all, while `work list` goes on answering
             # `ok` with an empty list — so the Reviews page would read "no requests came in",
-            # which is the exact sentence DEV-945 exists to stop being unanswerable. Rate
-            # limited on the reason, not the request, because one cause refuses a whole page.
-            if self.due(f"review_desk|record_refused|{detail[:60]}", every):
+            # which is the exact sentence DEV-945 exists to stop being unanswerable.
+            #
+            # **Rate limited per REPOSITORY, and the pull request it names is one example rather
+            # than the extent of it.** A refusal is almost never about one request — a store that
+            # does not know `acme/portal` refuses every request in it — and the first draft of
+            # this keyed the limit on the refusal's own message, which names the request, so
+            # forty silently-unrecorded requests were reported as one. `review_desk_unknown_kind`
+            # already had this shape and says so in SKILL.md; this now says it too.
+            if self.due(f"review_desk|record_refused|{repo}", every):
                 emit("review_desk_unavailable", state="refused", mode=rd["mode"],
-                     command=rd["command"], repo=repo, number=number, detail=detail)
+                     command=rd["command"], repo=repo, number=number, detail=detail,
+                     example=True)
             return None
-        review = (payload or {}).get("review")
-        return review if isinstance(review, dict) else None
+        return review_of(payload)
 
     def read_request(self, rd: dict, key: str, rid) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
@@ -1536,6 +1622,7 @@ class Poller:
                                                  "--json")
         if state in ("absent", "broken"):
             self.record_stopped = True
+            self.record_broken = (state, detail)
             return None
         if state == "refused":
             if detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
@@ -1544,11 +1631,17 @@ class Poller:
                 # send every following tick back to `review open`, and that WRITES: an older
                 # Review Desk would be given the `last_activity_at` churn this whole path is
                 # arranged to avoid. Nothing is learned and nothing is forgotten.
+                #
+                # And nothing else is asked this tick. The answer is about the BUILD rather than
+                # about this review, so asking once per recorded request would be one subprocess
+                # per request per tick, for ever, for an answer that cannot change until the
+                # install does. Recording itself carries on: this build opens reviews perfectly
+                # well, which is why `record_stopped` is the wrong flag for it.
+                self.read_stopped = True
                 return None
             self.state["recorded"].pop(key, None)
             return None
-        review = (payload or {}).get("review")
-        return review if isinstance(review, dict) else None
+        return review_of(payload)
 
     def dismissed_request(self, rd: dict, key: str, repo: str, pr: dict) -> bool:
         """Has the developer dismissed this request's review? Says so once if they have.

@@ -25,9 +25,10 @@ refuses to build when they disagree.
   head commit, marked only on success, because a repeat `review open --ledger` writes the links
   again and would leave every never-started request looking freshly touched for ever. An older
   Review Desk that refuses `--ledger` (`error.code` `usage`) is retried once without it; the
-  first answer that is not `ok` stops recording for the rest of the tick, since one install
-  answers for every request and at a 30s timeout asking per request is one stalled tick per
-  page. **A recorded request is `review_requested` on Review Desk's own work list**, so three
+  first answer that is **absent or broken** stops recording for the rest of the tick, since one
+  install answers for every request and at a 30s timeout asking per request is one stalled tick
+  per page — where a refusal is about one request, so the rest of the page is still recorded and
+  the refusal is said once per repository. **A recorded request is `review_requested` on Review Desk's own work list**, so three
   guards keep one request reaching the Dispatcher once: a request GitHub showed this tick, one
   the principal skipped, and one whose ledger entry does not exist — the last being a request
   recorded on sight, never claimed, and no longer shown by GitHub, which stays in the record for
