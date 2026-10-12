@@ -738,6 +738,11 @@ def canonical_repo(repo: str) -> str:
     `review_desk_repos` has said this for its own callers since DEV-865 — "`DevergeHQ/Locus`
     from a config would answer with an empty list and read as nothing waiting" — and the lesson
     is the same one: send the canonical form, never the spelling you were handed.
+
+    **`review find` normalises its own `--repo` from review-desk 4c05319, and this stays.** The
+    measurement above was taken at 82c0a09 and is still true of it; a dispatcher ships to
+    whatever build is installed, so what was load-bearing against one build is belt and braces
+    against the next, and the canonical form is the right thing to send either way.
     """
     return (repo or "").strip().lower()
 
