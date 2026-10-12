@@ -227,6 +227,29 @@ WATCH_DEAD = {"discarded", "failed", "lost", "merged", "skipped", "deferred"}
 # `pr_status`, so this is read from the cursor file rather than from GitHub.
 PR_CLOSED = {"merged", "closed"}
 
+
+def search_pr_closed(pr: dict) -> bool:
+    """Is this row from `REVIEWS_Q` a pull request whose review is over?
+
+    **`is:open` in the query is not this guard, and that is the whole reason this exists.**
+    `github.review_query` is the instance's own config — an edited one need not carry the
+    filter at all — and GitHub's search index lags a merge by minutes, so the search goes on
+    matching `is:open` for a pull request that merged while the last tick was running. DEV-959's
+    report is exactly that window: a round opened on #9585 after the author pushed, and the
+    merge landed before anything was posted.
+
+    So the row's own `state` is asked for in the same query, at no extra API call, and is
+    believed over the filter that selected it. `PullRequestState` is non-null in GitHub's schema
+    and is one of `OPEN`, `CLOSED`, `MERGED`.
+
+    **A missing or unrecognised value reads as open**, which is the same disposition
+    `Poller.pr_state` documents for its own `None`: an item the dispatcher cannot place is
+    better dispatched and discarded by a human who can read the pull request than dropped
+    silently. The first is recoverable; the second loses the work.
+    """
+    state = pr.get("state")
+    return isinstance(state, str) and state.lower() in PR_CLOSED
+
 # Hours a `watch` process may run before it stops regardless of what the ledger says.
 # `limits.watch_max_hours` overrides it; the code default covers every config.json written
 # before this key existed, which is all of them.
@@ -887,6 +910,22 @@ def ledger_get(key: str) -> dict | None:
     return read_json(ledger_path(key), None)
 
 
+def key_mode(key: str, entry: dict | None) -> str:
+    """What kind of work this key is, from its entry and its name.
+
+    Written once because two callers must agree about it: `Watcher.__init__` picks the brief's
+    vocabulary from it, and `watch_stop_reason` decides from it whether a closed pull request
+    ends the watch. A key whose mode those two read differently is a watcher that stops for one
+    and not the other, which is the kind of disagreement that shows up as a worker nobody can
+    explain rather than as an error.
+
+    The ledger's own `mode` is the answer whenever it has one. The `gh-` fallback is for a
+    watcher armed before its dispatch wrote an entry — `cmd_watch` says such a key is a typo or
+    a race, and `pr_key` is the only thing that mints that prefix.
+    """
+    return (entry or {}).get("mode") or ("review" if key.startswith("gh-") else "implement")
+
+
 def ledger_all() -> dict[str, dict]:
     """Every ledger entry, skipping any file that will not parse.
 
@@ -997,7 +1036,7 @@ query($q: String!) {
   search(query: $q, type: ISSUE, first: %d) {
     issueCount
     nodes { ... on PullRequest {
-      number title url isDraft headRefOid createdAt author { login } repository { nameWithOwner }
+      number title url isDraft state headRefOid createdAt author { login } repository { nameWithOwner }
     } }
   }
 }""" % REVIEW_PAGE
@@ -1424,6 +1463,33 @@ class Poller:
             # `request_spoken_for` reads this set, and what it is answering is "did GitHub
             # already show the Dispatcher this request", not "was an event emitted for it".
             self.requested.add(requested_key(key))
+            # **A merged or closed pull request gets nothing from this pass**: it is not
+            # recorded, no `review_request` is offered for it and no `review_rerequested` is
+            # sent to a session working it. There is nothing left to revise, approve or post, so
+            # a round opened here is a round spent on a pull request that has already shipped —
+            # DEV-959's own harm, and the reason the request is dropped before `record_request`
+            # rather than after: recording WRITES, and it moves `review.last_activity_at` on a
+            # review nobody will ever act on again.
+            #
+            # **Kept in `present` on the way out, and the order of these two lines is the
+            # behaviour.** `prs_present` is this tick's answer to "what is GitHub showing", and
+            # a merged pull request the search still matches IS being shown. Dropping it would
+            # make the next tick read it as newly returned — `review_rerequested` at every
+            # `reemit_after_secs` for a live session, and a `review_cleared` against a session
+            # that is mid-round the moment it stopped being shown. Both are the false-clearance
+            # harm DEV-799 is about, reached through a different door.
+            #
+            # `self.requested` is added to above for the same reason: `request_spoken_for`'s
+            # first shape reads it as "GitHub showed the Dispatcher this request", and a merged
+            # one was shown. That keeps the Review Desk pass quiet about a `review_requested`
+            # on this key as well, which is the answer both passes should give.
+            #
+            # **A `nits_to_ticket` is untouched by this** and must stay so. It does not come
+            # from this pass at all — `review_desk_item` carries it, exempts it by name from the
+            # same merge check, and its request only becomes an item once the draft is reported
+            # posted, which a merge usually follows within the hour.
+            if search_pr_closed(pr):
+                continue
             entry = ledger.get(key) or {}
             status = entry.get("status")
             # **Before the dismissal check below, which `continue`s.** Backlog-ness is a fact
@@ -2745,7 +2811,7 @@ class Watcher:
         self.state = read_json(self.path, {})
         self.fresh = not self.state
         entry = ledger_get(key) or {}
-        self.mode = entry.get("mode") or ("review" if key.startswith("gh-") else "implement")
+        self.mode = key_mode(key, entry)
         self.own = f"agent:{key}/"
         if pr:
             repo, number = pr.rsplit("#", 1)
@@ -2892,6 +2958,22 @@ class Watcher:
             emit("pr_pushed", key=self.key, pr=n, previous=self.state.get("pr_head"), current=head)
         if not first and status != self.state.get("pr_status"):
             emit("pr_state", key=self.key, pr=n, previous=self.state.get("pr_status"), current=status)
+        elif first and status in PR_CLOSED:
+            # **The one piece of history a first tick does not suppress**, and the exception is
+            # the same one `review_desk()` makes a paragraph below for the same reason: a worker
+            # arming over a state that has ALREADY happened cannot be made to wait for it to
+            # happen again. A replacement dispatched after the merge, or a worker whose Monitor
+            # relaunched its watcher across the merge, would otherwise hear nothing — the suppressed
+            # first tick writes `pr_status` and the pass after it stops the watcher, so the only
+            # thing the worker ever receives is a `watch_stopped`, and `review.md` tells it to
+            # act on `pr_state`.
+            #
+            # Narrow on purpose: only a merged or closed pull request. An OPEN one on a first
+            # tick is the case the suppression was written for — nothing has happened yet, and
+            # saying "the pull request is open" to every worker on arming would be noise. The
+            # reviews, review comments and issue comments above stay suppressed on a first tick
+            # whatever the state is: those are a backlog, and this is one terminal fact.
+            emit("pr_state", key=self.key, pr=n, previous=None, current=status, first=True)
         self.state.update(pr_head=head, pr_status=status, pr_since=now_z(), pr_seen=sorted(seen)[-500:])
 
 
@@ -3078,13 +3160,45 @@ def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, s
     behaviour the principal asked for and the choice is his. It is not the default, and the
     reason is in the PR.
 
+    **A REVIEW key stops on a closed pull request whatever its status is, and that is DEV-959.**
+    The `done` branch below was the only merge-aware path, so a review worker that was anything
+    else — `active` mid-round, `needs-input`, `stopped` — kept its watcher to the ceiling. On 13
+    October 2026 the session for `tc-portal#9585` was one of them: a second round opened after
+    the author pushed, the pull request merged, and the session was still there hours later
+    telling its principal "the draft was never posted". Four rounds of #9568 are the same shape.
+
+    Reviewing is the one mode where a closed pull request means the work itself is over.
+    Nothing is left to revise, approve or post, so there is nothing a later event could ask the
+    worker for. Every other mode is left exactly as it was, deliberately and narrowly:
+    `implement.md` writes `status=done --note "merged"` only once it has seen the merge, and a
+    merged pull request still collects review comments its author should answer. Scoping this to
+    `review` buys DEV-959's fix without making any other worker deaf, and `key_mode` is where
+    the two readers of that word agree.
+
+    **The worker always hears the merge before its eyes close.** `cmd_watch` tests this
+    function, then ticks, then sleeps — so the tick that first reads `merged` has already
+    emitted `pr_state` and written the cursor, and this stops on the pass after it. That
+    ordering is what lets `review.md` tell the worker to act on `pr_state`: the event is never
+    the one lost to the stop.
+
     The third element of the return is **whether the ledger alone decided it**, which is what tells
     `cmd_watch` it may delete the cursor. Terminality read from the ledger is reconstructible on the
     next process; terminality read from a file you are about to delete is not.
     """
-    status = (ledger_get(key) or {}).get("status")
+    entry = ledger_get(key) or {}
+    status = entry.get("status")
     if status in WATCH_DEAD:
         return status, f"ledger status '{status}' — nothing will speak on this key again", True
+    pr_status = state.get("pr_status")
+    if key_mode(key, entry) == "review" and pr_status in PR_CLOSED:
+        # Cursor kept, for the reason the `done` path below keeps it and one more: `pr_status`
+        # lives only here, so deleting it would make the next relaunch re-derive the merge over
+        # a full tick's API calls — and `Poller.cannot_be_told` reads this very field to decide
+        # whether a `nits_to_ticket` can still reach the session. A deleted cursor answers that
+        # question the same way, so nothing is lost either way; an answer that costs no GitHub
+        # call is the better one.
+        return (status, f"a review whose pull request is {pr_status} — nothing is left to "
+                        f"revise, approve or post", False)
     if status == "done":
         if exit_on_done:
             return status, "ledger status 'done' and --exit-on-done was given", True
