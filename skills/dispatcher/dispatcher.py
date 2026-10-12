@@ -1688,11 +1688,18 @@ class Poller:
         # `review find` is a READ, costs one call per key this instance has no record of, and
         # answers the newest round first — measured at review-desk 82c0a09, dismissed rounds
         # included, which is right: the newest round is the row `review open` would act on.
+        # Whether this request may be WRITTEN to. A look that failed takes the write away and
+        # nothing else: the key that met the failure used to return here, which cancelled its own
+        # dismissal read — and the ledger may well hold the review id to read it with. Found by
+        # the review of the commit before this one, which is also where the `return` this
+        # replaces was shown to be load-bearing: dropping it without this flag would make
+        # `writing` true and produce exactly the blind write the look exists to prevent.
+        looked = True
         if not held and not self.look_stopped and not self.record_stopped:
             found = self.find_request(rd, repo, number, every)
             if self.record_stopped or found == "refused":
-                return
-            if found is not None:
+                looked = False
+            elif found is not None:
                 held = self.remember(key, found, found.get("head_sha") or head)
         asked = f"review_desk|dismissal|{key}"
         # **The ledger is a second source for the review's id, and the only one for a review
@@ -1746,7 +1753,7 @@ class Poller:
         # was written to prevent. `old` is set on the retry path and remembered, so such a build
         # records a request once and then leaves it alone: exactly the behaviour that preceded
         # this branch, which is what every other degradation here falls back to.
-        writing = (not self.record_stopped and not held.get("dismissed") and not linked
+        writing = (looked and not self.record_stopped and not held.get("dismissed") and not linked
                    and not (held.get("old") and held.get("head"))
                    and not same_commit(held.get("head"), head))
         if writing:
@@ -1772,7 +1779,15 @@ class Poller:
             # already recorded stands, including a dismissal: a Review Desk that cannot be
             # reached is not the developer changing their mind.
             return
-        self.remember(key, review, head if writing else (held.get("head") or head),
+        # The commit this record is compared against next tick: GitHub's after a WRITE, and
+        # after a read the one Review Desk is holding — which is the record's own if there is
+        # one and the answer's otherwise. GitHub's commit is the one thing it must not be on
+        # this path: the read became reachable with no prior record in the commit before this
+        # one, and storing GitHub's head there told every later tick the request was already
+        # recorded at a commit Review Desk had never been given, so it was never written again.
+        # Safe to store either spelling because `same_commit` normalises the comparison.
+        self.remember(key, review,
+                      head if writing else (held.get("head") or review.get("head_sha") or head),
                       old=self.record_old or bool(held.get("old")))
 
     def remember(self, key: str, review: dict, head: str, old: bool = False) -> dict:
@@ -1937,7 +1952,6 @@ class Poller:
                 self.read_stopped = True
             self.record_broken["review find"] = (state, detail, repo)
             return None
-        retried = False
         if state == "refused" and review_desk_unknown(detail):
             # **A build that has never heard of `review find`, which must not take the feature
             # with it.** Looking first is a guard against spending a round on a review somebody

@@ -3902,6 +3902,36 @@ rc=$(run "$disp" poll 1)
 ok "the key that met the old answer is marked old"     "$(remembered gh-portal-412 old)" True
 ok "  and the one after it is not"                     "$(remembered gh-portal-413 old)" False
 
+# **The key whose own look failed is still read.** The ledger may hold the review id, and a
+# dismissal readable from it must not be lost because the look for that same key came back
+# unreadable -- which would also make the key record-less again next tick, for ever.
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+dismiss acme/portal 412 "closed unmerged"
+search_doc acme/portal 412 sha999 Retry
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 review_desk_id=7 --by worker
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "a failed look still reads the dismissal"           "$(shows)" 1
+ok "  which is honoured"                               "$(remembered gh-portal-412 dismissed)" True
+ok "  nothing is written to it"                        "$(opens)" 0
+ok "  and nothing is dispatched for it"                "$(count '"event": "review_request"')" 0
+
+# And a read with no record of its own stores the commit REVIEW DESK holds, not GitHub's: the
+# record is compared against GitHub next tick, so a commit the store was never given would read
+# as "already recorded" and the request would never be written again.
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+search_doc acme/portal 412 sha999 Retry
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 review_desk_id=7 --by worker
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "a read with no record keeps Review Desk's commit"  "$(remembered gh-portal-412 head)" sha412
+echo ok > "$work/rd.find.mode"
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+ok "  so the next healthy tick moves the head"         "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["head"])' "$work/rd.opens.json")" sha999
+
 # A read that failed does not spend the window: `due` writes its marker when it is evaluated,
 # so without clearing it a Review Desk broken for one tick would put the next read fifteen
 # minutes away -- and a dismissal made in between would be dispatched for all of it.
@@ -4581,7 +4611,7 @@ age_marker 'gh-portal-412|review_request'
 rc=$(run "$work/noledgersession.py" poll 1)
 ok "  without it a push spends a round immediately"    "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
 
-sed 's/^        writing = (not self\.record_stopped and not held\.get("dismissed") and not linked$/        writing = (not self.record_stopped and not linked  # DISMISSAL WRITTEN TO/' \
+sed 's/^        writing = (looked and not self\.record_stopped and not held\.get("dismissed") and not linked$/        writing = (looked and not self.record_stopped and not linked  # DISMISSAL WRITTEN TO/' \
     "$disp" > "$work/nodismisswrite.py"
 ok "the leave-a-dismissal-alone reversal changed one line" "$(grep -c 'DISMISSAL WRITTEN TO' "$work/nodismisswrite.py")" 1
 instance '{"mode":"auto"}'
@@ -4784,6 +4814,30 @@ echo oldledger > "$work/rd.open.mode"
 echo 412 > "$work/rd.open.oldfor"
 rc=$(run "$work/noperkeyold.py" poll 1)
 ok "  without it the flag leaks onto another key"      "$(remembered gh-portal-413 old)" True
+
+sed 's/^                looked = False$/                return  # LOOK FAILURE RETURNS/' \
+    "$disp" > "$work/nolooked.py"
+ok "the look-failed reversal changed one line"         "$(grep -c 'LOOK FAILURE RETURNS' "$work/nolooked.py")" 1
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+dismiss acme/portal 412 "closed unmerged"
+search_doc acme/portal 412 sha999 Retry
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 review_desk_id=7 --by worker
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$work/nolooked.py" poll 1)
+ok "  without it that key's dismissal is never read"   "$(shows)" 0
+ok "  and a dismissed review is dispatched"            "$(count '"event": "review_request"')" 1
+
+sed 's|^                      head if writing else (held\.get("head") or review\.get("head_sha") or head),$|                      head if writing else (held.get("head") or head),  # GITHUB HEAD ON A READ|' \
+    "$disp" > "$work/noreadhead.py"
+ok "the read-commit reversal changed one line"         "$(grep -c 'GITHUB HEAD ON A READ' "$work/noreadhead.py")" 1
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412 7
+search_doc acme/portal 412 sha999 Retry
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 review_desk_id=7 --by worker
+echo notobject > "$work/rd.find.mode"
+rc=$(run "$work/noreadhead.py" poll 1)
+ok "  without it the record claims GitHub's commit"    "$(remembered gh-portal-412 head)" sha999
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
