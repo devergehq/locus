@@ -327,8 +327,11 @@ Four things that follow, and only the last asks anything of you:
   Desk's work list, so the poller keeps Review Desk quiet about any request GitHub showed it on
   that tick, about one you skipped, and about one it recorded that GitHub has stopped showing.
   Two events for one request is two sessions on one review.
-- **A request a live session holds is left alone**, because that session recorded it on the way
-  in and re-recording with a commit the author has since pushed would spend a review round.
+- **A request any session has been linked to is left alone**, and that is a harder rule than "a
+  live session": once a session is on a review, a new commit is the next ROUND rather than a
+  move, so re-recording after the author pushes would spend a round nobody asked for and put it
+  on Review Desk's list as a request of its own. The session that holds the review recorded it on
+  the way in, and a replacement opens the next round itself when it starts.
 - **A review your principal has dismissed is not dispatched**, and `review_dismissed` is where
   you hear about it. That is the only one of their decisions that reaches you as a reason not to
   act, and it reaches you once per request.

@@ -1315,10 +1315,22 @@ class Poller:
             # request the principal skipped, or one nobody got to, is a row the developer can
             # see and (once Review Desk has it) dismiss.
             #
-            # A request a live session holds is left alone: that session recorded it on the way
-            # in, and `review open` with a head the author has since pushed would spend a ROUND
-            # on a review somebody is working. Not a loss — a session that died before recording
-            # leaves a `lost` entry, which is not ALIVE, so the next tick records it.
+            # **A request any session has held is left alone, and the ledger is what says so.**
+            # That session recorded it on the way in, and once a session is linked to a review a
+            # new commit is the next ROUND rather than a move — so recording after the author
+            # pushes would spend a round nobody asked for, and put it on Review Desk's list as a
+            # request of its own. `session_id` on the entry is the test rather than the status,
+            # because `lost`, `failed`, `discarded`, `merged` and `deferred` are all keys a
+            # session has held and the field survives every one of them. The status test stays
+            # beside it for `blocked`, which is WORKING and has no session by design.
+            #
+            # Review Desk's own `session_id` is read as well — see `record_request` — but this
+            # one is what makes the protection immediate: the worker links its session a minute
+            # after it starts, and a read of the record is `reemit_after_secs` away.
+            #
+            # Not a loss for a review nobody picked up: a request with no session is recorded,
+            # and a session that died before linking leaves an entry whose `session_id` is the
+            # one the Dispatcher wrote at claim time, which is the correct answer either way.
             #
             # **Not gated on `review_desk_repos`, unlike the reading pass, and that asymmetry is
             # chosen.** The read pass asks per repository and must ask about something, so an
@@ -1331,7 +1343,7 @@ class Poller:
             # something gives that repository a ledger entry the row is one the developer can
             # see and this poller will not dispatch from. The GitHub pass dispatches it, which
             # is what creates that entry.
-            if recording and status not in ALIVE:
+            if recording and status not in ALIVE and not entry.get("session_id"):
                 self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
                                     pr.get("title"), every)
                 # **A dismissed review is not dispatched**, and nothing below this line runs
@@ -1501,6 +1513,17 @@ class Poller:
             return
         held = self.state["recorded"].get(key) or {}
         asked = f"review_desk|dismissal|{key}"
+        # **A review a session has been linked to is read and never written to either, and that
+        # is a harder rule than the ledger's.** Review Desk moves an unstarted request's head and
+        # starts a NEW ROUND once a session is linked — measured at review-desk 2180224: link a
+        # session, open on a new commit, and the answer is `created: true`, round 2, which
+        # `work list` then offers as a request of its own. The ledger status catches the ordinary
+        # case (a live session is not recorded for at all), but `lost`, `failed`, `merged` and
+        # `deferred` are all keys a session HAS held, and on those a push would have the poller
+        # spending a round nobody asked for. The replacement worker spends it when it starts,
+        # deliberately, which is whose job it is. `session_id` on the review is the fact, so the
+        # fact is what this reads rather than inferring it from a status.
+        #
         # **A record the developer has taken out of play is read and never written to**, whatever
         # the author pushes to the pull request. `review open` on a new commit would move the
         # dismissed review's head — Review Desk allows it, and a push is not the developer
@@ -1509,7 +1532,8 @@ class Poller:
         # and it arrived here by the head test running first. The record goes on naming the
         # commit Review Desk was TOLD, so a restore puts the two out of step and the very next
         # tick moves it, which is where moving it belongs.
-        writing = not held.get("dismissed") and held.get("head") != head
+        writing = (not held.get("dismissed") and not held.get("session")
+                   and held.get("head") != head)
         if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
         elif not self.read_stopped and self.due(asked, every):
@@ -1552,6 +1576,9 @@ class Poller:
             # dismissed, which is exactly how this behaved before dismissal existed.
             "dismissed": bool(review.get("dismissed_at")),
             "reason": review.get("dismissed_reason"),
+            # Whether a session has been linked to it, which is what makes a push the next ROUND
+            # rather than a move. Read, never written: `review link --session` is the worker's.
+            "session": review.get("session_id"),
         }
 
     def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,

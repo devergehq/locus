@@ -22,7 +22,9 @@ refuses to build when they disagree.
   request, and says nothing whatever about it: the `review_desk` pass asks the same install in
   the same tick and is what reports it absent, broken or too old. A request the principal
   skipped, or one nobody got to, is now a row on the Reviews list. Recorded once per key and
-  head commit, marked only on success, because a repeat `review open --ledger` writes the links
+  head commit, and **never for a review a session has been linked to** — after a link a new
+  commit is the next ROUND rather than a move, and a round nobody asked for is a second request
+  on Review Desk's list. Marked only on success, because a repeat `review open --ledger` writes the links
   again and would leave every never-started request looking freshly touched for ever. An older
   Review Desk that refuses `--ledger` (`error.code` `usage`) is retried once without it; the
   first answer that is **absent or broken** stops recording for the rest of the tick, since one

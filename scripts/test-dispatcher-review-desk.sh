@@ -424,7 +424,7 @@ def document(review):
     current = state()
     doc = {"id": int(review), "repo": "acme/portal", "pr": 412, "head_sha": "3f9c2ab",
            "round": 1, "title": "Retry failed webhook deliveries", "ticket_id": "ABC-231",
-           "dismissed_at": None, "dismissed_reason": None,
+           "dismissed_at": None, "dismissed_reason": None, "session_id": None,
            "nit_ticket_status": current["status"], "nit_ticket_id": current["ticket_id"]}
     # A review this stand-in has OPENED answers from that store instead, for the three fields a
     # reader of `review show` acts on: the commit it is of, and whether the developer dismissed
@@ -436,7 +436,7 @@ def document(review):
             continue
         repo, pr = slot.split("#")
         doc.update({"repo": repo, "pr": int(pr), "head_sha": held_open["head"],
-                    "round": held_open["round"],
+                    "round": held_open["round"], "session_id": held_open.get("session"),
                     "dismissed_at": held_open.get("dismissed_at"),
                     "dismissed_reason": held_open.get("dismissed_reason")})
     return {"review": doc, "findings": held}
@@ -455,12 +455,15 @@ def open_review(argv):
 
       the same head again      one review, `created` false, no round spent
       a new head, unstarted    the review MOVES, `head_moved_from` naming the commit before
+      a new head, session on it a NEW ROUND: `created` true, round + 1, no `head_moved_from`
       `--ledger`               written on the review, and the SECOND call with it writes again
 
-    A new head on a round somebody has STARTED is the next round, and this stand-in does not
-    model it, deliberately: the poller never records a review a session holds, so there is
-    nothing here that could exercise it, and the one thing that would -- a brief in the store --
-    is what the run against the real binary at the bottom of this file is for.
+    The round rule was re-measured at review-desk 2180224, where a linked session is what makes
+    a request "started": `review link --session` then `review open` on a new commit answers
+    `created: true` and round 2, and `work list` offers that round as a request of its own. A
+    brief or a finding makes a round started too, and this stand-in does not model those: the
+    poller cannot write either one, so nothing here could exercise them, and the run against the
+    real binary at the bottom of this file is what reads the store's own judgement.
 
     `$RDWORK/rd.open.mode` is this ONE command's health, so an older or refusing `review open`
     can be driven while `work list` still answers. A whole install that is absent or broken is
@@ -510,6 +513,11 @@ def open_review(argv):
         created, moved = False, None
         if ledger is not None:
             held["ledger"] = ledger
+    elif held.get("session"):
+        # Started: the next round, with an id of its own and no session on it.
+        held = {"id": max(h["id"] for h in store.values()) + 1, "head": head, "ledger": ledger,
+                "round": held["round"] + 1}
+        created, moved = True, None
     else:
         created, moved = False, held["head"]
         held["head"] = head
@@ -520,7 +528,7 @@ def open_review(argv):
     review = {"id": held["id"], "repo": repo, "pr": int(pr), "head_sha": head,
               "round": held["round"], "title": opt(argv, "--title"),
               "ticket_id": opt(argv, "--ticket"), "ledger_id": held["ledger"],
-              "session_id": None,
+              "session_id": held.get("session"),
               # On every one of the three paths -- created, found and moved -- as review-desk
               # 5dae8f6 answers. A push on a dismissed request moves its head and leaves it
               # dismissed, because a push is not the developer changing their mind.
@@ -749,6 +757,19 @@ store = json.loads(path.read_text())
 held = store["%s#%s" % (sys.argv[2], sys.argv[3])]
 held["dismissed_at"] = None
 held["dismissed_reason"] = None
+path.write_text(json.dumps(store))
+PY
+}
+
+# link <repo> <pr> <session>: what a review WORKER does when it starts -- `review link
+# --session`. The dispatcher has no business calling it, which is the point: after it, a push
+# makes the next round rather than moving the request, and the poller must stop writing.
+link () {
+  python3 - "$work/rd.opens.json" "$@" <<'PY'
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+store = json.loads(path.read_text())
+store["%s#%s" % (sys.argv[2], sys.argv[3])]["session"] = sys.argv[4]
 path.write_text(json.dumps(store))
 PY
 }
@@ -3018,6 +3039,40 @@ put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
 rc=$(run "$disp" poll 1)
 ok "a request whose session was lost IS recorded"      "$(opens)" 1
 
+# **Recorded, dispatched, then the author pushes.** The sequence DEV-945's other half asked for:
+# once a session is linked, `review open` on a new commit starts a round rather than moving the
+# request, so a poller that went on recording would spend a round nobody asked for -- and
+# `work list` would offer that round as a request of its own.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 session_id=live-2 --by dispatcher
+link acme/portal 412 live-2
+session live-2
+search_doc acme/portal 412 sha999 Retry
+rc=$(run "$disp" poll 1)
+ok "a push on a dispatched request records nothing"    "$(opens)" 1
+ok "  and dispatches nothing"                          "$(count '"event": "review_request"')" 0
+ok "  the review stays on its round"                   "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["round"])' "$work/rd.opens.json")" 1
+no_sessions
+
+# And the same when the LEDGER cannot say it: this entry carries no `session_id` -- a hand-written
+# `lost` with none, which is also what a dashboard-started review looks like here -- so the guard
+# doing the work is the session Review Desk itself reports on the review. The two together are
+# why there are two tests: the ledger is immediate, and this one covers what it does not know.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+link acme/portal 412 dead-1
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$disp" poll 1)
+ok "the session on the review is remembered"           "$(remembered gh-portal-412 session)" dead-1
+search_doc acme/portal 412 sha999 Retry
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+ok "a push on a lost session's review spends no round" "$(opens)" 1
+ok "  and the request is still offered for dispatch"   "$(count '"event": "review_request"')" 1
+
 instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 Retry
 rc=$(run "$disp" poll 3)
@@ -3461,6 +3516,7 @@ ok "SKILL.md says a request is recorded on sight"      "$(grep -c 'recorded the 
 ok "  that dispatching is unchanged"                   "$(grep -c 'Nothing changes about dispatching' "$skill_md")" 1
 ok "  that one request still reaches it once"          "$(grep -c 'One request still reaches you once' "$skill_md")" 1
 ok "  that a dismissed review is not dispatched"       "$(grep -c 'dismissed is not dispatched' "$skill_md")" 1
+ok "  and that a linked session stops the recording"   "$(grep -c 'any session has been linked to is left alone' "$skill_md")" 1
 ok "  and names the event, in prose and as a row"      "$(grep -c 'review_dismissed' "$skill_md")" 2
 ok "  that dismiss, restore and delete are the developer's" "$(grep -c "are your principal.s, from the page" "$skill_md")" 1
 ok "  with no command line for any of them"            "$(grep -c 'no command line for any of them' "$skill_md")" 1
@@ -3796,7 +3852,7 @@ work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
 rc=$(run "$work/noorphan.py" poll 1)
 ok "  without it a withdrawn request is dispatched"    "$(count '"event": "review_desk_requested"')" 1
 
-sed 's/^        writing = not held\.get("dismissed") and held\.get("head") != head$/        writing = True  # MARK REVERSED/' \
+sed 's/^                   and held\.get("head") != head)$/                   and True)  # MARK REVERSED/' \
     "$disp" > "$work/nomark.py"
 ok "the mark reversal changed one line"                "$(grep -c 'MARK REVERSED' "$work/nomark.py")" 1
 instance '{"mode":"auto"}'
@@ -3804,7 +3860,7 @@ search_doc acme/portal 412 sha412 Retry
 rc=$(run "$work/nomark.py" poll 3)
 ok "no mark: three ticks record the same request thrice" "$(opens)" 3
 
-sed 's/^            if recording and status not in ALIVE:$/            if recording:  # ALIVE TEST REVERSED/' \
+sed 's/^            if recording and status not in ALIVE and not entry\.get("session_id"):$/            if recording:  # ALIVE TEST REVERSED/' \
     "$disp" > "$work/noalive.py"
 ok "the live-session reversal changed one line"        "$(grep -c 'ALIVE TEST REVERSED' "$work/noalive.py")" 1
 instance '{"mode":"auto"}'
@@ -3922,24 +3978,42 @@ else
   ok "a push moves the real review"                       "$(real_work | python3 -c 'import json,sys;w=json.load(sys.stdin)["work"];print("%d %s %s" % (len(w), w[0]["head_sha"], w[0]["round"]))')" "1 sha999 1"
   ok "  which the poller remembers"                       "$(remembered gh-portal-412 head)" sha999
 
-  # Dismissed, in the only way there is: the record, not a command.
-  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = 1791780000, dismissed_reason = 'the pull request was closed unmerged' WHERE id = 1;"
-  ok "a dismissed review leaves the real work list"       "$(real_work | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["work"]))')" 0
-  # No dismissal marker to age: the tick above went down the `review open` path, because the
-  # commit had moved, so the read has never been due. It is due on the next tick by itself.
+  # **The round rule, against the real store.** `review link --session` is the worker's own
+  # command and the thing that makes a request "started"; after it, `review open` on a new commit
+  # is the next ROUND, which `work list` would offer as a request of its own. So the poller must
+  # stop writing, and this is the sequence that proves it does.
+  put gh-portal-412 mode=review status=active repo=acme/portal number=412 session_id=sess-real
+  "$REVIEW_DESK_BIN" review link --review 1 --session sess-real --json > /dev/null
+  search_doc acme/portal 412 sha777 "Retry failed webhook deliveries"
   age_marker 'gh-portal-412|review_request'
   rc=$(run "$disp" poll 1)
-  ok "  the poller reads the dismissal"                   "$(remembered gh-portal-412 dismissed)" True
+  ok "a push after a session is linked opens no round"   "$(real_work | python3 -c 'import json,sys;w=json.load(sys.stdin)["work"];print("%d %s %s" % (len(w), w[0]["round"], w[0]["head_sha"]))')" "1 1 sha999"
+  ok "  and the review it dispatched for is the one kept" "$(remembered gh-portal-412 review)" 1
+
+  # **Dismissed, in the only way there is: the record, not a command.** On its own pull request
+  # and its own instance, so none of the state above can answer for it. The review's id is read
+  # back from what the poller remembered rather than assumed, because the round rule above means
+  # ids are not positions.
+  instance "$real"
+  search_doc acme/portal 611 head611 "A scheduled export keeps its context"
+  rc=$(run "$disp" poll 1)
+  ok "a second request is recorded on its own review"     "$(count '"event": "review_request"')" 1
+  dismissed_id=$(remembered gh-portal-611 review)
+  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = 1791780000, dismissed_reason = 'the pull request was closed unmerged' WHERE id = $dismissed_id;"
+  ok "  a dismissed review leaves the real work list"     "$("$REVIEW_DESK_BIN" work list --repo acme/portal --json | python3 -c 'import json,sys;print(len([w for w in json.load(sys.stdin)["work"] if w["pr"] == 611]))')" 0
+  age_marker 'gh-portal-611|review_request'
+  rc=$(run "$disp" poll 1)
+  ok "  the poller reads the dismissal"                   "$(remembered gh-portal-611 dismissed)" True
   ok "  dispatches nothing"                               "$(count '"event": "review_request"')" 0
   ok "  and says so once, with the reason"                "$(count 'the pull request was closed unmerged')" 1
 
   # Restored, the same way. A dismissal is a decision and so is taking it back.
-  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = NULL, dismissed_reason = NULL WHERE id = 1;"
-  age_marker 'review_desk|dismissal|gh-portal-412'
-  age_marker 'gh-portal-412|review_request'
+  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = NULL, dismissed_reason = NULL WHERE id = $dismissed_id;"
+  age_marker 'review_desk|dismissal|gh-portal-611'
+  age_marker 'gh-portal-611|review_request'
   rc=$(run "$disp" poll 1)
   ok "a restored review is dispatched again"              "$(count '"event": "review_request"')" 1
-  ok "  and is no longer remembered as dismissed"         "$(remembered gh-portal-412 dismissed)" False
+  ok "  and is no longer remembered as dismissed"         "$(remembered gh-portal-611 dismissed)" False
 
   # Nothing this harness ran could have dismissed, restored or deleted anything: the binary has
   # no such command. Asserted against the real one's own help rather than claimed.
@@ -4026,7 +4100,20 @@ echo oldshow > "$work/rd.show.mode"
 rc=$(run "$work/noreadstop.py" poll 1)
 ok "  without it a build is asked once per request"    "$(shows)" 2
 
-sed 's/^        writing = not held\.get("dismissed") and held\.get("head") != head$/        writing = held.get("head") != head  # DISMISSAL WRITTEN TO/' \
+sed 's/^            if recording and status not in ALIVE and not entry\.get("session_id"):$/            if recording and status not in ALIVE:  # LEDGER SESSION IGNORED/' \
+    "$disp" > "$work/noledgersession.py"
+ok "the ledger-session reversal changed one line"      "$(grep -c 'LEDGER SESSION IGNORED' "$work/noledgersession.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/noledgersession.py" poll 1)
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 session_id=dead-2 --by test
+link acme/portal 412 dead-2
+search_doc acme/portal 412 sha999 Retry
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$work/noledgersession.py" poll 1)
+ok "  without it a push spends a round immediately"    "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
+
+sed 's/^        writing = (not held\.get("dismissed") and not held\.get("session")$/        writing = (not held.get("session")  # DISMISSAL WRITTEN TO/' \
     "$disp" > "$work/nodismisswrite.py"
 ok "the leave-a-dismissal-alone reversal changed one line" "$(grep -c 'DISMISSAL WRITTEN TO' "$work/nodismisswrite.py")" 1
 instance '{"mode":"auto"}'
@@ -4056,6 +4143,19 @@ echo notobject > "$work/rd.open.mode"
 rc=$(run "$work/notype.py" poll 1)
 ok "  without it the whole GitHub pass throws"         "$(count '"event": "error"')" 1
 ok "  and no review request is emitted at all"         "$(count '"event": "review_request"')" 0
+
+sed 's/^        writing = (not held\.get("dismissed") and not held\.get("session")$/        writing = (not held.get("dismissed")  # SESSION IGNORED/' \
+    "$disp" > "$work/nosession.py"
+ok "the linked-session reversal changed one line"      "$(grep -c 'SESSION IGNORED' "$work/nosession.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nosession.py" poll 1)
+link acme/portal 412 dead-1
+put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
+rc=$(run "$work/nosession.py" poll 1)
+search_doc acme/portal 412 sha999 Retry
+rc=$(run "$work/nosession.py" poll 1)
+ok "  without it a push spends a round"                "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
