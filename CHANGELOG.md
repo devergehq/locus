@@ -32,7 +32,8 @@ refuses to build when they disagree.
   per page — where a refusal is about one request, so the rest of the page is still recorded and
   the refusal is said once per repository. **A recorded request is `review_requested` on Review Desk's own work list**, so three
   guards keep one request reaching the Dispatcher once: a request GitHub showed this tick, one
-  the principal skipped, and one whose ledger entry does not exist — the last being a request
+  somebody has already decided about (`skipped`, `deferred` or `merged`), and one whose ledger
+  entry does not exist — the last being a request
   recorded on sight, never claimed, and no longer shown by GitHub, which stays in the record for
   the developer rather than being offered for ever. **A dismissed review stops the dispatch**
   (review-desk `dismissed_at`): `review_dismissed` names the review, its page and the

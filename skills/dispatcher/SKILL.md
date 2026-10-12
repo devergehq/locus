@@ -325,7 +325,8 @@ Four things that follow, and only the last asks anything of you:
   the steps above say, and the worker's own `review open` hands back the same review.
 - **One request still reaches you once.** A recorded request is `review_requested` on Review
   Desk's work list, so the poller keeps Review Desk quiet about any request GitHub showed it on
-  that tick, about one you skipped, and about one it recorded that GitHub has stopped showing.
+  that tick, about one somebody has already decided — **you skipped it, or the work deferred or
+  merged it** — and about one it recorded that GitHub has stopped showing.
   Two events for one request is two sessions on one review.
 - **A request any session has been linked to is left alone**, and that is a harder rule than "a
   live session": once a session is on a review, a new commit is the next ROUND rather than a

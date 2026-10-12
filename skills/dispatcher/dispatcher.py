@@ -330,16 +330,6 @@ def pr_key(repo: str, number: int) -> str:
     return f"gh-{repo.split('/')[-1]}-{number}"
 
 
-def repo_of(key: str) -> str:
-    """The repository half of a `gh-<repo>-<n>` key, for a notice that has to name one.
-
-    Best effort and deliberately so: it is used only to make a loud line more useful, and a key
-    that does not take this shape gives back itself, which is still better than nothing.
-    """
-    parts = str(key).split("-")
-    return "-".join(parts[1:-1]) if len(parts) > 2 and parts[0] == "gh" else str(key)
-
-
 def requested_key(key: str) -> str:
     """One pull request's key with the case taken off, for comparing keys ACROSS SOURCES.
 
@@ -1035,6 +1025,11 @@ class Poller:
         # subprocess per request per tick for ever. Separate from `record_stopped` because such
         # a build records perfectly well — it is only the dismissal it cannot be asked about.
         self.read_stopped = False
+        # Whether the read failed because the BUILD cannot answer it — no `review show`, or an
+        # answer carrying no review — as against a transient failure. It decides one thing: a
+        # final answer keeps the re-ask window (asking again next tick would learn the same
+        # thing for ever), and a transient one clears it so the next tick tries again.
+        self.read_unsupported = False
         # The install-level failure the recording path met, as `(state, detail, repo)`. Kept
         # rather than said on the spot so that one place decides how it is reported — see
         # `record_unreachable`, which says it unconditionally and shares the `review_desk`
@@ -1206,6 +1201,7 @@ class Poller:
         self.requested = set()
         self.record_stopped = False
         self.read_stopped = False
+        self.read_unsupported = False
         self.record_broken = None
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
@@ -1532,13 +1528,17 @@ class Poller:
         """
         if self.record_broken is None:
             return
-        state, detail, repo = self.record_broken
+        state, detail, repo, call = self.record_broken
         if state == "absent" and not review_desk_loud_when_absent(rd):
             return
         mark = "review_desk|absent" if state == "absent" else f"review_desk|{state}|{detail[:60]}"
         if self.due(mark, every):
+            # `call` is whichever command met it, carried rather than assumed: it was hard-coded
+            # as `review open` for one pass, so a hung `review show` reported a contradiction —
+            # that field against a `detail` naming the other command. On an `absent` install no
+            # command ran at all, and the one named is simply the one that tried first.
             emit("review_desk_unavailable", state=state, mode=rd["mode"], command=rd["command"],
-                 repo=repo, call="review open", detail=detail)
+                 repo=repo, call=call, detail=detail)
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
                        title: str | None, every: int, entry: dict) -> None:
@@ -1591,6 +1591,23 @@ class Poller:
             # `headRefOid` is a row this file cannot describe a review of.
             return
         held = self.state["recorded"].get(key) or {}
+        # **Nothing is written to a review this poller has not looked at.** The first call on a
+        # key used to be the write, and `review open` on a commit the author has pushed since
+        # answers `created: true` with the NEXT ROUND when a session is linked to the review it
+        # finds — so a review opened from the dashboard, linked by its own session, with no
+        # ledger entry here, was handed a round nobody asked for by the very first tick that saw
+        # the request. Found by review of this branch; the harness had always established a
+        # record with an earlier poll, which is exactly how it stayed invisible.
+        #
+        # `review find` is a READ, costs one call per key this instance has no record of, and
+        # answers the newest round first — measured at review-desk 82c0a09, dismissed rounds
+        # included, which is right: the newest round is the row `review open` would act on.
+        if not held:
+            found = self.find_request(rd, repo, number)
+            if self.record_stopped:
+                return
+            if found is not None:
+                held = self.remember(key, found, found.get("head_sha") or head)
         asked = f"review_desk|dismissal|{key}"
         # **The ledger is a second source for the review's id, and the only one for a review
         # this poller never recorded.** A worker writes `review_desk_id` on its entry before it
@@ -1631,8 +1648,8 @@ class Poller:
         if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
         elif rid is not None and not self.read_stopped and self.due(asked, every):
-            review = self.read_request(rd, key, rid, every)
-            if review is None and not self.read_stopped:
+            review = self.read_request(rd, key, rid, every, repo)
+            if review is None and not self.read_unsupported:
                 # **The window is not spent on a read that did not happen.** `due` writes its
                 # marker when it is evaluated, so a Review Desk broken for one tick would
                 # otherwise put the next read a whole `reemit_after_secs` away — and a
@@ -1651,19 +1668,30 @@ class Poller:
             # already recorded stands, including a dismissal: a Review Desk that cannot be
             # reached is not the developer changing their mind.
             return
-        self.state["recorded"][key] = {
-            # The commit Review Desk was TOLD, which on a read is the one it was told before: a
-            # dismissed row is not moved, so recording the commit GitHub is showing would claim
-            # a head the store does not hold and no restore would ever move it.
+        self.remember(key, review, head if writing else (held.get("head") or head))
+
+    def remember(self, key: str, review: dict, head: str) -> dict:
+        """Write what one Review Desk answer says about a request into the poll state.
+
+        One place, because three callers answer the same question — `review find` before the
+        first write, `review open` after a write, `review show` on the dismissal read — and
+        three copies of this dict would be three chances for them to disagree about what a
+        record holds.
+        """
+        held = {
+            # The commit this record is to be compared against next tick. The caller decides
+            # which one that is: after a WRITE it is the commit GitHub named, and after a read
+            # it is the one Review Desk was told before — a dismissed row is not moved, so
+            # recording the commit GitHub is showing would claim a head the store does not hold
+            # and no restore would ever move it.
             #
-            # **GitHub's spelling of the commit, not Review Desk's.** This value exists to be
-            # compared against the next tick's `headRefOid`, and Review Desk normalises what it
-            # is given -- `normalise::head_sha` trims it and lower-cases it. Storing the echo
-            # would mean comparing a normalised commit with an unnormalised one, and any case
-            # that ever differed would read as "the commit moved" on every tick for ever: one
-            # `review open` WRITE per tick, which is the `last_activity_at` harm the
-            # once-per-commit rule exists to prevent, arriving silently by another door.
-            "head": head if writing else (held.get("head") or head),
+            # **GitHub's spelling of it, not Review Desk's**, wherever there is a choice. Review
+            # Desk normalises what it is given — `normalise::head_sha` trims and lower-cases —
+            # so storing the echo would mean comparing a normalised commit with an unnormalised
+            # one, and any case that ever differed would read as "the commit moved" on every
+            # tick for ever: one `review open` WRITE per tick, which is the `last_activity_at`
+            # harm the once-per-commit rule exists to prevent, arriving by another door.
+            "head": head,
             "review": review.get("id"),
             # `dismissed_at` is the fact and the reason is for the reader, so they are kept
             # apart: a build older than migration 16 has neither key, which reads as not
@@ -1677,6 +1705,8 @@ class Poller:
             # claiming it.
             "session": review.get("session_id"),
         }
+        self.state["recorded"][key] = held
+        return held
 
     def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,
                      title: str | None, every: int) -> dict | None:
@@ -1708,7 +1738,7 @@ class Poller:
             # Kept, not said: `record_unreachable` says it at the end of `review_requests`, and
             # carries the repository this was met on because SKILL.md tells the Dispatcher to
             # name it.
-            self.record_broken = (state, detail, repo)
+            self.record_broken = (state, detail, repo, "review open")
             return None
         if state != "ok":
             # A refusal about THIS request rather than about the install, so the rest of the page
@@ -1749,10 +1779,47 @@ class Poller:
             # lines about it.
             if self.due(f"review_desk|record_unreadable|{repo}", every):
                 emit("review_desk_unavailable", state="broken", mode=rd["mode"],
-                     command=rd["command"], repo=repo, detail=detail)
+                     command=rd["command"], repo=repo, call="review open", detail=detail)
         return review
 
-    def read_request(self, rd: dict, key: str, rid, every: int) -> dict | None:
+    def find_request(self, rd: dict, repo: str, number: int) -> dict | None:
+        """`review find`: the newest round Review Desk holds for a pull request, or None.
+
+        **A read that exists so the first write is not blind.** It answers newest round first —
+        measured at review-desk 82c0a09, with dismissed rounds included, which is what is
+        wanted: the newest round is the row `review open` would act on, so it is the row whose
+        head, session and dismissal decide whether writing to it is safe.
+
+        None for a pull request with no review at all, which is the ordinary case and means
+        "write, and create it". A failure stops RECORDING for the tick rather than only reading:
+        this call is part of the write path, the install answers the same way for every request,
+        and a write nobody could look at first is the thing this exists to prevent.
+        """
+        state, payload, detail = review_desk_run(rd, "review", "find", "--repo", repo,
+                                                 "--pr", str(number), "--json")
+        if state in ("absent", "broken"):
+            self.record_stopped = True
+            if state == "absent":
+                # Nothing on this install can be asked anything, reads included.
+                self.read_stopped = True
+            self.record_broken = (state, detail, repo, "review find")
+            return None
+        if state != "ok":
+            # A refusal about this pull request. Nothing is written to it either: a refusal here
+            # is not "there is no review", which is `reviews: []` and exit 0.
+            self.record_stopped = True
+            return None
+        rounds = (payload or {}).get("reviews") if isinstance(payload, dict) else None
+        if not isinstance(rounds, list):
+            self.record_stopped = True
+            detail = (f"{rd.get('command')} review find exited 0 with an answer carrying no "
+                      f"rounds — too old to use")
+            self.record_broken = ("broken", detail, repo, "review find")
+            return None
+        newest = rounds[0] if rounds else None
+        return newest if isinstance(newest, dict) else None
+
+    def read_request(self, rd: dict, key: str, rid, every: int, repo: str) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
 
         **A read, deliberately, and not another `review open`.** Opening again would answer the
@@ -1772,8 +1839,17 @@ class Poller:
         state, payload, detail = review_desk_run(rd, "review", "show", "--review", str(rid),
                                                  "--json")
         if state in ("absent", "broken"):
-            self.record_stopped = True
-            self.record_broken = (state, detail, repo_of(key))
+            # **A broken READ stops reading and nothing else.** It used to stop recording too,
+            # which contradicted the one argument this path rests on: a Review Desk can fail a
+            # write while answering a read, and the other way round. One recorded key whose
+            # `review show` timed out would otherwise leave every NEW request on the page
+            # unrecorded — the gap DEV-945 exists to close — and the notice would name the
+            # wrong command. `absent` is different: nothing on that install can be asked
+            # anything, so it stops both.
+            self.read_stopped = True
+            if state == "absent":
+                self.record_stopped = True
+            self.record_broken = (state, detail, repo, "review show")
             return None
         if state == "refused":
             if detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
@@ -1789,6 +1865,7 @@ class Poller:
                 # install does. Recording itself carries on: this build opens reviews perfectly
                 # well, which is why `record_stopped` is the wrong flag for it.
                 self.read_stopped = True
+                self.read_unsupported = True
                 return None
             if detail.startswith(REVIEW_DESK_MISSING_REFUSAL):
                 self.state["recorded"].pop(key, None)
@@ -1809,11 +1886,12 @@ class Poller:
             # the dismissal guard silently dead and nothing said. `read_stopped` is the right
             # flag: such a build still records, and it is the reading it cannot do.
             self.read_stopped = True
+            self.read_unsupported = True
             detail = (f"{rd.get('command')} review show exited 0 with an answer carrying no "
                       f"review — too old to use")
             if self.due("review_desk|read_unreadable", every):
                 emit("review_desk_unavailable", state="broken", mode=rd["mode"],
-                     command=rd["command"], call="review show", detail=detail)
+                     command=rd["command"], repo=repo, call="review show", detail=detail)
         return review
 
     def dismissed_request(self, rd: dict, key: str, repo: str, pr: dict) -> bool:
