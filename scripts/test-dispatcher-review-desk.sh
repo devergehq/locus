@@ -561,6 +561,11 @@ def find_review(argv):
         refuse("cannot_open_database", "scripted broken review find", 2)
     if mode == "refused":
         refuse("not_found", "no such repository")
+    if mode == "oldfind":
+        # A build with `review open` and no `review find`: clap's own refusal, which review-desk
+        # answers as the `usage` document when `--json` is given -- measured at 82c0a09 for an
+        # unrecognised subcommand as well as an unexpected argument.
+        refuse("usage", "error: unrecognized subcommand 'find'")
     if mode == "notobject":
         print("[]")
         raise SystemExit(0)
@@ -2263,8 +2268,11 @@ printf '\nThe brief, in two writes -- the understanding into the record (DEV-883
 # prescription, crossed against the field list the real binary accepts and then driven through
 # the stand-in.
 #
-# The store the stand-in writes lives under $work, like everything else here. REVIEW_DESK_DB is
-# never set and never read, so no test can reach ~/.review-desk even with it installed.
+# The store the stand-in writes lives under $work, like everything else here, and since DEV-945
+# `REVIEW_DESK_DB` is exported at the top of this file as a temporary path as well -- so a real
+# binary reaching PATH by some route would open that file rather than `~/.review-desk`. The
+# sentence this replaces said the variable was never set, which was true until the poller began
+# to write.
 #
 # NO BRACE IN AN INLINE `python3 -c` INSIDE `$( )`. Bash brace-expands a word before it parses
 # the quoting inside a command substitution, so a Python set or dict literal there splits the
@@ -3209,6 +3217,16 @@ ok "a head GitHub spells in upper case records once"   "$(opens)" 1
 ok "  remembered as GitHub spelled it"                 "$(remembered gh-portal-412 head)" SHA412UPPER
 ok "  and Review Desk stored its own form"             "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["acme/portal#412"]["head"])' "$work/rd.opens.json")" sha412upper
 
+# And the case the comparison exists for: a record seeded by the LOOK, which carries Review
+# Desk's normalised spelling, against the commit GitHub is showing. Nothing has moved, so
+# nothing is written -- and the two sides are spelled differently.
+instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412upper 7
+search_doc acme/portal 412 SHA412UPPER Retry
+rc=$(run "$disp" poll 3)
+ok "a looked-up commit in another case is the same commit" "$(opens)" 0
+ok "  looked up once, not once a tick"                 "$(finds)" 1
+
 # **Nothing is written to a review this poller has not looked at.** The first call on a key
 # used to be the write, and a review somebody else opened -- the dashboard, another instance --
 # may already have a session on it, which makes a push the next ROUND. So the first sight of a
@@ -3242,6 +3260,31 @@ ok "  and then created"                                "$(opens)" 1
 ok "  with nothing said about it"                      "$(count review_desk_unavailable)" 0
 rc=$(run "$disp" poll 1)
 ok "  and not looked up again once recorded"           "$(finds)" 1
+
+# **A build with no `review find` records without looking**, which is the behaviour that
+# preceded the look. Looking guards against spending a round on a review somebody else opened;
+# recording at all is the ticket, so the look is what degrades, loudly and once -- and the
+# `--ledger` retry for old builds stays reachable, which it was not when this stopped recording.
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo oldfind > "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "a build with no \`review find\` still records"      "$(opens)" 2
+ok "  looking once, not once per request"              "$(finds)" 1
+ok "  and says the look is unavailable, once"          "$(count '"event": "review_desk_unavailable"')" 1
+ok "  naming the call"                                 "$(says '"call": "review find"')" yes
+ok "  and both requests are dispatched"                "$(count '"event": "review_request"')" 2
+
+# A look REFUSED for this pull request is a different fact: the look is available and this
+# request could not be looked at, so nothing is written to it and the page carries on.
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo refused > "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "a refused look writes nothing"                     "$(opens)" 0
+ok "  is reported once for the repository"             "$(count '"event": "review_desk_unavailable"')" 1
+ok "  as a refusal, with one request as its example"   "$(says '"example": true')" yes
+ok "  and both requests are still dispatched"          "$(count '"event": "review_request"')" 2
 
 # A look that cannot be made stops the recording: a write nobody could look at first is the
 # thing the look exists to prevent.
@@ -3705,6 +3748,8 @@ rc=$(run "$disp" poll 1)
 echo oldshow > "$work/rd.show.mode"
 rc=$(run "$disp" poll 2)
 ok "a build with no \`review show\` is not a deleted review" "$(remembered gh-portal-412 head)" sha412
+ok "  and it is said, once, naming the call"           "$(count '"event": "review_desk_unavailable"')" 1
+ok "  with what it costs: a dismissal cannot be read" "$(says 'a dismissal')" yes
 ok "  so nothing is recorded again"                    "$(opens)" 1
 ok "  and the request is still dispatched"             "$(remembered gh-portal-412 dismissed)" False
 
@@ -4137,7 +4182,7 @@ work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
 rc=$(run "$work/noorphan.py" poll 1)
 ok "  without it a withdrawn request is dispatched"    "$(count '"event": "review_desk_requested"')" 1
 
-sed 's/^        writing = not held\.get("dismissed") and not linked and held\.get("head") != head$/        writing = True  # MARK REVERSED/' \
+sed 's/^                   and not same_commit(held\.get("head"), head))$/                   and True)  # MARK REVERSED/' \
     "$disp" > "$work/nomark.py"
 ok "the mark reversal changed one line"                "$(grep -c 'MARK REVERSED' "$work/nomark.py")" 1
 instance '{"mode":"auto"}'
@@ -4162,7 +4207,7 @@ no_sessions
 
 sed 's/^            self\.record_stopped = True$/            pass  # STOP REVERSED/' \
     "$disp" > "$work/nostop.py"
-ok "the stop-once reversal changed every line of it"  "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 5
+ok "the stop-once reversal changed every line of it"  "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 4
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 echo broken > "$work/rd.open.mode"
@@ -4317,13 +4362,19 @@ else
   export REVIEW_DESK_DB="$work/test.db"
 fi
 
-sed 's/^            "head": head,$/            "head": review.get("head_sha") or head,  # HEAD ECHOED/' \
+sed 's|^    return (a or "")\.strip()\.lower() == (b or "")\.strip()\.lower()$|    return a == b  # COMMIT COMPARED RAW|' \
     "$disp" > "$work/noheadq.py"
-ok "the remembered-commit reversal changed one line"   "$(grep -c 'HEAD ECHOED' "$work/noheadq.py")" 1
+ok "the commit-comparison reversal changed one line"   "$(grep -c 'COMMIT COMPARED RAW' "$work/noheadq.py")" 1
 instance '{"mode":"auto"}'
+preopen acme/portal 412 sha412upper 7
 search_doc acme/portal 412 SHA412UPPER Retry
 rc=$(run "$work/noheadq.py" poll 3)
-ok "  without it one request is written three times"   "$(opens)" 3
+# ONE write, not one per tick, and the difference is worth the sentence: the record holds
+# GitHub's spelling after a write, so the raw comparison agrees from the second tick on. The
+# review that raised this expected a write per tick for ever; measured, it is a single spurious
+# write per request whose looked-up commit is spelled differently. Still a write nobody asked
+# for, on a row this path works hard not to touch.
+ok "  without it a spelling difference buys one write" "$(opens)" 1
 
 sed 's/^            if detail\.startswith(REVIEW_DESK_MISSING_REFUSAL):$/            if True:  # ANY REFUSAL FORGETS/' \
     "$disp" > "$work/nomissinggate.py"
@@ -4402,7 +4453,7 @@ age_marker 'gh-portal-412|review_request'
 rc=$(run "$work/noledgersession.py" poll 1)
 ok "  without it a push spends a round immediately"    "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
 
-sed 's/^        writing = not held\.get("dismissed") and not linked and held\.get("head") != head$/        writing = not linked and held.get("head") != head  # DISMISSAL WRITTEN TO/' \
+sed 's/^        writing = (not held\.get("dismissed") and not linked$/        writing = (not linked  # DISMISSAL WRITTEN TO/' \
     "$disp" > "$work/nodismisswrite.py"
 ok "the leave-a-dismissal-alone reversal changed one line" "$(grep -c 'DISMISSAL WRITTEN TO' "$work/nodismisswrite.py")" 1
 instance '{"mode":"auto"}'
@@ -4414,7 +4465,7 @@ search_doc acme/portal 412 sha999 Retry
 rc=$(run "$work/nodismisswrite.py" poll 1)
 ok "  without it every push writes to a dismissed row" "$(opens)" 2
 
-sed 's/^        if self\.record_broken is None:$/        if True:  # NO VOICE AT ALL/' \
+sed 's/^        for call, (state, detail, repo) in sorted(self\.record_broken\.items()):$/        for call, (state, detail, repo) in []:  # NO VOICE AT ALL/' \
     "$disp" > "$work/novoice.py"
 ok "the one-voice reversal changed one line"           "$(grep -c 'NO VOICE AT ALL' "$work/novoice.py")" 1
 NOMAP=1 instance '{"mode":"on"}'
@@ -4455,7 +4506,7 @@ echo broken > "$work/rd.mode"
 rc=$(run "$work/nountrusted.py" poll 1)
 ok "  without it a truncated page reports nothing"     "$(count review_desk_unavailable)" 0
 
-sed 's/^        if self\.record_broken is None:$/        if self.record_broken is None or review_desk_repos(cfg, ledger):  # DEFERRED TO THE READER/' \
+sed 's/^        for call, (state, detail, repo) in sorted(self\.record_broken\.items()):$/        for call, (state, detail, repo) in ([] if review_desk_repos(cfg, ledger) else sorted(self.record_broken.items())):  # DEFERRED TO THE READER/' \
     "$disp" > "$work/nosplit.py"
 ok "the split-health reversal changed one line"        "$(grep -c 'DEFERRED TO THE READER' "$work/nosplit.py")" 1
 instance '{"mode":"auto"}'
@@ -4475,7 +4526,7 @@ ok "  without it such a review is never read"          "$(shows)" 0
 
 sed 's/^            self\.record_stopped = True$/            pass  # UNREADABLE NOT STOPPED/' \
     "$disp" > "$work/nounreadablestop.py"
-ok "the unreadable-answer reversal changed its lines"  "$(grep -c 'UNREADABLE NOT STOPPED' "$work/nounreadablestop.py")" 5
+ok "the unreadable-answer reversal changed its lines"  "$(grep -c 'UNREADABLE NOT STOPPED' "$work/nounreadablestop.py")" 4
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 echo notobject > "$work/rd.open.mode"
@@ -4492,7 +4543,7 @@ echo notobject > "$work/rd.show.mode"
 rc=$(run "$work/noreadbroken.py" poll 1)
 ok "  without it one tick reads once per request"      "$(shows)" 2
 
-sed 's/^        if not held:$/        if False:  # LOOK SKIPPED/' "$disp" > "$work/nolook.py"
+sed 's/^        if not held and not self\.look_stopped:$/        if False:  # LOOK SKIPPED/' "$disp" > "$work/nolook.py"
 ok "the look-first reversal changed one line"          "$(grep -c 'LOOK SKIPPED' "$work/nolook.py")" 1
 instance '{"mode":"auto"}'
 preopen acme/portal 412 oldhead 7 sess-dash
@@ -4510,6 +4561,25 @@ echo broken > "$work/rd.show.mode"
 search_pair acme/portal 412 sha412 413 sha413
 rc=$(run "$work/noreadsplit.py" poll 1)
 ok "  without it a broken read loses a new request"    "$(remembered gh-portal-413 head)" ""
+
+sed 's/^            self\.look_stopped = True$/            self.record_stopped = True  # LOOK FAILURE STOPS EVERYTHING/' \
+    "$disp" > "$work/nolookdegrade.py"
+ok "the degrade-the-look reversal changed one line"    "$(grep -c 'LOOK FAILURE STOPS EVERYTHING' "$work/nolookdegrade.py")" 1
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+echo oldfind > "$work/rd.find.mode"
+rc=$(run "$work/nolookdegrade.py" poll 1)
+ok "  without it such a build records nothing at all"  "$(opens)" 0
+
+sed 's/^                if self\.due("review_desk|read_unsupported", every):$/                if False:  # READ UNSUPPORTED UNSAID/' \
+    "$disp" > "$work/nosayread.py"
+ok "the say-it reversal changed one line"              "$(grep -c 'READ UNSUPPORTED UNSAID' "$work/nosayread.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nosayread.py" poll 1)
+echo oldshow > "$work/rd.show.mode"
+rc=$(run "$work/nosayread.py" poll 1)
+ok "  without it a build that cannot read is silent"   "$(count review_desk_unavailable)" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
