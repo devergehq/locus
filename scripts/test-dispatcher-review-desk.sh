@@ -3115,8 +3115,15 @@ echo refused > "$work/rd.open.mode"
 rc=$(run "$disp" poll 1)
 ok "a refusal that is not about the flag is not retried" "$(opens)" 1
 ok "  records nothing"                                 "$(recorded_count)" 0
-ok "  says nothing"                                    "$(count review_desk_unavailable)" 0
-ok "  and does not stop the next tick trying"          "$(opens)" 1
+# Said, and said once: no other voice covers a refusal of ONE recording, and a refusal that
+# repeats would otherwise leave the Reviews page reading "no requests came in".
+ok "  is reported once"                                "$(count '"event": "review_desk_unavailable"')" 1
+ok "  as a refusal"                                    "$(says '"state": "refused"')" yes
+ok "  naming the pull request"                         "$(says '"number": 412')" yes
+ok "  and Review Desk's own words"                     "$(says 'no repository acme/portal')" yes
+rc=$(run "$disp" poll 2)
+ok "  and not again inside the window"                 "$(count '"event": "review_desk_unavailable"')" 0
+ok "  though the recording is tried each tick"         "$(opens)" 3
 
 printf '\n  one request reaches the Dispatcher once\n'
 # A recorded request IS `review_requested` on `work list`, so without these three guards the
@@ -3169,6 +3176,18 @@ instance '{"mode":"auto"}'
 work_doc review_requested 11 acme/portal 412
 rc=$(run "$disp" poll 1)
 ok "  where a dashboard review still is"               "$(count '"event": "review_desk_requested"')" 1
+
+# **A repository GitHub spells with capitals.** The two sources key the same pull request
+# differently — GitHub's `nameWithOwner` as registered, Review Desk's `repo` lower-cased — so
+# this is the case where comparing the keys as strings misses and both sources speak. No ledger
+# id on the item, because that is the shape where `review_desk_item` has to derive the key.
+instance '{"mode":"auto"}'
+search_doc Acme/Portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412
+rc=$(run "$disp" poll 1)
+ok "a mixed-case repository is recorded once"          "$(opens)" 1
+ok "  the request is emitted once"                     "$(count '"event": "review_request"')" 1
+ok "  and Review Desk does not offer it again"         "$(count '"event": "review_desk_requested"')" 0
 
 # A lost session's review, which carries a ledger id AND an entry: still work, and the one case
 # that tells the ledger-entry test apart from a test on the ledger id alone.
@@ -3286,6 +3305,40 @@ rc=$(run "$disp" poll 2)
 ok "a build with no \`review show\` is not a deleted review" "$(remembered gh-portal-412 head)" sha412
 ok "  so nothing is recorded again"                    "$(opens)" 1
 ok "  and the request is still dispatched"             "$(remembered gh-portal-412 dismissed)" False
+
+# A read that failed does not spend the window: `due` writes its marker when it is evaluated,
+# so without clearing it a Review Desk broken for one tick would put the next read fifteen
+# minutes away -- and a dismissal made in between would be dispatched for all of it.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+echo broken > "$work/rd.show.mode"
+rc=$(run "$disp" poll 1)
+ok "a read that failed is asked again next tick"       "$(shows)" 1
+echo ok > "$work/rd.show.mode"
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$disp" poll 1)
+ok "  without waiting out the interval"                "$(shows)" 2
+ok "  and the dismissal is then honoured"              "$(remembered gh-portal-412 dismissed)" True
+
+# A dismissal is held nowhere else, so the prune that follows a tick GitHub answered empty must
+# not take it: the next tick that saw the request would go back to `review open`, which WRITES,
+# on a record the developer took out of play.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$disp" poll 1)
+rm -f "$work/gh.search"
+# TWO ticks, because one zero is not believed: `trust_empty` commits an empty result only on the
+# second consecutive one, so a single empty tick never reaches the prune and this assertion
+# would pass without the prune keeping anything. It did, in the first draft of it.
+rc=$(run "$disp" poll 2)
+ok "two empty ticks prune, and keep the dismissal"     "$(remembered gh-portal-412 dismissed)" True
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "  so the request is not written again"             "$(opens)" 1
+ok "  and is still not dispatched"                     "$(count '"event": "review_request"')" 0
 
 # A read that cannot be made leaves the dismissal where it was. Not knowing is not a restore.
 instance '{"mode":"auto"}'
@@ -3611,7 +3664,7 @@ work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
 rc=$(run "$work/nospoken.py" poll 1)
 ok "no guard: one request reaches the Dispatcher twice" "$(( $(count '"event": "review_request"') + $(count '"event": "review_desk_requested"') ))" 2
 
-sed 's/^        if key in self\.requested:$/        if False:  # TICK TEST REVERSED/' \
+sed 's/^        if requested_key(key) in self\.requested:$/        if False:  # TICK TEST REVERSED/' \
     "$disp" > "$work/notick.py"
 ok "the this-tick reversal changed one line"           "$(grep -c 'TICK TEST REVERSED' "$work/notick.py")" 1
 # With a ledger entry, so the no-such-entry guard cannot pass this one for it.
@@ -3693,7 +3746,7 @@ rc=$(run "$work/nodismiss.py" poll 1)
 ok "  without it a dismissed review is dispatched"     "$(count '"event": "review_request"')" 1
 ok "  and nothing says why it should not have been"    "$(count '"event": "review_dismissed"')" 0
 
-sed 's/^        elif self\.due(f"review_desk|dismissal|{key}", every):$/        elif False:  # DISMISSAL NEVER READ/' \
+sed 's/^        elif self\.due(asked, every):$/        elif False:  # DISMISSAL NEVER READ/' \
     "$disp" > "$work/noread.py"
 ok "the re-read reversal changed one line"             "$(grep -c 'DISMISSAL NEVER READ' "$work/noread.py")" 1
 instance '{"mode":"auto"}'
@@ -3815,6 +3868,41 @@ rc=$(run "$work/noshowusage.py" poll 1)
 echo oldshow > "$work/rd.show.mode"
 rc=$(run "$work/noshowusage.py" poll 2)
 ok "  without it an older build is written to again"   "$(opens)" 2
+
+sed 's/^    return key\.lower()$/    return key  # CASE KEPT/' "$disp" > "$work/nocase.py"
+ok "the key-case reversal changed one line"            "$(grep -c 'CASE KEPT' "$work/nocase.py")" 1
+instance '{"mode":"auto"}'
+search_doc Acme/Portal 412 sha412 Retry
+work_doc review_requested 11 acme/portal 412
+rc=$(run "$work/nocase.py" poll 1)
+ok "  without it a capital letter buys a second event" "$(count '"event": "review_desk_requested"')" 1
+
+sed 's/^                self\.state\["emitted"\]\.pop(asked, None)$/                pass  # WINDOW SPENT/' \
+    "$disp" > "$work/nowindow.py"
+ok "the spent-window reversal changed one line"        "$(grep -c 'WINDOW SPENT' "$work/nowindow.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nowindow.py" poll 1)
+echo broken > "$work/rd.show.mode"
+rc=$(run "$work/nowindow.py" poll 1)
+echo ok > "$work/rd.show.mode"
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$work/nowindow.py" poll 1)
+ok "  without it the dismissal waits out the interval" "$(remembered gh-portal-412 dismissed)" False
+
+sed 's/^                                  if k in present or v\.get("dismissed")}$/                                  if k in present}  # DISMISSAL PRUNED/' \
+    "$disp" > "$work/noprunekeep.py"
+ok "the keep-a-dismissal reversal changed one line"    "$(grep -c 'DISMISSAL PRUNED' "$work/noprunekeep.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/noprunekeep.py" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$work/noprunekeep.py" poll 1)
+rm -f "$work/gh.search"
+rc=$(run "$work/noprunekeep.py" poll 2)
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/noprunekeep.py" poll 1)
+ok "  without it a dismissed review is written to again" "$(opens)" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

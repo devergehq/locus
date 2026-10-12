@@ -322,6 +322,34 @@ def pr_key(repo: str, number: int) -> str:
     return f"gh-{repo.split('/')[-1]}-{number}"
 
 
+def requested_key(key: str) -> str:
+    """One pull request's key with the case taken off, for comparing keys ACROSS SOURCES.
+
+    **The two review sources spell a repository differently, and only this comparison has to
+    survive it.** GitHub's search hands back `nameWithOwner` as the repository is registered —
+    `devergehq/Locus` — so `review_requests` keys that pull request `gh-Locus-86`. Review Desk
+    stores `repo` lower-cased and `review_desk_repos` asks it in that form, so an item that
+    carries no `ledger_id` is keyed `gh-locus-86` by `review_desk_item`'s own fallback. Those
+    are the same request and the same pull request, and before this function the
+    one-request-one-event guard compared them as strings and missed: both sources emitted, and
+    two sessions could be dispatched for one review. Found by review of this branch, reproduced
+    with `search_doc Acme/Portal` against the harness.
+
+    **`pr_key` itself is deliberately NOT normalised**, and that is not timidity. It names a
+    FILE — `runtime/ledger/gh-Locus-86.json` — and every live entry, every running watcher's
+    cursor and every `D ledger` the principal types is already spelled the way GitHub spelled
+    it. Lower-casing it would make the next tick read a claimed review as unclaimed and dispatch
+    a second session onto a live branch, on upgrade, for exactly the instances this is meant to
+    protect. So the key keeps its case and the comparison loses it.
+
+    What is left uncovered, said plainly: `request_spoken_for`'s other two shapes read the
+    LEDGER by key, so for a review carrying no `ledger_id` on a mixed-case repository they can
+    still miss their entry. That is the same pre-existing asymmetry, it predates DEV-945, and
+    the fix for it is a ledger re-keying with a migration — its own ticket, not this one.
+    """
+    return key.lower()
+
+
 def marker(key: str, mode: str) -> str:
     return f"agent:{key}/{mode}"
 
@@ -927,8 +955,9 @@ class Poller:
         # Reset per tick; here as well so a test that calls one section directly does not have
         # to know that `tick()` is what creates it.
         self.pr_states: dict = {}
-        # Every review request GitHub showed this tick, whatever its ledger status. Read by
-        # `request_spoken_for` so that one request reaches the Dispatcher once.
+        # Every review request GitHub showed this tick, whatever its ledger status, **held
+        # lower-cased**. Read by `request_spoken_for` so that one request reaches the Dispatcher
+        # once. See `requested_key` for why the case has to be taken off it.
         self.requested: set = set()
         # Whether recording review requests has been given up on for this tick. One install
         # answers for every request, so an absent or broken one is asked once. See
@@ -1247,7 +1276,7 @@ class Poller:
             # Whatever its status, and before anything below can decide not to speak about it.
             # `request_spoken_for` reads this set, and what it is answering is "did GitHub
             # already show the Dispatcher this request", not "was an event emitted for it".
-            self.requested.add(key)
+            self.requested.add(requested_key(key))
             entry = ledger.get(key) or {}
             status = entry.get("status")
             # **Recorded before the request is emitted, which is the whole of DEV-945's first
@@ -1261,6 +1290,18 @@ class Poller:
             # in, and `review open` with a head the author has since pushed would spend a ROUND
             # on a review somebody is working. Not a loss — a session that died before recording
             # leaves a `lost` entry, which is not ALIVE, so the next tick records it.
+            #
+            # **Not gated on `review_desk_repos`, unlike the reading pass, and that asymmetry is
+            # chosen.** The read pass asks per repository and must ask about something, so an
+            # unedited `repo_project_map` leaves it silent. This pass is handed the request by
+            # GitHub and already knows the repository, and the question the ticket asks — "how
+            # many requests have actually happened" — is about the principal's review requests
+            # rather than about the repositories an instance has been configured to dispatch
+            # into. The consequence, stated rather than hidden: a request in a repository the
+            # map does not name is recorded and is NOT offered by the Review Desk pass, so until
+            # something gives that repository a ledger entry the row is one the developer can
+            # see and this poller will not dispatch from. The GitHub pass dispatches it, which
+            # is what creates that entry.
             if recording and status not in ALIVE:
                 self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
                                     pr.get("title"), every)
@@ -1342,7 +1383,15 @@ class Poller:
         # The cost is one call: a request that clears and is made again is recorded again, which
         # hands back the same review and is the honest reading of it — somebody asking twice is
         # activity, and the record says so.
-        self.state["recorded"] = {k: v for k, v in self.state["recorded"].items() if k in present}
+        #
+        # **A dismissal is kept whatever the search said.** It is held nowhere else, and losing
+        # it sends the next tick that sees the request back to `review open` — a WRITE, on a
+        # record the developer deliberately took out of play, and the `last_activity_at` harm
+        # this file keeps arranging itself to avoid. The cost is one dict entry per dismissed
+        # request, for as long as the instance lives, and that is the right side to err on: the
+        # entry is small and the write is on a row somebody said to leave alone.
+        self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
+                                  if k in present or v.get("dismissed")}
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
                        title: str | None, every: int) -> None:
@@ -1391,10 +1440,19 @@ class Poller:
             # `headRefOid` is a row this file cannot describe a review of.
             return
         held = self.state["recorded"].get(key) or {}
+        asked = f"review_desk|dismissal|{key}"
         if held.get("head") != head:
-            review = self.open_request(rd, key, repo, number, head, title)
-        elif self.due(f"review_desk|dismissal|{key}", every):
+            review = self.open_request(rd, key, repo, number, head, title, every)
+        elif self.due(asked, every):
             review = self.read_request(rd, key, held.get("review"))
+            if review is None:
+                # **The window is not spent on a read that did not happen.** `due` writes its
+                # marker when it is evaluated, so a Review Desk broken for one tick would
+                # otherwise put the next read a whole `reemit_after_secs` away — and a
+                # dismissal made in between would go on being dispatched for that long. Cleared
+                # here, the next tick asks again, which is what makes "an install you fix is
+                # used on the very next poll" true of this branch as well as the other.
+                self.state["emitted"].pop(asked, None)
         else:
             return
         if review is None:
@@ -1420,7 +1478,7 @@ class Poller:
         }
 
     def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,
-                     title: str | None) -> dict | None:
+                     title: str | None, every: int) -> dict | None:
         """`review open`: the request, written. Returns the review, or None if it was not."""
         facts = ["review", "open", "--repo", repo, "--pr", str(number), "--head", head]
         if title:
@@ -1441,9 +1499,19 @@ class Poller:
             self.record_stopped = True
             return None
         if state != "ok":
-            # A refusal this file has nothing to say about, and it is about THIS request rather
-            # than about the install, so the rest of the page is still recorded. Nothing is
-            # remembered, so the next tick tries it again.
+            # A refusal about THIS request rather than about the install, so the rest of the page
+            # is still recorded and nothing is remembered: the next tick tries it again.
+            #
+            # **And it is said, once per reason per `reemit_after_secs`.** This is the one
+            # outcome on this path that no other voice covers: the `review_desk` pass reports
+            # absent, broken and too-old, and a refusal of a recording is none of those. A
+            # refusal that repeats records nothing at all, while `work list` goes on answering
+            # `ok` with an empty list — so the Reviews page would read "no requests came in",
+            # which is the exact sentence DEV-945 exists to stop being unanswerable. Rate
+            # limited on the reason, not the request, because one cause refuses a whole page.
+            if self.due(f"review_desk|record_refused|{detail[:60]}", every):
+                emit("review_desk_unavailable", state="refused", mode=rd["mode"],
+                     command=rd["command"], repo=repo, number=number, detail=detail)
             return None
         review = (payload or {}).get("review")
         return review if isinstance(review, dict) else None
@@ -1519,6 +1587,10 @@ class Poller:
         review with no brief could only be one a session or the dashboard had opened, and every
         one of them was work.
 
+        The first shape compares keys from two sources that case a repository differently, so it
+        compares them through `requested_key`. The other two read this instance's own ledger,
+        and that lookup is left as it was — see `requested_key` for what it leaves uncovered.
+
           1. **GitHub showed it this tick.** One request, one event. The GitHub pass is already
              telling the Dispatcher about this request, on its own cadence and with its own
              backlog flag, and Review Desk's copy is the record rather than a second source. Two
@@ -1539,7 +1611,7 @@ class Poller:
         That tick says `source_empty` for its own reason, and the next healthy tick shows the
         request again.
         """
-        if key in self.requested:
+        if requested_key(key) in self.requested:
             return True
         if entry.get("status") == "skipped":
             return True
