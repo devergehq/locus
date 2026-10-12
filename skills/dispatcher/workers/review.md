@@ -155,8 +155,9 @@ API can approve a draft, and reaching for it would be signing off in your princi
    **Pass it only in a call that also passes `--ticket`**, unless you know the record already
    holds the id from an earlier round. The page draws the address *as* the id, so an address
    with no id to draw has nothing to be — and Review Desk refuses that call rather than storing
-   a link nothing can render. Measured on review-desk master `41bbc10`: an address alone is refused
-   with `invalid_value` naming **`ticket_id`**, and the store held zero reviews afterwards.
+   a link nothing can render. Measured on review-desk master `41bbc10`: an address alone is
+   refused with `invalid_value` naming **`ticket_id`**, and the store held zero reviews
+   afterwards.
 
    **Read the flag's name from the command, not from this file.** `review-desk review open
    --help` lists `--ticket-url <URL>` where it exists. Checking at run time is what lets this
@@ -805,14 +806,14 @@ regrade change the heading instead of leaving a second copy of the severity to a
 **The house style's own shape is what the composition produces, and the blocks are its parts
 rather than its whole.** Review Desk builds the index from the findings themselves, hands each
 finding with a line inside the diff to GitHub as its own thread in the alert its live severity
-picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the body
-it composes, on review-desk master `41bbc10`: a six-finding draft with four of them anchored hands
-over four threads, and keeps the other two as sections under a six-row index. **27 of 27 checks
-in this repository's `review_lint.py` pass** on that composed shape, which the fixture in
-`scripts/test-review-lint.sh` re-checks on every push. Nothing in the house style is
-relaxed here, and nothing in it is overridden here. The linter needed one fix of its own to get
-there — a finding with both a row and a section was counted twice — so an older copy of it
-reports two failures on a body that is correct.
+picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the
+body it composes, on review-desk master `41bbc10`: a six-finding draft with four of them
+anchored hands over four threads, and keeps the other two as sections under a six-row index.
+**27 of 27 checks in this repository's `review_lint.py` pass** on that composed shape, which
+the fixture in `scripts/test-review-lint.sh` re-checks on every push. Nothing in the house
+style is relaxed here, and nothing in it is overridden here. The linter needed one fix of its
+own to get there — a finding with both a row and a section was counted twice — so an older copy
+of it reports two failures on a body that is correct.
 
 **You do not write the index, and you do not write the threads.** Both are composed from the
 blocks and the findings' live severities, which is what makes a regrade or a cut move them. What
@@ -1014,10 +1015,10 @@ post again, on somebody's pull request, under your principal's name.
    prevent.
 
    **Two different refusals carry `draft_status`, and the status separates them.** Measured on
-   review-desk master `41bbc10`: an unapproved draft refuses with "the draft of review N is ready, and
-   only an approved draft is handed over"; an approved draft whose body predates the composition
-   refuses with "…is approved, and a draft whose body is what its blocks compose to". Read the
-   status, not the sentence.
+   review-desk master `41bbc10`: an unapproved draft refuses with "the draft of review N is
+   ready, and only an approved draft is handed over"; an approved draft whose body predates the
+   composition refuses with "…is approved, and a draft whose body is what its blocks compose
+   to". Read the status, not the sentence.
 
    **Step 1 already refused to go on unless the status read `approved`, so if you got here the
    second row is what a `draft_status` refusal means.** Re-read `draft show` rather than reason
@@ -1044,12 +1045,12 @@ post again, on somebody's pull request, under your principal's name.
    this, and a brief that said only "it refused, so wait" would have had sessions sitting on
    dead reviews.
 
-   **The sign-off goes back with the draft, which is what makes this safe to wait on.** Measured
-   on review-desk master `41bbc10`: sending an approved draft back answers `200`, and afterwards
-   `draft show` reads `sent_back` with `event` and `approved_at` **cleared** and the note
-   carried. So the status your watcher polls cannot read `approved` on a draft that is waiting
-   to be rewritten, and `draft put --sections` is accepted again — measured, the draft goes back
-   to `ready`. There is no state here that only a person can see.
+   **The sign-off goes back with the draft, which is what makes this safe to wait on.**
+   Measured on review-desk master `41bbc10`: sending an approved draft back answers `200`, and
+   afterwards `draft show` reads `sent_back` with `event` and `approved_at` **cleared** and the
+   note carried. So the status your watcher polls cannot read `approved` on a draft that is
+   waiting to be rewritten, and `draft put --sections` is accepted again — measured, the draft
+   goes back to `ready`. There is no state here that only a person can see.
 
    (This was briefly a dead end, and the history is worth one line because the shape of the fix
    is the reason to trust it: an approved draft could not be sent back at all — `409`, "only a
@@ -1124,11 +1125,12 @@ post again, on somebody's pull request, under your principal's name.
    way. "Last" is true of
    what you are handed; if you sign your comments, see below for what goes after it.
 
-   **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what the
-   line does and a Nit about what it is called — and measured on review-desk master `41bbc10`, two such
-   threads come back carrying one `path` and one `line` between them. Pairing on those has
-   nothing to choose with, and `finding link` would attach each comment to whichever finding was
-   found first: both calls return success, the record is wrong, and nothing says so.
+   **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what
+   the line does and a Nit about what it is called — and measured on review-desk master
+   `41bbc10`, two such threads come back carrying one `path` and one `line` between them.
+   Pairing on those has nothing to choose with, and `finding link` would attach each comment to
+   whichever finding was found first: both calls return success, the record is wrong, and
+   nothing says so.
 
    | What the comment carries | Do |
    |---|---|
@@ -1153,8 +1155,9 @@ post again, on somebody's pull request, under your principal's name.
 
    **Unless it failed with `draft_status` reading `sent_back`, and then retrying never works.**
    That is your principal taking the sign-off back in the window between your post and your
-   report. Measured on review-desk master `41bbc10`: `draft posted` refuses with "the draft of review N
-   is sent_back, and only an approved draft can be marked posted", and the review is left with
+   report. Measured on review-desk master `41bbc10`: `draft posted` refuses with "the draft of
+   review N is sent_back, and only an approved draft can be marked posted", and the review is
+   left with
    **no `github_review_id`** — so nothing in the record says the review you just posted exists.
 
    Four things follow, in this order:
