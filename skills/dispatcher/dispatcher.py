@@ -506,6 +506,17 @@ REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",
 # SQLite file on a laptop, and short enough that a hung binary cannot stall a poll tick.
 REVIEW_DESK_TIMEOUT = 30
 
+# The prefix `review_desk_detail` puts on clap's own refusal, which is how an OLDER Review Desk
+# says it has never heard of a flag. `main.rs` in the Review Desk checkout remaps clap's usage
+# exit to 1 and gives the document the code `usage`, so a refusal reading like this one is the
+# only refusal in this file that means "too old for that argument" rather than "no".
+#
+# Read off the detail string rather than the document because `review_desk_run` hands back a
+# detail and not a payload on a non-zero exit, and the `f"{code}: {message}"` it composes is
+# three lines above. Measured against a binary built from review-desk 0e0bf1b:
+# `{"error":{"code":"usage","message":"error: unexpected argument '--ledger' found ..."}}`.
+REVIEW_DESK_USAGE_REFUSAL = "usage:"
+
 # `harvest` gets its own, and the reason is that it is the one Review Desk command that is not a
 # local read: it asks GitHub for every open pull request a posted review is waiting on, so its
 # duration is a function of the network and of how many reviews a repository has, where every
@@ -857,6 +868,10 @@ class Poller:
         self.state.setdefault("prs_present", None)
         # State written before backlog tracking existed: whatever was already pending is backlog.
         self.state.setdefault("review_backlog", sorted(self.state["prs_present"] or []))
+        # Which review request is recorded in Review Desk, and on which head commit: the key for
+        # the pull request, against the commit the recording was of. See `record_request` for why
+        # it is remembered at all, and `review_requests` for where it is pruned.
+        self.state.setdefault("recorded", {})
         # Keyed on THIS PROCESS, and never on the state file. `started` is persisted, so reading
         # it made `backlog` true once per instance LIFETIME instead of once per session: the
         # `tc-portal` instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
@@ -912,6 +927,13 @@ class Poller:
         # Reset per tick; here as well so a test that calls one section directly does not have
         # to know that `tick()` is what creates it.
         self.pr_states: dict = {}
+        # Every review request GitHub showed this tick, whatever its ledger status. Read by
+        # `request_spoken_for` so that one request reaches the Dispatcher once.
+        self.requested: set = set()
+        # Whether recording review requests has been given up on for this tick. One install
+        # answers for every request, so an absent or broken one is asked once. See
+        # `record_request`.
+        self.record_stopped = False
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1071,6 +1093,19 @@ class Poller:
         # merged on the second. One `gh pr view` per Review Desk item would otherwise be one per
         # item per tick, and the answer cannot change inside a tick.
         self.pr_states = {}
+        # Both per tick, and both about this tick's two review sources agreeing: what GitHub
+        # showed, and whether Review Desk is still worth asking. `review_requests` fills the
+        # first and `review_desk` reads it, which is why the section order below is not
+        # arbitrary.
+        self.requested = set()
+        self.record_stopped = False
+        # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
+        # behaviour rather than habit. The GitHub pass records each request it sees in Review
+        # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
+        # to know what GitHub already showed, or one request would reach the Dispatcher twice and
+        # two sessions could land on one review. `self.requested` is that knowledge and it is
+        # filled by the earlier section.
+        #
         # `harvest` is LAST, and deliberately. It is the only section that makes a call off this
         # machine to anything but an API — it asks GitHub about every review a repository has
         # posted — so a slow one delays nothing but the heartbeat, and every event a human might
@@ -1200,6 +1235,8 @@ class Poller:
             trusted = False
         every = cfg["limits"]["reemit_after_secs"]
         previous = self.state["prs_present"]
+        rd = review_desk_cfg(cfg)
+        recording = not review_desk_off(rd)
         present = {}
         for pr in nodes:
             if not pr or (g.get("skip_drafts") and pr.get("isDraft")):
@@ -1207,8 +1244,26 @@ class Poller:
             repo = pr["repository"]["nameWithOwner"]
             key = pr_key(repo, pr["number"])
             present[key] = {"repo": repo, "number": pr["number"]}
+            # Whatever its status, and before anything below can decide not to speak about it.
+            # `request_spoken_for` reads this set, and what it is answering is "did GitHub
+            # already show the Dispatcher this request", not "was an event emitted for it".
+            self.requested.add(key)
             entry = ledger.get(key) or {}
             status = entry.get("status")
+            # **Recorded before the request is emitted, which is the whole of DEV-945's first
+            # gap.** Review Desk could not say how many requests had come in or which were never
+            # started, because it heard nothing until a session ran `review open`. Now the
+            # request is in the record whether or not a session is ever dispatched for it — so a
+            # request the principal skipped, or one nobody got to, is a row the developer can
+            # see and (once Review Desk has it) dismiss.
+            #
+            # A request a live session holds is left alone: that session recorded it on the way
+            # in, and `review open` with a head the author has since pushed would spend a ROUND
+            # on a review somebody is working. Not a loss — a session that died before recording
+            # leaves a `lost` entry, which is not ALIVE, so the next tick records it.
+            if recording and status not in ALIVE:
+                self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
+                                    pr.get("title"))
             common = dict(key=key, repo=repo, number=pr["number"], title=pr["title"], url=pr["url"],
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
                           opened=(pr.get("createdAt") or "")[:10],
@@ -1270,6 +1325,114 @@ class Poller:
                 emit("review_cleared", key=key, reason=self.why_cleared(cfg, where),
                      session_id=entry.get("session_id"), session_name=entry.get("session_name"))
         self.state["prs_present"] = present
+        # Pruned with `prs_present` and on the same evidence: this tick is trusted to say what is
+        # requested, so what it does not name is not requested. That bounds the dict by the
+        # number of OPEN requests rather than by every commit of every review in this instance's
+        # history — the poll state is read and rewritten every tick, and a dict that only grows
+        # is a file that only grows.
+        #
+        # The cost is one call: a request that clears and is made again is recorded again, which
+        # hands back the same review and is the honest reading of it — somebody asking twice is
+        # activity, and the record says so.
+        self.state["recorded"] = {k: v for k, v in self.state["recorded"].items() if k in present}
+
+    def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
+                       title: str | None) -> bool:
+        """Record one review request in Review Desk, before any session starts. Says nothing.
+
+        `review open` is the command, and Review Desk's own README says why there is not one of
+        its own: a review with no brief **is** a request — `work list` reports it as
+        `review_requested` — so recording a request is opening a review and nothing more. Every
+        claim below was measured against a binary built from review-desk 0e0bf1b (DEV-945's
+        other half) against a temporary database:
+
+          recorded twice          one review. `created` false the second time, no round spent
+          a new head, unstarted   the request MOVES to it, `head_moved_from` naming the old one
+          a new head, started     the next round, exactly as before this existed
+          `--ledger`, older build exit 1, `error.code` `usage`, nothing written
+
+        `--ledger` carries this instance's own key for the pull request, which is the same value
+        the worker later writes with `review link --ledger`, so the two agree about one review
+        rather than opening a second entry for it.
+
+        **Once per key and head commit, and marked only when the call succeeded.** Two reasons,
+        and the second is the one that is easy to miss: a repeat `review open --ledger` WRITES
+        (it sets the links again), so it moves `review.last_activity_at` — and a call on every
+        tick would leave every never-started request looking freshly touched for ever, which is
+        the one thing the dashboard reads that field for. Marking on success only is what keeps
+        "an install you fix is used on the very next poll" true of this path as well.
+
+        **Silent in every mode, in every outcome.** The `review_desk` section asks the same
+        install about the same repositories in this same tick and is what reports it absent,
+        broken or too old, with its own rate limit. A second voice here would be the "nothing
+        extra said" that an instance without Review Desk is owed.
+
+        Returns whether the request is now recorded, for the tests and for nothing else.
+        """
+        if self.record_stopped or not head:
+            # No head commit, no recording: `review open` requires one, and a search row without
+            # `headRefOid` is a row this file cannot describe a review of.
+            return False
+        if self.state["recorded"].get(key) == head:
+            return False
+        facts = ["review", "open", "--repo", repo, "--pr", str(number), "--head", head]
+        if title:
+            facts += ["--title", title]
+        state, _, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
+        if state == "refused" and detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
+            # An older Review Desk: it has `review open` and has never heard of `--ledger`. The
+            # request is still worth recording without it — the worker writes the ledger id with
+            # `review link` when it starts, which is how it reached the record before DEV-945 —
+            # so it is retried ONCE, without the flag, and never again. A second refusal is a
+            # refusal about something else and is left alone.
+            state, _, detail = review_desk_run(rd, *facts, "--json")
+        if state in ("absent", "broken"):
+            # One install answers for every request, so there is nothing to learn from asking
+            # again this tick — and a great deal to lose: at a 30s timeout, a hung binary asked
+            # once per request is one stalled tick per page of requests. Asked once, it costs
+            # what the `review_desk` section's own call already costs.
+            self.record_stopped = True
+            return False
+        if state != "ok":
+            # A refusal this file has nothing to say about, and it is about THIS request rather
+            # than about the install, so the rest of the page is still recorded. Unmarked, so
+            # the next tick tries it again.
+            return False
+        self.state["recorded"][key] = head
+        return True
+
+    def request_spoken_for(self, key: str, entry: dict, item: dict) -> bool:
+        """Is there nothing for the Review Desk pass to say about this `review_requested`?
+
+        All three shapes are DEV-945's own making: before a request was recorded on sight, a
+        review with no brief could only be one a session or the dashboard had opened, and every
+        one of them was work.
+
+          1. **GitHub showed it this tick.** One request, one event. The GitHub pass is already
+             telling the Dispatcher about this request, on its own cadence and with its own
+             backlog flag, and Review Desk's copy is the record rather than a second source. Two
+             events for one request is two sessions on one review.
+          2. **The principal said skip.** They said it about the REQUEST, and the row this
+             poller wrote is not a second opinion. Without this, recording a skipped request
+             would hand it straight back for dispatch, overriding a human decision — and
+             `review_requests` goes quiet about a skipped key, so nothing else would object.
+          3. **It names a ledger entry that does not exist.** Only this poller links a review to
+             a ledger entry nobody created; a worker writes its entry before it opens anything.
+             So this is a request recorded on sight that was never claimed, and GitHub is no
+             longer showing it: the pull request closed, or the request was withdrawn. There is
+             nothing to start. It stays in the record for the developer to see, and to dismiss
+             when Review Desk can be asked to — which is the other half of DEV-945.
+
+        What shape 3 costs: on a tick where the GitHub search failed or was truncated, a request
+        that IS still being made looks like a withdrawn one and nothing is dispatched for it.
+        That tick says `source_empty` for its own reason, and the next healthy tick shows the
+        request again.
+        """
+        if key in self.requested:
+            return True
+        if entry.get("status") == "skipped":
+            return True
+        return bool(item.get("ledger_id")) and not entry
 
     @staticmethod
     def why_cleared(cfg: dict, where: dict) -> str:
@@ -1416,6 +1579,10 @@ class Poller:
         # sources agree about one pull request instead of opening a second entry for it.
         key = item.get("ledger_id") or pr_key(repo, number)
         entry = ledger.get(key) or {}
+        # Before the liveness test, because none of its three shapes is about a session: they are
+        # about whether this request is this section's to offer at all. See `request_spoken_for`.
+        if kind == "review_requested" and self.request_spoken_for(key, entry, item):
+            return
         if review_desk_live(live, entry) and not self.cannot_be_told(kind, key, entry):
             return
         # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
