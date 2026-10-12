@@ -1949,6 +1949,56 @@ ok "SKILL.md handles the worker's merge report"        "$(grep -c 'A review work
 ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_request_closed. |' "$skill_md")" 1
 ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1
 ok "  and that no review_request reaches it for one"   "$(grep -c 'never reaches you as a .review_request.' "$skill_md")" 1
+
+printf '\n  DEV-959: the one discard the Dispatcher makes without asking\n'
+# Patrick decided this on the ticket ("yes, let it discard merged sessions itself"), as a narrow
+# exception to `## Never`'s standing rule. It is the Dispatcher's act, through the allele MCP
+# tool, so there is no Locus code path to drive -- which is itself the thing worth pinning, and
+# the stand-in below is how. A `allele` on PATH that records every call, and zero calls after a
+# full poll tick and a watch tick: nothing in this repo can discard a session, so every discard
+# that ever happens is one a Dispatcher session chose, from prose a human can read and audit.
+cat > "$work/bin/allele" <<'ALLELESTANDIN'
+#!/bin/sh
+printf '%s\n' "$*" >> "$RDWORK/allele.calls"
+exit 0
+ALLELESTANDIN
+chmod +x "$work/bin/allele"
+rm -f "$work/allele.calls"
+instance '{"mode":"auto"}'
+work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a poll tick over a merged PR discards nothing"     "$([ -f "$work/allele.calls" ] && echo some || echo none)" none
+rc=$(run "$disp" watch gh-portal-418 --once)
+ok "  and neither does a watch tick"                   "$([ -f "$work/allele.calls" ] && echo some || echo none)" none
+ok "  no code in the skill calls a discard at all"     "$(grep -c 'sessions_discard(' "$disp")" 0
+# What a Dispatcher writes AFTER its own discard, which is code and is driven for real.
+put gh-portal-418 status=discarded --by dispatcher --note "PR merged"
+ok "the ledger records the discard and who made it"    "$(python3 -c "
+import json, sys
+e = json.load(open('$inst/runtime/ledger/gh-portal-418.json'))
+print(e['status'], e['history'][-1]['by'], e['history'][-1].get('note'))")" "discarded dispatcher PR merged"
+
+printf '\n  and what ## Never says about it, in place beside the rule\n'
+# AC 4 is literally about where this is written: the rule and its exception have to be read
+# together, or the next reader of `## Never` learns a rule that is no longer true.
+never () { sed -n '/^## Never$/,$p' "$skill_md"; }
+ok "the standing rule is still stated"                 "$(never | grep -c 'Discard without your principal.s explicit yes')" 1
+ok "  and the exception is stated beside it"           "$(never | grep -c 'these three$')" 1
+ok "  condition 1: only a review worker"               "$(never | grep -c 'a \*\*review\*\* worker, no other mode')" 1
+ok "  condition 2: GitHub says merged or closed"       "$(never | grep -c 'GitHub reports .merged. or .closed.')" 1
+ok "  and not Review Desk saying so"                   "$(never | grep -c 'Not Review Desk$')" 1
+ok "  condition 3: only once it has stopped"           "$(never | grep -c 'A worker mid-turn is not$')" 1
+ok "  checked with allele_sessions_status"             "$(never | grep -c 'allele_sessions_status(session_id). first')" 1
+ok "  it reports after the fact, not before"           "$(never | grep -c 'say so once, after the fact')" 1
+ok "  and never silently"                              "$(never | grep -c 'indistinguishable from one that crashed')" 1
+ok "  everything else still needs the yes"             "$(never | grep -c 'Everything else still needs the yes')" 1
+ok "  naming an open PR as still needing it"           "$(never | grep -c 'whose pull request is still$')" 1
+ok "the review_cleared row carries the exception too"  "$(grep -c 'where you discard without asking' "$skill_md")" 1
+ok "  and still asks on every other reason"            "$(grep -c 'Every other reason still asks' "$skill_md")" 1
+ok "the worker-report row discards without asking"     "$(grep -c 'discard it yourself, without asking' "$skill_md")" 1
+ok "start-up reconciles a merged key the same way"     "$(grep -c 'whose entry says .merged.: that worker finished' "$skill_md")" 1
 ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
 
 printf '\n  a kind this file cannot place is named, once per interval\n'
