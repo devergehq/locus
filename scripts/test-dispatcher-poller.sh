@@ -36,6 +36,11 @@ disp="$root/skills/dispatcher/dispatcher.py"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# A temporary database, for the one case the narrowed PATH above does not cover: since DEV-945
+# the poller WRITES a review request into Review Desk as it sees one, and the search pages below
+# are full of them. A `review-desk` reaching PATH by a route that line did not anticipate must
+# not find the live store under `~/.review-desk`. Inside $work, so the trap above removes it.
+export REVIEW_DESK_DB="$work/review-desk.db"
 
 pass=0
 fail=0
