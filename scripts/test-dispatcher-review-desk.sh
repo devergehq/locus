@@ -3289,6 +3289,17 @@ ok "a truncated page still reports a broken install"   "$(count '"event": "revie
 ok "  and still says the page was truncated"           "$(count '"event": "source_empty"')" 1
 ok "  and still emits the requests it did see"         "$(count '"event": "review_request"')" 50
 
+# **One subcommand can fail while the other answers.** `work list` is a read and `review open`
+# is a write, so write contention with the dashboard breaks one and not the other -- and the
+# reading pass has nothing to say about a write it never makes. The recording path says it.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo broken > "$work/rd.open.mode"
+rc=$(run "$disp" poll 1)
+ok "a broken \`review open\` is reported on its own"    "$(count '"event": "review_desk_unavailable"')" 1
+ok "  as broken"                                       "$(says '"state": "broken"')" yes
+ok "  while the work list is still read"               "$(grep -c '^work list' "$work/rd.calls")" 1
+
 # With a repository to ask about, BOTH paths meet the same broken install and it is still one
 # line: they share the event, the mode rule and the rate-limit mark.
 instance '{"mode":"on"}'
@@ -3406,6 +3417,18 @@ rc=$(run "$disp" poll 1)
 ok "a mixed-case repository is recorded once"          "$(opens)" 1
 ok "  the request is emitted once"                     "$(count '"event": "review_request"')" 1
 ok "  and Review Desk does not offer it again"         "$(count '"event": "review_desk_requested"')" 0
+
+# **A key somebody has already decided about is offered to nobody**, and `skipped` is only one
+# of the three. `deferred` is the status this file itself defines as "never dispatched again",
+# and recording on sight is what gave it a `review_requested` item to be offered through. GitHub
+# is silent in these, which is the tick where the first guard cannot help.
+for decided in skipped deferred merged; do
+  instance '{"mode":"auto"}'
+  work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
+  put gh-portal-412 mode=review status=$decided repo=acme/portal number=412 --by test
+  rc=$(run "$disp" poll 1)
+  ok "a $decided key is not offered for dispatch"      "$(count '"event": "review_desk_requested"')" 0
+done
 
 # A lost session's review, which carries a ledger id AND an entry: still work, and the one case
 # that tells the ledger-entry test apart from a test on the ledger id alone.
@@ -3931,7 +3954,7 @@ put gh-portal-412 mode=review status=lost repo=acme/portal number=412 --by test
 rc=$(run "$work/notick.py" poll 1)
 ok "  without it Review Desk offers it again"          "$(count '"event": "review_desk_requested"')" 1
 
-sed 's/^        if entry\.get("status") == "skipped":$/        if False:  # SKIP TEST REVERSED/' \
+sed 's/^        if entry\.get("status") in DECIDED:$/        if False:  # SKIP TEST REVERSED/' \
     "$disp" > "$work/noskip.py"
 ok "the skip reversal changed one line"                "$(grep -c 'SKIP TEST REVERSED' "$work/noskip.py")" 1
 # GitHub silent, so the this-tick guard cannot pass this one for it.
@@ -4226,7 +4249,7 @@ search_doc acme/portal 412 sha999 Retry
 rc=$(run "$work/nodismisswrite.py" poll 1)
 ok "  without it every push writes to a dismissed row" "$(opens)" 2
 
-sed 's/^        if self\.record_broken is None or review_desk_repos(cfg, ledger):$/        if True:  # NO VOICE AT ALL/' \
+sed 's/^        if self\.record_broken is None:$/        if True:  # NO VOICE AT ALL/' \
     "$disp" > "$work/novoice.py"
 ok "the one-voice reversal changed one line"           "$(grep -c 'NO VOICE AT ALL' "$work/novoice.py")" 1
 NOMAP=1 instance '{"mode":"on"}'
@@ -4258,7 +4281,7 @@ search_doc acme/portal 412 sha999 Retry
 rc=$(run "$work/nosession.py" poll 1)
 ok "  without it a push spends a round"                "$(python3 -c 'import json,sys;s=json.load(open(sys.argv[1]));print(max(h["round"] for h in s.values()))' "$work/rd.opens.json")" 2
 
-sed 's/^        self\.record_unreachable(rd, cfg, ledger, every)$/        pass  # NOTICE AFTER THE RETURN/' \
+sed 's/^        self\.record_unreachable(rd, every)$/        pass  # NOTICE AFTER THE RETURN/' \
     "$disp" > "$work/nountrusted.py"
 ok "the truncation reversal changed one line"          "$(grep -c 'NOTICE AFTER THE RETURN' "$work/nountrusted.py")" 1
 NOMAP=1 instance '{"mode":"on"}'
@@ -4266,6 +4289,15 @@ search_page acme/portal 50 60
 echo broken > "$work/rd.mode"
 rc=$(run "$work/nountrusted.py" poll 1)
 ok "  without it a truncated page reports nothing"     "$(count review_desk_unavailable)" 0
+
+sed 's/^        if self\.record_broken is None:$/        if self.record_broken is None or review_desk_repos(cfg, ledger):  # DEFERRED TO THE READER/' \
+    "$disp" > "$work/nosplit.py"
+ok "the split-health reversal changed one line"        "$(grep -c 'DEFERRED TO THE READER' "$work/nosplit.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+echo broken > "$work/rd.open.mode"
+rc=$(run "$work/nosplit.py" poll 1)
+ok "  without it a broken write is never reported"     "$(count review_desk_unavailable)" 0
 
 sed 's/^        rid = review_id(held\.get("review")) or review_id(entry\.get("review_desk_id"))$/        rid = review_id(held.get("review"))  # LEDGER ID IGNORED/' \
     "$disp" > "$work/noledgerid.py"

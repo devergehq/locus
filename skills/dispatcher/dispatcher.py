@@ -187,6 +187,14 @@ REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
 # must never be dispatched again (so not REDISPATCHABLE). They therefore stop appearing as live
 # work with no call-site change. A named TERMINAL set was proposed and declined — nothing would
 # read it, and a constant nothing reads is a second place for this decision to drift.
+#
+# **DEV-945 gave it a reader, so here it is.** Recording a review request on sight means Review
+# Desk's work list now carries a `review_requested` item for keys it never had one for, and the
+# Review Desk source must not offer a key somebody has already decided about. `skipped` is the
+# principal's own decision; `deferred` and `merged` are the two above. Read by
+# `request_spoken_for` and by nothing else, which is why it is defined here rather than guessed
+# at there — the set and the paragraph above it have to agree, and now they are adjacent.
+DECIDED = {"skipped", "deferred", "merged"}
 
 # Statuses after which nothing will ever speak on the key again, so a `watch` process still
 # running on it is an orphan. Read by `cmd_watch`, `cmd_doctor` and `cmd_reap`.
@@ -1410,7 +1418,7 @@ class Poller:
         # attempted its recordings, and may be holding the only evidence anybody has that the
         # install is broken. Reported for 50 requests and lost for want of a return statement
         # was found in review.
-        self.record_unreachable(rd, cfg, ledger, every)
+        self.record_unreachable(rd, every)
         if not trusted:
             # Everything below this line commits "nothing is requested" as fact: it prunes the
             # start-up backlog, tells the Dispatcher that live reviews were cleared, and overwrites
@@ -1473,8 +1481,8 @@ class Poller:
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
                                   if k in present or v.get("dismissed")}
 
-    def record_unreachable(self, rd: dict, cfg: dict, ledger: dict, every: int) -> None:
-        """Say that Review Desk could not be reached, but only if nobody else will.
+    def record_unreachable(self, rd: dict, every: int) -> None:
+        """Say that Review Desk could not be reached while recording a request.
 
         **"Broken is loud in every mode but `off`" had a hole, and recording opened it wider.**
         The `review_desk` pass is what reports an install absent or broken, and it returns
@@ -1485,11 +1493,19 @@ class Poller:
         a fresh `mode: on` instance could meet a broken Review Desk, record nothing, and say
         nothing.
 
-        Said through the `review_desk` pass's own event, mode rule and rate-limit marks, so an
-        instance where BOTH could speak still hears one line: whichever runs first takes the
-        mark, and this one runs first.
+        **It does not ask whether that pass will speak, and the first version did.** It checked
+        `review_desk_repos` and stayed quiet when there was a repository to ask about, on the
+        reasoning that the other pass would report the same install. It probes a DIFFERENT
+        subcommand: `work list` is a read and `review open` is a write, so one can time out on
+        write contention with the dashboard while the other answers `ok` — and that install was
+        then silent for ever while recording produced nothing. Found by review of this branch.
+
+        What stops two voices for one fault is not a condition here but a shared mark: this
+        emits the `review_desk` pass's own event with that pass's own rate-limit signature, so
+        the same install failing the same way is one line whichever path meets it first, and two
+        lines only when the two failures genuinely differ.
         """
-        if self.record_broken is None or review_desk_repos(cfg, ledger):
+        if self.record_broken is None:
             return
         state, detail = self.record_broken
         if state == "absent" and not review_desk_loud_when_absent(rd):
@@ -1575,9 +1591,12 @@ class Poller:
         # deliberately, which is whose job it is. `session_id` on the review is the fact, so the
         # fact is what this reads rather than inferring it from a status.
         #
-        # **A record the developer has taken out of play is read and never written to**, whatever
-        # the author pushes to the pull request. `review open` on a new commit would move the
-        # dismissed review's head — Review Desk allows it, and a push is not the developer
+        # **A dismissal THIS POLLER HAS READ is never written to again**, whatever the author
+        # pushes to the pull request. The claim is deliberately that narrow: `dismissed` is
+        # learned by the read below, so a push that lands before the first read — or after the
+        # poll state is lost — is recorded, and `review open`'s own answer is what then reports
+        # the dismissal. One write, once, and nothing after it. `review open` on a new commit
+        # would move the dismissed review's head — Review Desk allows it, and a push is not the developer
         # changing their mind — but it WRITES, which moves `last_activity_at` on a row somebody
         # said to leave alone. That is the same harm the prune above keeps a dismissal to avoid,
         # and it arrived here by the head test running first. The record goes on naming the
@@ -1699,7 +1718,9 @@ class Poller:
             self.record_stopped = True
             detail = (f"{rd.get('command')} review open exited 0 with an answer carrying no "
                       f"review — too old to use")
-            self.record_broken = ("broken", detail)
+            # Said here and not through `record_broken`, which is the carrier for a failure that
+            # has no repository to name. This one has one, and two carriers for one fault is two
+            # lines about it.
             if self.due(f"review_desk|record_unreadable|{repo}", every):
                 emit("review_desk_unavailable", state="broken", mode=rd["mode"],
                      command=rd["command"], repo=repo, detail=detail)
@@ -1799,10 +1820,14 @@ class Poller:
              telling the Dispatcher about this request, on its own cadence and with its own
              backlog flag, and Review Desk's copy is the record rather than a second source. Two
              events for one request is two sessions on one review.
-          2. **The principal said skip.** They said it about the REQUEST, and the row this
-             poller wrote is not a second opinion. Without this, recording a skipped request
-             would hand it straight back for dispatch, overriding a human decision — and
-             `review_requests` goes quiet about a skipped key, so nothing else would object.
+          2. **Somebody has already decided about this key** — `skipped` by the principal,
+             `deferred` or `merged` by the work itself (`DECIDED`). They decided about the
+             REQUEST, and the row this poller wrote is not a second opinion. Without this,
+             recording such a request would hand it straight back for dispatch, overriding the
+             decision — and `review_requests` goes quiet about those keys, so nothing else
+             would object. `skipped` alone was tested here and `deferred` was not, until a
+             review of this branch found that the status the file itself defines as "never
+             dispatched again" was being offered for dispatch on any tick GitHub stayed quiet.
           3. **It names a ledger entry that does not exist.** Only this poller links a review to
              a ledger entry nobody created; a worker writes its entry before it opens anything.
              So this is a request recorded on sight that was never claimed, and GitHub is no
@@ -1828,7 +1853,7 @@ class Poller:
         """
         if requested_key(key) in self.requested:
             return True
-        if entry.get("status") == "skipped":
+        if entry.get("status") in DECIDED:
             return True
         return bool(item.get("ledger_id")) and not entry
 
