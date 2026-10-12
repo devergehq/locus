@@ -1952,6 +1952,64 @@ ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_req
 ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1
 ok "  and that no review_request reaches it for one"   "$(grep -c 'never reaches you as a .review_request.' "$skill_md")" 1
 
+printf '\n  DEV-959: the merged row still speaks for itself through the other source\n'
+# The ordering the GitHub pass depends on, and it is not obvious from either side. A merged row
+# is dropped before it is recorded or offered -- but `self.requested.add` happens BEFORE that
+# drop, because `review_desk_item` reads `pr_state` LIVE and that call can fail: `pr_state`
+# returns None, this file refuses to read None as closed, and `review_desk_requested` would be
+# emitted for the very pull request the GitHub pass had just silenced. `request_spoken_for`'s
+# first shape -- "GitHub showed the Dispatcher this request" -- is then the only guard, and it is
+# fed from that line. Driven with a `gh pr view` that returns unparseable output, which is what
+# `gh()` turns into the exception `pr_state` swallows.
+instance '{"mode":"auto"}'
+search_doc acme/portal 418 abc123
+python3 - "$work/gh.search" <<'PYMERGE'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYMERGE
+work_doc review_requested 9 acme/portal 418 1791520400
+printf 'not json at all' > "$work/pr.418.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+# The property is ONE offer, not none. `pr_state` returning None is GitHub not answering, and
+# this file refuses to read that as closed -- "an item the dispatcher cannot place is better
+# dispatched and discarded by a human who can read the pull request than dropped silently" -- so
+# the GitHub pass offers the row, which is the right half of the pair to keep. What must NOT
+# happen is the Review Desk source offering it as well, which is two sessions on one review, and
+# shape 1 of `request_spoken_for` is the only thing stopping it in this exact state.
+ok "an unreadable pr_state still offers the row once"  "$(count '"event": "review_request"')" 1
+ok "  and the Review Desk source stays quiet"          "$(count '"event": "review_desk_requested"')" 0
+ok "  so one request reaches the Dispatcher, not two"  "$(count '"event": "review_desk_resume"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+# The control that makes the quiet half mean something: delete the merged row's membership of
+# `self.requested` and the Review Desk source speaks for the same pull request.
+python3 - "$disp" "$work/noshape1.py" <<'PYSHAPE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        if requested_key(key) in self.requested and entry.get("status") in REDISPATCHABLE:
+            return True"""
+new = """        if False:  # SHAPE 1 REVERSED
+            return True"""
+assert old in src, "shape 1 anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYSHAPE
+ok "the shape 1 reversal changed one line"             "$(grep -c 'SHAPE 1 REVERSED' "$work/noshape1.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 418 abc123
+python3 - "$work/gh.search" <<'PYMERGE2'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYMERGE2
+work_doc review_requested 9 acme/portal 418 1791520400
+printf 'not json at all' > "$work/pr.418.json"
+no_sessions
+rc=$(run "$work/noshape1.py" poll 1)
+ok "no shape 1: the merged PR is offered twice"        "$(count '"event": "review_desk_requested"')" 1
+
 printf '\n  DEV-959: the one discard the Dispatcher makes without asking\n'
 # Patrick decided this on the ticket ("yes, let it discard merged sessions itself"), as a narrow
 # exception to `## Never`'s standing rule. It is the Dispatcher's act, through the allele MCP
