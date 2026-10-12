@@ -1682,8 +1682,16 @@ class Poller:
         # tick — one strange `review find` on one new request killing the dismissal guard for
         # forty others, every tick, for the life of the install. That is the asymmetry
         # `read_request` has a paragraph about, in the opposite direction.
-        # **Nothing is written to a review this poller has not looked at.** The first call on a
-        # key used to be the write, and `review open` on a commit the author has pushed since
+        # **Nothing is written to a review whose session and dismissal this poller has not
+        # read** — from the look, or from the dismissal read, which carries the same two fields.
+        # The looser wording is deliberate and was once stricter ("not looked at"), which the
+        # review of the commit before this one showed is no longer literally true: a key whose
+        # look was REFUSED falls through to the read, and a read that answers writes a record,
+        # after which `if not held` is false and the look never runs for that key again. It is
+        # safe because `review show` answers with `session_id` and `dismissed_at` — the two
+        # facts the look exists to supply — and unsafe to describe as a guarantee about looking.
+        #
+        # The first call on a key used to be the write, and `review open` on a commit the author has pushed since
         # answers `created: true` with the NEXT ROUND when a session is linked to the review it
         # finds — so a review opened from the dashboard, linked by its own session, with no
         # ledger entry here, was handed a round nobody asked for by the very first tick that saw
@@ -1810,12 +1818,20 @@ class Poller:
             # recording the commit GitHub is showing would claim a head the store does not hold
             # and no restore would ever move it.
             #
-            # **GitHub's spelling of it, not Review Desk's**, wherever there is a choice. Review
-            # Desk normalises what it is given — `normalise::head_sha` trims and lower-cases —
-            # so storing the echo would mean comparing a normalised commit with an unnormalised
-            # one, and any case that ever differed would read as "the commit moved" on every
-            # tick for ever: one `review open` WRITE per tick, which is the `last_activity_at`
-            # harm the once-per-commit rule exists to prevent, arriving by another door.
+            # **Either spelling is safe, and the CALLER picks which.** Review Desk normalises
+            # what it is given — `normalise::head_sha` trims and lower-cases — so a record
+            # holding its echo and a record holding GitHub's own differ in case, and this value
+            # is consumed only by `same_commit`, which normalises both sides. That is what makes
+            # the choice the caller's: GitHub's commit after a write, because that is what was
+            # written; Review Desk's after a read, because a read must not claim a commit the
+            # store was never given.
+            #
+            # **This paragraph used to say the opposite** — GitHub's spelling wherever there is a
+            # choice — and justified it with the churn `same_commit` now prevents, while both
+            # callers did the other thing. A future editor trusting it over the call sites would
+            # restore GitHub's head on the read path and with it the bug the commit before this
+            # one fixed: a record claiming a commit Review Desk never held, so the request reads
+            # as already recorded and is never written again.
             "head": head,
             "review": review.get("id"),
             # `dismissed_at` is the fact and the reason is for the reader, so they are kept
