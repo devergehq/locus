@@ -3016,7 +3016,14 @@ no_sessions
 # at one of the four known-dead ones. Short single-line substrings, because the prose rewraps.
 ok "the brief says what its hashes are"             "$(grep -c 'hashes in this file are where a claim was measured' "$brief_md")" 1
 ok "  and that a rebase deletes them"               "$(grep -c 'a rebase rewrites them' "$brief_md")" 1
-ok "  and cites none of the four dead ones"         "$(grep -cE 'a64f8a9|13a78ee|bae4f5e|c17d335' "$brief_md" || true)" 0
+# Matched as `review-desk <hash>`, the form a citation takes, NOT as a bare hash: the note names
+# f762e61 on purpose as the case that died within hours of being written, and an assertion that
+# forbade the mention would delete the evidence for the rule it is guarding.
+ok "  offers none of the five dead ones as evidence" "$(grep -cE 'review-desk `(a64f8a9|13a78ee|bae4f5e|c17d335|f762e61)`' "$brief_md" || true)" 0
+# f762e61 joined that list the day it was written: it replaced one of the four on 12 October 2026
+# and its pull request rebased again before merging, so it died within hours. The citations now
+# name master, where a merge commit is not rewritten, and this asserts the brief got there.
+ok "  and cites master instead"                     "$([ "$(grep -c '41bbc10' "$brief_md")" -gt 0 ] && echo yes || echo no)" yes
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
