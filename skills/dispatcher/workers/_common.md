@@ -119,7 +119,10 @@ subagents.
 
 ## Never
 
-- Discard your own session. Only your principal does that, through the Dispatcher.
+- Discard your own session. Your principal does that, through the Dispatcher — who also discards
+  a review worker on its own, without asking, once that worker's pull request has merged or
+  closed and it has stopped. That is their standing decision and the only discard not put to
+  them; it is still never yours to make.
 - Merge a PR, request reviewers, or approve anyone's PR.
 - Touch a ticket or PR other than your own, except sub-issues your brief tells you to create.
 - Paste personal data (names, addresses, dates of birth, government identifiers, bank details)

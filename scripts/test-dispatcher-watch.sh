@@ -37,6 +37,13 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 disp="$root/skills/dispatcher/dispatcher.py"
 
 work=$(mktemp -d)
+# Belt as well as braces. The narrowed PATH above is what keeps `review-desk` out of reach, and
+# nothing here sets `review_desk_id` on a ledger entry so `Watcher.review_desk` returns before it
+# asks anything. But DEV-959 added a block that puts `$work/bin` on the front of PATH for a `gh`
+# stand-in, and the next person to need a `review-desk` stand-in is one line from a harness that
+# opens the live store under `~/.review-desk` -- which a live dispatcher is writing to. Set here,
+# inside $work, so that line cannot be the one that does it.
+export REVIEW_DESK_DB="$work/review-desk.db"
 inst="$work/inst"
 cleanup () {
   # Kill anything this test started, and nothing else: only pids recorded in $work.
@@ -306,6 +313,20 @@ ok "reap removes its --as cursor"                "$([ -f "$inst/runtime/watch/gh
 ok "reap keeps the live key's cursor"            "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
 ok "reap keeps an unattributable cursor"         "$([ -f "$inst/runtime/watch/no-such-key.json" ] && echo yes || echo no)" yes
 ok "  and says it did"                           "$(says 'match no ledger entry')" yes
+# DEV-959 made a review key's cursor prunable at ANY status, which is right -- a merged pull
+# request is finished whatever the ledger says -- and it made `stop[0]` able to be absent for the
+# first time: every branch before it was keyed on the status itself, so there was always a word to
+# print. An entry with no `status` field now reaches this line, and it used to read "is None".
+# `gh-test-4`, not -3: the live-watcher block below owns -3, and a cursor saying merged under a
+# review key is now exactly what makes a watcher exit before that block can test reap at all.
+put gh-test-4 mode=review --by test   # mode and no status: what `ledger_put` writes for that
+printf '{"pr": {"repo": "o/r", "number": 4}, "pr_status": "merged"}' \
+  > "$inst/runtime/watch/gh-test-4.json"
+set +e; D reap --dry-run > "$work/out" 2>&1; set -e
+ok "a merged review cursor is prunable at any status" "$(says 'would prune gh-test-4.json')" yes
+ok "  and a statusless entry does not print None"     "$(says 'is None')" no
+ok "  it says so in words instead"                    "$(says 'gh-test-4 is no status')" yes
+rm -f "$inst/runtime/watch/gh-test-4.json"
 # A leftover FILE must not stop the Dispatcher starting. SKILL.md's start-up step says "anything
 # cross: tell your principal and stop", and tc-portal holds 112 of these. An orphaned PROCESS
 # earns that hard stop because it spends API budget; a dead file costs disk and can wait.

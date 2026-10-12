@@ -814,6 +814,30 @@ entry gh-r-9606 active s9
 rc=$(run "$work/nostate.py" merged_rerequest)
 ok "no state check: a merged row IS re-requested"    "$(grep -c '"event": "review_rerequested".*9602' "$work/out" || true)" "1"
 
+# The OTHER half of DEV-959's poller change, which `nostate.py` cannot isolate: keep the guard
+# but put the merged key back in `present`, which is how the first version of this shipped. The
+# clearance sweep then skips it, so the Dispatcher is told about the merge only when the search
+# index drops the row -- never, under a `review_query` with no `is:open`.
+python3 - "$disp" "$work/keptpresent.py" <<'PYREVERSAL'
+import sys
+src = open(sys.argv[1]).read()
+old = """                self.request_closed(key, repo, pr, live, ledger.get(key) or {}, every)
+                continue"""
+new = """                self.request_closed(key, repo, pr, live, ledger.get(key) or {}, every)
+                present[key] = {"repo": repo, "number": pr["number"]}  # PRESENT REVERSED
+                continue"""
+assert old in src, "reversal anchor missing from the source under test"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYREVERSAL
+ok "the present reversal changed one line"           "$(grep -c '# PRESENT REVERSED' "$work/keptpresent.py" || true)" "1"
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9621 active s1
+entry gh-r-9622 active s1
+rc=$(run "$work/keptpresent.py" merged_clears)
+ok "kept in present: the merged key never leaves"    "$(sed -n '/"phase": "two"/p' "$work/out" | grep -c 'gh-r-9621' || true)" "1"
+ok "kept in present: the sweep says nothing"         "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
+
 sed 's/^        self\.first_tick = True$/        self.first_tick = not self.state.get("started")/' \
     "$disp" > "$work/prefix.py"
 ok "the reversal actually changed the source"        "$(grep -c 'self.first_tick = not self.state.get("started")' "$work/prefix.py" || true)" "1"

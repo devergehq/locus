@@ -1999,6 +1999,15 @@ ok "the review_cleared row carries the exception too"  "$(grep -c 'where you dis
 ok "  and still asks on every other reason"            "$(grep -c 'Every other reason still asks' "$skill_md")" 1
 ok "the worker-report row discards without asking"     "$(grep -c 'discard it yourself, without asking' "$skill_md")" 1
 ok "start-up reconciles a merged key the same way"     "$(grep -c 'whose entry says .merged.: that worker finished' "$skill_md")" 1
+# The worker's side has to agree with it. Written before Patrick's decision, review.md said
+# "The Dispatcher reports your line and offers the discard; only your principal answers that" --
+# which the decision made flatly false, and a worker reading it would have expected a session
+# that no longer exists. The two files are each other's only check here.
+ok "review.md says the discard is not asked about"     "$(grep -c 'this is the one discard nobody is asked about' "$worker_md")" 1
+ok "  and that its line is the last it will say"       "$(grep -c 'the last thing you will ever' "$worker_md")" 1
+ok "  while still forbidding a self-discard"           "$(grep -c 'It is still not yours to do' "$worker_md")" 1
+ok "  and no stale promise that the session persists"  "$(grep -c 'offers the$' "$worker_md")" 0
+ok "_common.md names the exception beside its Never"   "$(grep -c 'the only discard not put to' "$common_md")" 1
 ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
 
 printf '\n  a kind this file cannot place is named, once per interval\n'

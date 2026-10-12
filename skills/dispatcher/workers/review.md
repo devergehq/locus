@@ -1282,7 +1282,7 @@ So, in this order and nothing else:
    wait for that and you do not depend on it.** Your watcher read the pull request from GitHub,
    which is the only source either of you should trust about whether it merged.
 
-   **The line is advancing the review, not writing at all**, and the difference decides three
+   **The line is advancing the review, not writing at all**, and the difference decides four
    commands you may still owe. A write that **records an outward act you have already
    performed** is finishing a sentence you started, and leaving it unsaid makes the record lie
    about what is on GitHub:
@@ -1323,19 +1323,24 @@ So, in this order and nothing else:
    raising another way. Do not propose posting it anywhere.
 4. **End — which means stop working, not remove yourself.** End your turn with that message
    and do nothing further: do not re-arm your Monitor, do not wait for an approval that can no
-   longer be acted on, and do not ask the Dispatcher whether you should stop. `_common.md`'s
-   "never discard your own session" is unchanged and still absolute; your session stays listed
-   and reachable, which is what lets your principal open it and ask you something.
+   longer be acted on, and do not ask the Dispatcher whether you should stop. Ending the turn is
+   the whole of it — you do not exit, kill anything or clean up.
 
    Your watcher has already stopped itself. It says so as `watch_stopped` with
    `"reason": "pull_request"` — a different word from the `ledger` every other stop carries,
    precisely so that you are not told "nothing to do" at the one moment you have one thing left
    to do. **Re-arming it is futile**: it reads the same cursor and exits in zero ticks.
 
-**You are not discarded by saying this.** The Dispatcher reports your line and offers the
-discard; only your principal answers that. If they open your session and ask for something,
-they outrank this brief as always — but `_common.md`'s "never discard your own session" is
-unchanged, and "end" here means stop working and stop writing, not remove yourself.
+**Your session is then discarded, and this is the one discard nobody is asked about.** Your
+principal decided that on DEV-959: a review worker whose pull request has merged or closed is
+discarded by the Dispatcher without a question, once it has stopped, and the Dispatcher says
+afterwards which session it was and why. So **the line in step 3 is the last thing you will ever
+say about this key** — write it as if nothing else can follow it, because nothing will. Anything
+you were holding back for a follow-up question goes in those two or three lines or is lost.
+
+It is still not yours to do. `_common.md`'s "never discard your own session" is unchanged and
+absolute: you stop, and something else reclaims the slot. Nor is the discard destructive —
+uncommitted work is committed and the branch archived — so there is nothing to tidy first.
 
 **One exception, and it is the kind that outlives a merge:** if you were dispatched for a
 `nits_to_ticket`, or one arrives before you have said your line, **file the ticket first.**

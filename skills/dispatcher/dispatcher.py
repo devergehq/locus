@@ -4112,7 +4112,11 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
             continue
         stop = watch_stop_reason(key, read_json(path, {}), False)
         if stop:
-            prunable.append((path, key, stop[0]))
+            # `stop[0] or ...`, because the status can now be absent. Every branch that could
+            # stop a watcher before DEV-959 was keyed on the status itself, so `stop[0]` was
+            # always a word; the review branch is keyed on the CURSOR, so an entry with no
+            # `status` field reaches `cmd_reap`'s dry-run line and prints "(gh-x is None)".
+            prunable.append((path, key, stop[0] or "no status"))
     return prunable, unknown
 
 
