@@ -584,6 +584,11 @@ elif argv[:2] == ["review", "show"]:
         refuse("cannot_open_database", "scripted broken review show", 2)
     if show == "refused":
         refuse("not_found", "no review with id %s" % review)
+    if show == "notobject":
+        # Exit 0 with JSON that parses and is not a review. The write path has had a guard for
+        # this shape since the third review pass; the read path had none until the fifth.
+        print("[]")
+        raise SystemExit(0)
     if show == "locked":
         # Understood and refused, and about neither the command nor the row: the record must be
         # left exactly where it was.
@@ -3298,6 +3303,8 @@ echo broken > "$work/rd.open.mode"
 rc=$(run "$disp" poll 1)
 ok "a broken \`review open\` is reported on its own"    "$(count '"event": "review_desk_unavailable"')" 1
 ok "  as broken"                                       "$(says '"state": "broken"')" yes
+ok "  naming the repository it was met on"             "$(says '"repo": "acme/portal"')" yes
+ok "  and the call that failed"                        "$(says '"call": "review open"')" yes
 ok "  while the work list is still read"               "$(grep -c '^work list' "$work/rd.calls")" 1
 
 # With a repository to ask about, BOTH paths meet the same broken install and it is still one
@@ -3405,6 +3412,21 @@ instance '{"mode":"auto"}'
 work_doc review_requested 11 acme/portal 412
 rc=$(run "$disp" poll 1)
 ok "  where a dashboard review still is"               "$(count '"event": "review_desk_requested"')" 1
+
+# A `work list` item whose `ledger_id` is not a string. Nothing here type-checks it, and the
+# key-case comparison would otherwise raise out of the per-repository loop and lose the whole
+# Review Desk pass for that tick.
+instance '{"mode":"auto"}'
+python3 -c "
+import json, pathlib, sys
+doc = {'work': [{'kind': 'review_requested', 'review_id': 11, 'repo': 'acme/portal', 'pr': 412,
+                 'head_sha': 'sha412', 'round': 1, 'sign_off': None, 'session_id': None,
+                 'ledger_id': 412, 'entered_at': 1791520282, 'note': None,
+                 'nit_ticket_status': 'none', 'nit_ticket_requested_at': None}]}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(doc))" "$work/rd.work"
+rc=$(run "$disp" poll 1)
+ok "a non-string ledger id does not throw"             "$(count '"event": "error"')" 0
+ok "  and exits clean"                                 "$rc" 0
 
 # **A repository GitHub spells with capitals.** The two sources key the same pull request
 # differently — GitHub's `nameWithOwner` as registered, Review Desk's `repo` lower-cased — so
@@ -3572,6 +3594,20 @@ ok "a build with no \`review show\` is not a deleted review" "$(remembered gh-po
 ok "  so nothing is recorded again"                    "$(opens)" 1
 ok "  and the request is still dispatched"             "$(remembered gh-portal-412 dismissed)" False
 
+# An exit-0 `review show` whose answer carries no review is BROKEN, said once, and asked no
+# more that tick -- the same rule the write path has. Without it the window was cleared on
+# every tick and the dismissal guard was silently dead on such a build.
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+rc=$(run "$disp" poll 1)
+echo notobject > "$work/rd.show.mode"
+rc=$(run "$disp" poll 1)
+ok "an unreadable \`review show\` is asked once a tick"  "$(shows)" 1
+ok "  and said once"                                   "$(count '"event": "review_desk_unavailable"')" 1
+ok "  naming the call that failed"                     "$(says '"call": "review show"')" yes
+rc=$(run "$disp" poll 1)
+ok "  and not asked twice per request after that"      "$(shows)" 2
+
 # A refusal that is about neither the command nor the row -- a locked database -- leaves the
 # record exactly where it was. Only `not_found` means a review that is gone, which is what
 # `review_desk_run` says in as many words.
@@ -3638,6 +3674,7 @@ ok "  that a dismissed review is not dispatched"       "$(grep -c 'dismissed is 
 ok "  and that a linked session stops the recording"   "$(grep -c 'any session has been linked to is left alone' "$skill_md")" 1
 ok "  and names the event, in prose and as a row"      "$(grep -c 'review_dismissed' "$skill_md")" 2
 ok "  that a refusal is a state, with its example"    "$(grep -c 'name \*\*one example\*\* rather than the extent' "$skill_md")" 1
+ok "  and that a hung install may say one line per call" "$(grep -c 'may say one line per call' "$skill_md")" 1
 ok "  that dismiss, restore and delete are the developer's" "$(grep -c "are your principal.s, from the page" "$skill_md")" 1
 ok "  with no command line for any of them"            "$(grep -c 'no command line for any of them' "$skill_md")" 1
 ok "  and it tells nobody to dispatch a dismissed one" "$(grep -c 'do not offer to dispatch it' "$skill_md")" 1
@@ -4170,7 +4207,7 @@ echo locked > "$work/rd.show.mode"
 rc=$(run "$work/nomissinggate.py" poll 2)
 ok "  without it any refusal forgets the record"       "$(opens)" 2
 
-sed 's/^    return key\.lower()$/    return key  # CASE KEPT/' "$disp" > "$work/nocase.py"
+sed 's/^    return str(key)\.lower()$/    return str(key)  # CASE KEPT/' "$disp" > "$work/nocase.py"
 ok "the key-case reversal changed one line"            "$(grep -c 'CASE KEPT' "$work/nocase.py")" 1
 instance '{"mode":"auto"}'
 search_doc Acme/Portal 412 sha412 Retry
@@ -4316,6 +4353,16 @@ search_pair acme/portal 412 sha412 413 sha413
 echo notobject > "$work/rd.open.mode"
 rc=$(run "$work/nounreadablestop.py" poll 1)
 ok "  without it one tick writes once per request"     "$(opens)" 2
+
+sed 's/^            self\.read_stopped = True$/            pass  # READ UNREADABLE NOT STOPPED/' \
+    "$disp" > "$work/noreadbroken.py"
+ok "the unreadable-read reversal changed its lines"    "$(grep -c 'READ UNREADABLE NOT STOPPED' "$work/noreadbroken.py")" 1
+instance '{"mode":"auto"}'
+search_pair acme/portal 412 sha412 413 sha413
+rc=$(run "$work/noreadbroken.py" poll 1)
+echo notobject > "$work/rd.show.mode"
+rc=$(run "$work/noreadbroken.py" poll 1)
+ok "  without it one tick reads once per request"      "$(shows)" 2
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

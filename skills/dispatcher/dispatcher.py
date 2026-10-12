@@ -330,6 +330,16 @@ def pr_key(repo: str, number: int) -> str:
     return f"gh-{repo.split('/')[-1]}-{number}"
 
 
+def repo_of(key: str) -> str:
+    """The repository half of a `gh-<repo>-<n>` key, for a notice that has to name one.
+
+    Best effort and deliberately so: it is used only to make a loud line more useful, and a key
+    that does not take this shape gives back itself, which is still better than nothing.
+    """
+    parts = str(key).split("-")
+    return "-".join(parts[1:-1]) if len(parts) > 2 and parts[0] == "gh" else str(key)
+
+
 def requested_key(key: str) -> str:
     """One pull request's key with the case taken off, for comparing keys ACROSS SOURCES.
 
@@ -355,7 +365,13 @@ def requested_key(key: str) -> str:
     still miss their entry. That is the same pre-existing asymmetry, it predates DEV-945, and
     the fix for it is a ledger re-keying with a migration — its own ticket, not this one.
     """
-    return key.lower()
+    # `str()` first, because the key can come straight off Review Desk's `work list` —
+    # `item["ledger_id"]`, which `review_desk_item` type-checks neither there nor here. Before
+    # this comparison existed a non-string was harmless (a dict miss and an f-string); now it
+    # would be an `AttributeError` out of the per-repository loop, losing the whole Review Desk
+    # pass for every remaining repository that tick. The same class of fragility `review_of`
+    # exists for, found by review of this branch.
+    return str(key).lower()
 
 
 def marker(key: str, mode: str) -> str:
@@ -1019,9 +1035,10 @@ class Poller:
         # subprocess per request per tick for ever. Separate from `record_stopped` because such
         # a build records perfectly well — it is only the dismissal it cannot be asked about.
         self.read_stopped = False
-        # The install-level failure the recording path met, as `(state, detail)`, kept for the
-        # one case where the `review_desk` pass will not report it: an instance with no
-        # repository for that pass to ask about. See the end of `review_requests`.
+        # The install-level failure the recording path met, as `(state, detail, repo)`. Kept
+        # rather than said on the spot so that one place decides how it is reported — see
+        # `record_unreachable`, which says it unconditionally and shares the `review_desk`
+        # pass's rate-limit mark so that one fault is one line.
         self.record_broken: tuple | None = None
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
@@ -1502,18 +1519,26 @@ class Poller:
 
         What stops two voices for one fault is not a condition here but a shared mark: this
         emits the `review_desk` pass's own event with that pass's own rate-limit signature, so
-        the same install failing the same way is one line whichever path meets it first, and two
-        lines only when the two failures genuinely differ.
+        the same install failing the same way is one line whichever path meets it first.
+
+        **Two lines are possible and are not a bug, and the field that says so is `call`.** The
+        mark carries the detail, and `review_desk_run` writes the SUBCOMMAND into the detail of
+        a timeout — "review-desk review open did not answer in 30s" against "review-desk work
+        list did not answer in 30s". A hung binary therefore reports once per call. That is the
+        honest shape rather than an accident of the mark: a Review Desk can fail a write while
+        answering a read, which is the entire reason this path speaks at all, so collapsing the
+        two would hide exactly the case it was added for. An install failing identically on both
+        shares a detail and is one line.
         """
         if self.record_broken is None:
             return
-        state, detail = self.record_broken
+        state, detail, repo = self.record_broken
         if state == "absent" and not review_desk_loud_when_absent(rd):
             return
         mark = "review_desk|absent" if state == "absent" else f"review_desk|{state}|{detail[:60]}"
         if self.due(mark, every):
-            emit("review_desk_unavailable", state=state, mode=rd["mode"],
-                 command=rd["command"], detail=detail)
+            emit("review_desk_unavailable", state=state, mode=rd["mode"], command=rd["command"],
+                 repo=repo, call="review open", detail=detail)
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
                        title: str | None, every: int, entry: dict) -> None:
@@ -1606,7 +1631,7 @@ class Poller:
         if writing:
             review = self.open_request(rd, key, repo, number, head, title, every)
         elif rid is not None and not self.read_stopped and self.due(asked, every):
-            review = self.read_request(rd, key, rid)
+            review = self.read_request(rd, key, rid, every)
             if review is None and not self.read_stopped:
                 # **The window is not spent on a read that did not happen.** `due` writes its
                 # marker when it is evaluated, so a Review Desk broken for one tick would
@@ -1680,9 +1705,10 @@ class Poller:
             # once per request is one stalled tick per page of requests. Asked once, it costs
             # what the `review_desk` section's own call already costs.
             self.record_stopped = True
-            # Kept, not said: whether anybody says it is decided at the end of `review_requests`,
-            # where the repositories the `review_desk` pass would ask about are known.
-            self.record_broken = (state, detail)
+            # Kept, not said: `record_unreachable` says it at the end of `review_requests`, and
+            # carries the repository this was met on because SKILL.md tells the Dispatcher to
+            # name it.
+            self.record_broken = (state, detail, repo)
             return None
         if state != "ok":
             # A refusal about THIS request rather than about the install, so the rest of the page
@@ -1726,7 +1752,7 @@ class Poller:
                      command=rd["command"], repo=repo, detail=detail)
         return review
 
-    def read_request(self, rd: dict, key: str, rid) -> dict | None:
+    def read_request(self, rd: dict, key: str, rid, every: int) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
 
         **A read, deliberately, and not another `review open`.** Opening again would answer the
@@ -1747,7 +1773,7 @@ class Poller:
                                                  "--json")
         if state in ("absent", "broken"):
             self.record_stopped = True
-            self.record_broken = (state, detail)
+            self.record_broken = (state, detail, repo_of(key))
             return None
         if state == "refused":
             if detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
@@ -1773,7 +1799,22 @@ class Poller:
             # says an unknown review id is the only refusal this file asks for on purpose, so
             # the rest are nothing learned and nothing forgotten.
             return None
-        return review_of(payload)
+        review = review_of(payload)
+        if review is None:
+            # **Exit 0 with an answer this file cannot read is BROKEN here too.** The write path
+            # grew this guard a pass earlier and the read path did not, which is the asymmetry a
+            # review of this branch found: without it, `review show` answering `[]` or
+            # `{"review": null}` read as "nothing learned", the window was cleared, and the next
+            # tick asked again — one subprocess per recorded request per tick, for ever, with
+            # the dismissal guard silently dead and nothing said. `read_stopped` is the right
+            # flag: such a build still records, and it is the reading it cannot do.
+            self.read_stopped = True
+            detail = (f"{rd.get('command')} review show exited 0 with an answer carrying no "
+                      f"review — too old to use")
+            if self.due("review_desk|read_unreadable", every):
+                emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                     command=rd["command"], call="review show", detail=detail)
+        return review
 
     def dismissed_request(self, rd: dict, key: str, repo: str, pr: dict) -> bool:
         """Has the developer dismissed this request's review? Says so once if they have.
