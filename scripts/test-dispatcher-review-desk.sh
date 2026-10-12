@@ -676,6 +676,20 @@ case "$*" in
     # otherwise. Empty is the default on purpose: every assertion in this file that predates
     # DEV-945 was written against a dispatcher whose GitHub source said nothing, and a page of
     # rows appearing under them would change what they are testing.
+    #
+    # **The query must ask for each row's state (DEV-959), and this refuses one that does not.**
+    # Every stand-in for this search in this repo returns rows with NO `state` key, and the
+    # poller reads a missing one as open -- so dropping the field from `REVIEWS_Q` in a bad merge
+    # would revert DEV-959 with the whole suite still green. Taught to refuse rather than
+    # asserted elsewhere, because that is what the `pr view` arm below had to learn the hard way:
+    # "the stand-in `gh` answered the shape I had assumed; the real run is what caught it".
+    case "$*" in
+      *"query=\$q: String!"*|*PullRequest*)
+        case "$*" in
+          *"isDraft state headRefOid"*) : ;;
+          *) echo 'stand-in gh: REVIEWS_Q does not ask for state (DEV-959)' >&2; exit 1 ;;
+        esac ;;
+    esac
     cat "$RDWORK/gh.search" 2>/dev/null || echo '{"data":{"search":{"issueCount":0,"nodes":[]}}}'
     exit 0 ;;
   "pr view "*)
@@ -1765,6 +1779,67 @@ rc=$(run "$disp" poll 1)
 ok "a cursor that is not an object raises nothing"     "$(count '"event": "error"')" 0
 ok "  and is read as a watcher nobody is using"        "$(count '"event": "review_desk_resume"')" 1
 ok "  and the tick exits clean"                        "$rc" 0
+printf '\n  DEV-959: a watcher shut by the merge under a MID-ROUND worker\n'
+# The hole DEV-959's own fix opens, and it is DEV-934's bug reached through the fix's door.
+# `watch_stop_reason` now ends a review watcher on a merge at ANY status, so an `active` worker
+# mid-round has shut eyes too -- and `cannot_be_told`'s guard tested for `done`, which was the
+# only status the old stop rule could produce. The cursor saying closed is unambiguous evidence:
+# only `watch_stop_reason` can have left it, and nothing will write that file again.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "an active key whose PR merged is not listening" "$(count '"event": "review_desk_resume"')" 1
+ok "  and the event still names the session"        "$(says '"session_id": "live-9"')" yes
+ok "  with the status it actually holds"            "$(says '"ledger_status": "active"')" yes
+ok "  and the tick exits clean"                     "$rc" 0
+no_sessions
+# `needs-input` too -- a worker parked on a question has armed, and a merge shuts its eyes the
+# same way. The statuses that may be in this position are exactly ALIVE minus `claimed`.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=needs-input repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "needs-input with a merged PR is not listening"  "$(count '"event": "review_desk_resume"')" 1
+no_sessions
+# An ABSENT cursor stays scoped to `done`, and widening it was a blocker this harness caught.
+# `_common.md` step 2 writes `active` and step 3 arms the watcher, so for those few seconds an
+# absent cursor is a watcher that has YET TO START -- and reading it as gone dispatches a
+# replacement beside a session about to listen. `done` has no such gap: a worker reports it only
+# after a full pass.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "an active key with NO cursor keeps the item"    "$(count review_desk)" 0
+no_sessions
+# And a `claimed` key is never read as deaf whatever its cursor says: the Dispatcher writes that
+# status before `allele_sessions_create`, so there is no session and nothing has armed.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=claimed repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a claimed key is never read as deaf"            "$(count review_desk)" 0
+no_sessions
+
 # **And no other kind gets the bypass — on an OPEN pull request, which is the whole point of
 # this fixture.** The first version of this pair said MERGED, where a `draft_approved` that took
 # the bypass is dropped a few lines later by the merge exemption anyway: the assertion read 0
@@ -1847,6 +1922,33 @@ ok "  and the nits row names its own"                "$(grep -c 'exactly as \*\*
 ok "  and a null ticket blocks the filing, not the session" "$(grep -c 'file nothing until they answer' "$worker_md")" 1
 ok "  a merged pull request does not cancel the ticket"  "$(grep -c 'merged pull request does not cancel' "$worker_md")" 1
 ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1
+
+printf '\n  DEV-959: what the briefs tell a worker whose pull request has gone\n'
+# Prose, and asserted here for the reason every other prose check in this file is: a behaviour
+# the code gets right and the brief contradicts is a behaviour no worker performs. The reader is
+# an agent, and the brief is the interface.
+common_md="$root/skills/dispatcher/workers/_common.md"
+ok "review.md has a section for the merge"             "$(grep -c '^## When the pull request merges or closes$' "$worker_md")" 1
+ok "  and the pr_state row sends the worker to it"     "$(grep -c 'your work is over. Say one line and end' "$worker_md")" 1
+ok "  it names the round in the line it asks for"       "$(grep -c 'the round you were on' "$worker_md")" 1
+ok "  and whether the draft was posted"                "$(grep -c 'whether your draft was posted' "$worker_md")" 1
+ok "  it gives a worked example of that line"          "$(grep -c 'PR merged — round 2 draft was waiting' "$worker_md")" 1
+ok "  it forbids advancing the review, not writing"    "$(grep -c 'Write nothing more to Review Desk that would advance' "$worker_md")" 1
+ok "  and still requires the posting to be recorded"   "$(grep -c 'draft posted --github-review <id>' "$worker_md")" 1
+ok "  merged writes the terminal ledger status"        "$(grep -c 'status=merged --by worker' "$worker_md")" 1
+ok "  a close does NOT, being reversible"              "$(grep -c 'the reason is that a close is reversible' "$worker_md")" 1
+ok "  end means stop working, not self-discard"        "$(grep -c 'which means stop working, not remove yourself' "$worker_md")" 1
+ok "  and the nits ticket still wins over ending"      "$(grep -c '\*\*The ticket$' "$worker_md")" 1
+ok "the posting step refuses a merged pull request"    "$(grep -c 'an approved draft on a merged or closed pull request is not posted' "$worker_md")" 1
+ok "  and says which of the two orderings it was"      "$(grep -c 'approved after the merge, not posted' "$worker_md")" 1
+ok "_common.md routes the pull_request stop reason"    "$(grep -c '\*\*.pull_request. means the pull request merged or closed\*\*' "$common_md")" 1
+ok "  and no longer calls a merge nothing to do"       "$(grep -c 'expected after .discarded., .failed. or a merged PR' "$common_md")" 0
+ok "  its pr_state row separates review from the rest" "$(grep -c 'On a review, your work is over' "$common_md")" 1
+ok "  and the arming step says a review stops early"   "$(grep -c 'On a review it stops as soon as the PR merges or closes' "$common_md")" 1
+ok "SKILL.md handles the worker's merge report"        "$(grep -c 'A review worker saying its pull request merged or closed' "$skill_md")" 1
+ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_request_closed. |' "$skill_md")" 1
+ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1
+ok "  and that no review_request reaches it for one"   "$(grep -c 'never reaches you as a .review_request.' "$skill_md")" 1
 ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
 
 printf '\n  a kind this file cannot place is named, once per interval\n'
@@ -4209,7 +4311,7 @@ echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$work/nomerged.py" poll 1)
 ok "no exemption: a merged pull request loses the ticket" "$(count review_desk)" 0
 
-sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if True:  # DEAF SESSION REVERSED/' \
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") not in WORKER_ARMED:$/        if True:  # DEAF SESSION REVERSED/' \
     "$disp" > "$work/nodeaf.py"
 ok "the deaf-session reversal changed one line"        "$(grep -c 'DEAF SESSION REVERSED' "$work/nodeaf.py")" 1
 instance '{"mode":"auto"}'
@@ -4268,7 +4370,7 @@ no_sessions
 
 # The KIND half on its own, which the reversal above cannot isolate: it turns the whole
 # condition off, where this deletes only the test that keeps the bypass to one kind.
-sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if entry.get("status") != "done":  # KIND HALF REMOVED/' \
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") not in WORKER_ARMED:$/        if entry.get("status") not in WORKER_ARMED:  # KIND HALF REMOVED/' \
     "$disp" > "$work/nokindhalf.py"
 ok "the kind-half reversal changed one line"           "$(grep -c 'KIND HALF REMOVED' "$work/nokindhalf.py")" 1
 instance '{"mode":"auto"}'

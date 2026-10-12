@@ -131,7 +131,10 @@ ok "  naming the flag"                            "$(says exit-on-done)" yes
 for state in merged closed; do
   cursor "$state"
   ok "done plus a $state PR stops in one tick"   "$(watch gh-test-1)" 0
-  ok "  naming the PR state"                     "$(says "its PR is $state")" yes
+  # `gh-test-1` has no `mode` in its entry, so `key_mode` reads the `gh-` prefix as a review and
+  # the DEV-959 branch answers first. Same outcome, different sentence; the `done`-only path is
+  # pinned on an implement key a few lines down, where it is still the one deciding.
+  ok "  naming the PR state"                     "$(says "pull request is $state")" yes
   # The cursor is KEPT: pr_status lives only in it, so deleting it would make the next relaunch
   # under the persistent Monitor re-derive the merge over a full tick's API calls, forever.
   ok "  and keeps the cursor it read it from"    "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
@@ -141,6 +144,140 @@ put gh-test-1 status=merged --by test
 cursor
 ok "a merged ledger status stops too"            "$(watch gh-test-1)" 0
 ok "  and removes the cursor, being ledger-only" "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" no
+
+echo "DEV-959: a review's eyes close when its pull request does, at any status"
+# The bug, by status. `watch_stop_reason` was merge-aware on the `done` path alone, so a review
+# worker that was anything else ran to the 120-hour ceiling: on 13 October the session for
+# tc-portal#9585 was `active` mid-round when the pull request merged, and was still there hours
+# later telling its principal "the draft was never posted".
+for status in active needs-input stopped claimed; do
+  put gh-test-1 "status=$status" --by test
+  for state in merged closed; do
+    cursor "$state"
+    ok "'$status' plus a $state PR stops"        "$(watch gh-test-1)" 0
+    ok "  naming what is left to do"             "$(says "nothing is left to revise")" yes
+    ok "  and keeping the cursor"                "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
+  done
+  cursor open
+  ok "'$status' with an OPEN PR keeps watching"  "$(watch gh-test-1 --once)" 0
+  ok "  and does not stop"                       "$(says watch_stopped)" no
+done
+# A cursor that has armed and not yet read the pull request is a watcher that is listening, and
+# reading an absent `pr_status` as closed would stop every review watcher on its first pass.
+put gh-test-1 status=active --by test
+cursor
+ok "no pr_status at all keeps watching"          "$(watch gh-test-1 --once)" 0
+ok "  and does not stop"                         "$(says watch_stopped)" no
+
+echo "  and only a review's: every other mode is left as it was"
+# Narrow on purpose. `implement.md` writes `status=done --note \"merged\"` only once it has SEEN
+# the merge, and a merged pull request still collects review comments its author should answer --
+# so stopping an implement worker's watcher at the merge would make it deaf at exactly the moment
+# it has something to answer. The key is lower-case so it cannot match LINEAR_KEY: `Watcher.issue`
+# would otherwise reach api.linear.app from a unit test.
+impl_cursor () {
+  printf '{"pr": {"repo": "o/r", "number": 1}, "pr_status": "%s"}' "$1" \
+    > "$inst/runtime/watch/impl-test-1.json"
+}
+for status in active needs-input stopped; do
+  put impl-test-1 mode=implement "status=$status" --by test
+  impl_cursor merged
+  ok "implement '$status' keeps watching a merge" "$(watch impl-test-1 --once)" 0
+  ok "  and does not stop"                        "$(says watch_stopped)" no
+done
+# The `done` path is unchanged for them, which is DEV-795's own fix and must not have moved.
+put impl-test-1 mode=implement status=done --by test
+impl_cursor merged
+ok "implement 'done' plus a merge still stops"   "$(watch impl-test-1)" 0
+ok "  by the done path, in its own words"        "$(says "ledger status 'done' and its PR is merged")" yes
+
+echo "watch_stopped says WHICH thing closed the watcher's eyes"
+# `cmd_watch` hard-coded `reason: "ledger"` on every stop, which was true while the ledger was
+# the only thing that could decide one. `_common.md` reads `ledger` as "your key's status says
+# nothing more will arrive on it ... nothing to do" -- told to an `active` worker on a merged
+# pull request, that is a lie in the one direction that matters.
+put gh-test-1 status=active --by test
+cursor merged
+run gh-test-1
+ok "a merge stops it with reason pull_request"    "$(says '"reason": "pull_request"')" yes
+ok "  and not with reason ledger"                 "$(says '"reason": "ledger"')" no
+put gh-test-1 status=discarded --by test
+cursor merged
+run gh-test-1
+ok "a dead ledger status still says ledger"       "$(says '"reason": "ledger"')" yes
+put gh-test-1 status=done --by test
+cursor merged
+run gh-test-1
+ok "and so does done plus a merge, on an implement key" "$(says '"reason": "pull_request"')" yes
+
+echo "A watcher arming over an already-closed pull request says so on its first tick"
+# `pull_request` suppresses ALL history on a first tick, so a replacement dispatched after the
+# merge heard nothing about the one fact that decides its whole brief. One exception, for the
+# same reason `review_desk()` makes one: a state that has already happened cannot be waited for.
+#
+# This is the only block in this file that lets `Watcher.pull_request` run, so it is the only one
+# that needs a `gh`. A stand-in on a PATH of its own, named per call so the assertions cannot
+# pass off the wrong endpoint, and it refuses anything it was not written for rather than
+# answering a shape the test happened to assume -- which is how `pr_state`'s null shipped.
+mkdir -p "$work/bin"
+cat > "$work/bin/gh" <<'GHSTANDIN'
+#!/bin/sh
+case "$*" in
+  "api repos/o/r/pulls/1")
+    cat "$WATCHWORK/pr.json" ;;
+  "api repos/o/r/pulls/1/reviews?per_page=100"|*"/comments?since="*)
+    echo '[]' ;;
+  *)
+    echo "stand-in gh: unhandled call: $*" >&2; exit 1 ;;
+esac
+GHSTANDIN
+chmod +x "$work/bin/gh"
+export WATCHWORK="$work"
+GHPATH="$work/bin:$PATH"
+
+# ghwatch <args...> -> like `watch`, with the stand-in gh reachable
+ghwatch () { set +e; PATH="$GHPATH" D watch "$@" >"$work/out" 2>"$work/err"; c=$?; set -e; echo "$c"; }
+
+# A FRESH cursor, which is what makes the tick a first one. The merge-stop path keeps the cursor
+# it read, so a replacement only ever gets here when `D reap` has pruned it or the key is new.
+fresh () { rm -f "$inst/runtime/watch/gh-test-1.json" "$inst/runtime/watch/impl-test-1.json"; }
+
+echo '{"head":{"sha":"deadbee"},"state":"closed","merged":true}' > "$work/pr.json"
+put gh-test-1 mode=review status=active --by test
+fresh
+ok "a review arming over a merge is told at once" "$(ghwatch gh-test-1 --pr o/r#1 --once)" 0
+ok "  as a pr_state carrying merged"              "$(says '"event": "pr_state".*"current": "merged"')" yes
+ok "  marked as the first tick, not a change"     "$(says '"first": true')" yes
+ok "  and with no previous state invented"        "$(says '"previous": null')" yes
+
+echo '{"head":{"sha":"deadbee"},"state":"closed","merged":false}' > "$work/pr.json"
+fresh
+ok "a closed one is told too"                     "$(ghwatch gh-test-1 --pr o/r#1 --once)" 0
+ok "  as a pr_state carrying closed"              "$(says '"event": "pr_state".*"current": "closed"')" yes
+
+# The case the suppression was written for, and it must stay suppressed: nothing has happened.
+echo '{"head":{"sha":"deadbee"},"state":"open","merged":false}' > "$work/pr.json"
+fresh
+ok "an OPEN pull request is still suppressed"     "$(ghwatch gh-test-1 --pr o/r#1 --once)" 0
+ok "  saying nothing about its state"             "$(says '"event": "pr_state"')" no
+
+# And only a review. `implement.md` turns a `pr_state` merged into `status=done --note "merged"`,
+# so a replacement implement worker -- re-queued because the work was NOT finished, arming at
+# _common.md step 3 before it reads the ticket at step 4 -- would report itself done over a pull
+# request somebody else closed, before reading anything.
+echo '{"head":{"sha":"deadbee"},"state":"closed","merged":true}' > "$work/pr.json"
+put impl-test-1 mode=implement status=active --by test
+fresh
+ok "an implement worker is NOT told on arming"    "$(ghwatch impl-test-1 --pr o/r#1 --once)" 0
+ok "  so it writes no false done"                 "$(says '"event": "pr_state"')" no
+# It still hears the TRANSITION, which is the path implement.md was written against and which
+# this must not have taken away: arm over an open pull request, then merge it under the watcher.
+echo '{"head":{"sha":"deadbee"},"state":"open","merged":false}' > "$work/pr.json"
+fresh
+run_gh=$(ghwatch impl-test-1 --pr o/r#1 --once)
+echo '{"head":{"sha":"deadbee"},"state":"closed","merged":true}' > "$work/pr.json"
+ok "  but a merge UNDER it is still reported"     "$(ghwatch impl-test-1 --pr o/r#1 --once)" 0
+ok "  as a transition out of open"                "$(says '"event": "pr_state".*"previous": "open", "current": "merged"')" yes
 
 echo "The ceiling binds even when the ledger never moves"
 put gh-test-1 status=active --by test
