@@ -1343,7 +1343,12 @@ absolute: you stop, and something else reclaims the slot. Nor is the discard des
 uncommitted work is committed and the branch archived — so there is nothing to tidy first.
 
 **One exception, and it is the kind that outlives a merge:** if you were dispatched for a
-`nits_to_ticket`, or one arrives before you have said your line, **file the ticket first.**
+`nits_to_ticket`, or one arrives before you have said your line, **file the ticket before step
+2.** Not merely before step 3 — **before you write `merged`**, and the order is the whole of it:
+`merged` is what tells the poller no session is listening, so the moment you write it the request
+is offered to a replacement. File first and the replacement is never dispatched; write first and
+two sessions are filing one ticket, with nothing but `nit_ticket_status` between them and two
+tickets in your principal's tracker.
 **Filing the held-back findings as one ticket** says why — the findings were held back so the
 merge need not wait on them, so a merge is the likeliest time for that click rather than a
 reason to ignore it, and your poller sends somebody for this kind even on a merged pull request,

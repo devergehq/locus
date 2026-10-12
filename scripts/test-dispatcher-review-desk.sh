@@ -1939,6 +1939,9 @@ ok "  merged writes the terminal ledger status"        "$(grep -c 'status=merged
 ok "  a close does NOT, being reversible"              "$(grep -c 'the reason is that a close is reversible' "$worker_md")" 1
 ok "  end means stop working, not self-discard"        "$(grep -c 'which means stop working, not remove yourself' "$worker_md")" 1
 ok "  and the nits ticket still wins over ending"      "$(grep -c '\*\*The ticket$' "$worker_md")" 1
+# And wins over step 2 specifically. `merged` is what makes the poller offer the request to a
+# replacement, so writing it before filing is two sessions on one ticket.
+ok "  and is filed before the terminal status"         "$(grep -c 'before you write .merged.' "$worker_md")" 1
 ok "the posting step refuses a merged pull request"    "$(grep -c 'an approved draft on a merged or closed pull request is not posted' "$worker_md")" 1
 ok "  and says which of the two orderings it was"      "$(grep -c 'approved after the merge, not posted' "$worker_md")" 1
 ok "_common.md routes the pull_request stop reason"    "$(grep -c '\*\*.pull_request. means the pull request merged or closed\*\*' "$common_md")" 1
