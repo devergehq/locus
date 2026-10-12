@@ -1484,12 +1484,21 @@ class Poller:
             # and a `review_desk_requested`, and it is fed from here. A merged row removed from
             # this set would route around this pass's own guard through the other source.
             self.requested.add(requested_key(key))
-            # **A merged or closed pull request gets nothing from this pass** — not a
-            # recording, not a `review_request`, not a `review_rerequested`. There is nothing
-            # left to revise, approve or post, so a round opened here is a round spent on a pull
-            # request that has already shipped, which is DEV-959's own harm. It is dropped before
-            # `record_request` rather than after because recording WRITES: it moves
-            # `review.last_activity_at` on a review nobody will ever act on again.
+            # **A merged or closed pull request is never dispatched and never gains a round**
+            # — no `review_request`, no `review_rerequested`, and nothing written to a review
+            # that already exists. There is nothing left to revise, approve or post, so a round
+            # opened here is a round spent on a pull request that has already shipped, which is
+            # DEV-959's own harm.
+            #
+            # **One request IS still recorded, and only one: the pull request Review Desk has
+            # never held a review of at all.** The first version of this dropped every recording,
+            # on the ticket's wording, and the review of that commit was right to object: a
+            # review request nobody got to, on a pull request that then merged unreviewed, is the
+            # single most informative row the Reviews list can carry, because it is the review
+            # that did not happen — and it is exactly the row DEV-945 was built to produce.
+            # Patrick narrowed the criterion to match (`request_closed` has the full argument).
+            # Recording it creates a first review and cannot spend a round, because there is no
+            # review for a round to be added to.
             #
             # **Two reads, and the second is the one that decides.** The search's `state`
             # narrows; `pr_state` confirms, live, cached per tick, and only for the rows the
@@ -1516,7 +1525,8 @@ class Poller:
             # same merge check, and its request only becomes an item once the draft is reported
             # posted, which a merge usually follows within the hour.
             if search_says_closed(pr) and (live := self.pr_state(repo, pr["number"])) in PR_CLOSED:
-                self.request_closed(key, repo, pr, live, ledger.get(key) or {}, every)
+                self.request_closed(rd, recording, key, repo, pr, live,
+                                    ledger.get(key) or {}, every)
                 continue
             present[key] = {"repo": repo, "number": pr["number"]}
             entry = ledger.get(key) or {}
@@ -2223,9 +2233,9 @@ class Poller:
                  title=pr.get("title"), url=pr.get("url"))
         return True
 
-    def request_closed(self, key: str, repo: str, pr: dict, state: str,
-                       entry: dict, every: int) -> None:
-        """Say, once, that a review request was dropped because its pull request is over.
+    def request_closed(self, rd: dict, recording: bool, key: str, repo: str, pr: dict,
+                       state: str, entry: dict, every: int) -> None:
+        """Record a never-reviewed request, and say once that its pull request is over.
 
         **The drop must not be the only silent one in this poller, and it was.** Every other
         refusal to act here is said once with a reason: `source_empty` for a disbelieved
@@ -2237,11 +2247,38 @@ class Poller:
         anywhere to grep for. A request the Dispatcher can SEE on GitHub, dropped in silence, is
         that failure with a merge in front of it.
 
-        It is also the nearest this pass gets to the row DEV-945 wanted. The ticket says to
-        record no request for a merged pull request, so nothing is written to Review Desk here —
-        but "a review request nobody got to, on a pull request that then merged unreviewed" is
-        the most informative thing this tick knows, and an event is not a record. The Dispatcher
-        can relay it; nothing is dispatched from it.
+        **And record the one request that is worth recording, which is a narrowing of the
+        ticket rather than a reading of it.** DEV-959 first said to record no request at all for
+        a merged or closed pull request. The review of that commit objected that this deletes
+        precisely the row DEV-945 exists to produce — the review that never happened — and that
+        the two halves of the criterion are separable: "dispatches no worker" is the fix, and
+        "records no request" buys nothing, because recording is a write to Review Desk and
+        cannot start a session. Patrick agreed and narrowed it, so:
+
+          | What Review Desk holds for this pull request | What happens here |
+          |---|---|
+          | no review at all | `review open` — a FIRST review, which no round can be spent on |
+          | a review, any state | nothing is written. A round on a shipped pull request is the harm |
+          | it could not be asked | nothing is written, and the install is already being reported |
+
+        **`find_request` answering `None` cleanly is what "no review at all" means**, and the
+        distinction is load-bearing: that function returns `None` both for an empty `reviews`
+        list and for an install it could not use, and writing on the second would be a blind
+        write — the thing the look exists to prevent. The flags it sets on the broken paths
+        (`record_stopped`, `look_stopped`) and the `"refused"` it returns for a per-pull-request
+        refusal are the three other answers, so a clean `None` with neither flag set is the only
+        one that means the store looked and held nothing.
+
+        **No dismissal read, unlike `record_request`.** Nothing is dispatched from this row
+        whatever the developer decided about it, so `review show` would cost one subprocess per
+        tick to answer a question with no consequence. The `recorded` entry this leaves is
+        dropped by the prune at the end of `review_requests` — the key is not in `present` — and
+        that is correct: the row is on the Reviews list now, which is where it is wanted.
+
+        **The race, named rather than implied:** between the look and the write, a worker could
+        open the same review. `review open` then finds it, and spends a round only if a session
+        is linked to it — which would mean the pull request is being reviewed, which would mean
+        this was not the never-reviewed case. Bounded, and it needs a dispatch inside one tick.
 
         **Said only where the clearance sweep will not say it.** A key held by a live session and
         carried over from a previous tick leaves `prs_present` and produces a `review_cleared`
@@ -2263,11 +2300,45 @@ class Poller:
         # is a statement and not a side effect.
         said = not self.due(f"{key}|review_request_closed", every)
         if said or (entry.get("status") in ALIVE and key in (self.state["prs_present"] or {})):
+            # The recording is inside this gate deliberately, so the look costs one `review
+            # find` per key per interval rather than one per tick. A key a live session holds
+            # needs no look either: that session opened the review on its way in, so there is
+            # one, so there is nothing to write.
             return
+        rid = self.record_if_never_reviewed(rd, recording, key, repo, pr, every)
         emit("review_request_closed", key=key, repo=repo, number=pr["number"],
              title=pr.get("title"), url=pr.get("url"), pr_state=state,
-             author=(pr.get("author") or {}).get("login"),
+             author=(pr.get("author") or {}).get("login"), review_desk_id=rid,
+             review=review_desk_link(rd, rid),
              ledger_status=entry.get("status"), session_id=entry.get("session_id"))
+
+    def record_if_never_reviewed(self, rd: dict, recording: bool, key: str, repo: str,
+                                 pr: dict, every: int):
+        """`review open` for a closed pull request Review Desk has never held a review of.
+
+        Returns the review's id when one was written, and None every other time — which the
+        event carries, so the Dispatcher can say whether the row reached the list or not.
+
+        The three guards before the look are the cheap ones: Review Desk off or absent is not
+        asked; a row with no head commit cannot be opened at all (`review open` requires one);
+        and a key this poller already has a review id for has been answered on an earlier tick.
+        """
+        head = pr.get("headRefOid")
+        if not recording or self.record_stopped or not head:
+            return None
+        held = self.state["recorded"].get(key) or {}
+        if review_id(held.get("review")) is not None:
+            return None
+        found = self.find_request(rd, repo, pr["number"], every)
+        if found is not None or self.record_stopped or self.look_stopped:
+            # A review exists, or the store could not be used. Either way nothing is written:
+            # the first would be a round on a shipped pull request, the second a blind write.
+            return None
+        review = self.open_request(rd, key, repo, pr["number"], head, pr.get("title"), every)
+        if not isinstance(review, dict):
+            return None
+        self.remember(key, review, head)
+        return review_id(review.get("id"))
 
     def request_spoken_for(self, key: str, entry: dict, item: dict) -> bool:
         """Is there nothing for the Review Desk pass to say about this `review_requested`?

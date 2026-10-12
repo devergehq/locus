@@ -1954,6 +1954,121 @@ ok "SKILL.md handles the worker's merge report"        "$(grep -c 'A review work
 ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_request_closed. |' "$skill_md")" 1
 ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1
 ok "  and that no review_request reaches it for one"   "$(grep -c 'never reaches you as a .review_request.' "$skill_md")" 1
+ok "  and names the one thing still written"           "$(grep -c 'never held a review of \*\*at all\*\*' "$skill_md")" 1
+ok "  saying a reviewed one is left alone"             "$(grep -c 'never written to again' "$skill_md")" 1
+ok "  and that neither case is dispatched"             "$(grep -c 'Nothing is dispatched$' "$skill_md")" 1
+ok "  the event row reads review_desk_id both ways"    "$(grep -c 'says whether the request made it onto' "$skill_md")" 1
+ok "CHANGELOG records the narrowed criterion"          "$(grep -c 'never held a review of at all' "$root/CHANGELOG.md")" 1
+
+printf '\n  DEV-959: a closed pull request Review Desk has never reviewed is still recorded\n'
+# Patrick amended the criterion after the review of the first commit objected to it: "record no
+# request for a merged pull request" deletes the one row DEV-945 exists to produce -- a request
+# nobody got to, on a pull request that then merged unreviewed, which IS the review that did not
+# happen. So the narrowed rule: record only where the store holds no review of that pull request
+# at all, never open a round, never dispatch. Driven through the real argv path and the stand-in's
+# own store, so "a round was not spent" is an assertion about `review open`'s answer and not about
+# a mock of it.
+
+# merged_doc <repo> <pr> <head> <state>: a search page of one row, carrying a PullRequest state.
+merged_doc () {
+  search_doc "$1" "$2" "$3"
+  python3 - "$work/gh.search" "$4" <<'PYSTATE'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = sys.argv[2]
+d.write_text(json.dumps(doc))
+PYSTATE
+}
+
+for state in MERGED CLOSED; do
+  instance '{"mode":"auto"}'
+  merged_doc acme/portal 414 sha414 "$state"
+  echo '{"state":"'"$state"'"}' > "$work/pr.414.json"
+  no_sessions
+  rc=$(run "$disp" poll 1)
+  ok "a $state pull request with no review is looked up" "$(finds)" 1
+  ok "  and recorded, once"                              "$(opens)" 1
+  # Round 1, read off the stand-in's own store rather than off the call: "no round was spent" is
+  # a statement about what `review open` DID, and the stand-in models the round rule measured at
+  # review-desk 2180224. A first review cannot be a second round, which is the whole carve-out.
+  ok "  as a FIRST review, so no round is spent"         "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#414']['round'])")" 1
+  ok "  and the drop is said, with the review it wrote"  "$(count '"event": "review_request_closed"')" 1
+  ok "  carrying a review id rather than null"           "$(grep -c '"review_request_closed".*"review_desk_id": [0-9]' "$work/out" || true)" 1
+  ok "  and its dashboard page"                          "$(says '/reviews/')" yes
+  ok "  while nothing is dispatched for it"              "$(count '"event": "review_request"')" 0
+  ok "  and no replacement either"                       "$(count '"event": "review_desk_resume"')" 0
+  ok "  nor anything said about the install"             "$(count review_desk_unavailable)" 0
+  ok "  and the tick exits clean"                        "$rc" 0
+  # A second tick inside `reemit_after_secs`: the look and the write are both behind the same
+  # gate, so neither repeats. Without the gate this is one `review find` per tick for ever.
+  rc=$(run "$disp" poll 1)
+  ok "  a second tick looks no further"                  "$(finds)" 1
+  ok "  and writes nothing more"                         "$(opens)" 1
+done
+
+printf '\n  but a pull request it HAS reviewed is never written to again\n'
+# The harm the whole ticket is about: `review open` on a moved head, against a review a session
+# is linked to, is the NEXT ROUND -- measured at review-desk 2180224 and modelled by the
+# stand-in. Opened at sha414 and then merged at a different head, which is the real shape: the
+# author pushes, the round opens, the pull request merges.
+# Seeded rather than recorded by a first tick, and the reason is the rate limit above: the look
+# and the write sit behind one `due` mark, so a second tick inside `reemit_after_secs` does
+# nothing at all -- which the two assertions above prove and which makes it the wrong vehicle for
+# this case. The store is handed a review of 417 at sha417 directly, and the search then shows
+# the row merged at a head the author pushed since, which is the real shape: a review exists, the
+# author pushes, the pull request merges. `review open` on that is the NEXT ROUND, measured at
+# review-desk 2180224, and it is the harm the whole ticket is about.
+instance '{"mode":"auto"}'
+python3 - "$work/rd.opens.json" <<'PYSEED'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps(
+    {"acme/portal#417": {"id": 3, "head": "sha417", "ledger": None, "round": 1}}))
+PYSEED
+merged_doc acme/portal 417 sha999 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.417.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a reviewed pull request is looked up"              "$(finds)" 1
+ok "  and never written to"                            "$(opens)" 0
+ok "  so the store still holds round 1"                "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#417']['round'])")" 1
+ok "  and still holds the head it was opened at"       "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#417']['head'])")" sha417
+ok "  the drop is still said"                          "$(count '"event": "review_request_closed"')" 1
+ok "  with no review id, because none was written"     "$(says '"review_desk_id": null')" yes
+ok "  and nothing is dispatched"                       "$(count '"event": "review_request"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+
+printf '\n  and an install that cannot be asked is never written to blindly\n'
+# `review find` answers None for an empty store and for an install it could not use, and writing
+# on the second is the blind write the look exists to prevent. Each refusal mode in turn.
+for mode in broken refused oldfind notobject; do
+  instance '{"mode":"auto"}'
+  merged_doc acme/portal 415 sha415 MERGED
+  echo '{"state":"MERGED"}' > "$work/pr.415.json"
+  echo "$mode" > "$work/rd.find.mode"
+  no_sessions
+  rc=$(run "$disp" poll 1)
+  ok "find '$mode': nothing is written"                "$(opens)" 0
+  ok "  and nothing is dispatched"                     "$(count '"event": "review_request"')" 0
+  ok "  and the tick exits clean"                      "$rc" 0
+done
+
+printf '\n  and Review Desk off records nothing and asks nothing\n'
+instance '{"mode":"off"}'
+merged_doc acme/portal 416 sha416 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.416.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "off: the store is not even looked at"              "$(finds)" 0
+ok "  and nothing is written"                          "$(opens)" 0
+ok "  but the drop is still said"                      "$(count '"event": "review_request_closed"')" 1
+ok "  with no review id"                               "$(says '"review_desk_id": null')" yes
+ok "  and the tick exits clean"                        "$rc" 0
 
 printf '\n  DEV-959: the merged row still speaks for itself through the other source\n'
 # The ordering the GitHub pass depends on, and it is not obvious from either side. A merged row

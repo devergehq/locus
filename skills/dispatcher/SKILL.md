@@ -247,11 +247,21 @@ Four things follow, and three of them are ways to get it wrong:
 
 **A merged or closed pull request never reaches you as a `review_request`**, and nothing is
 asked of you about one. The poller asks GitHub for each row's state in the search it already
-makes and drops the closed ones before recording or offering them — so no request is written
-to Review Desk for a merged pull request, no worker is dispatched for one, and no
-`review_rerequested` is sent to a session working one. If your principal asks why a review
-they can see requested on GitHub is not being offered, that is the answer: the pull request
-merged, and `is:open` in the search query lags a merge by minutes.
+makes, confirms a closed-looking row with a live read of the pull request, and then drops
+it — so no worker is dispatched for one, and no `review_rerequested` is sent to a session
+working one. If your principal asks why a review they can see requested on GitHub is not
+being offered, that is the answer: the pull request merged, and `is:open` in the search
+query lags a merge by minutes.
+
+**One thing is still written, and it is not a dispatch:** a pull request Review Desk has
+never held a review of **at all** is recorded, once, as a first review. That is the row
+DEV-945 exists to produce — a request nobody got to, on a pull request that then merged
+unreviewed, which is the review that did not happen — and the Reviews list is where your
+principal sees it. A pull request it HAS reviewed is never written to again, because
+`review open` on a head the author has pushed since is the next ROUND, and a round on a
+shipped pull request is the thing this whole section exists to stop. **Nothing is dispatched
+from either case.** `review_request_closed` carries the review id when one was written and
+`null` when none was, so you can say which it is without asking.
 
 Nothing goes to GitHub from you. Ever.
 
@@ -402,7 +412,7 @@ a worker posts when Review Desk reports the draft approved, and not when anybody
 | `linear_retrigger` | The ledger says working but a trigger label is back. If the session is alive: SendMessage it ("the trigger label <label> was re-applied"), and re-apply the working label. If it's gone: treat as `linear_trigger`. |
 | `review_rerequested` | SendMessage the session: re-review requested at head `<sha>`; update the draft for the delta and report it. |
 | `review_cleared` | Report the reason and ask: "Discard `<session>`?" Discard only on a yes — **except on `reason: "PR merged"` or `"PR closed"`, where you discard without asking** and say so afterwards. That is `## Never`'s one exception, and this event satisfies its second condition: the reason comes from a live read of the pull request, not from Review Desk. Check the third condition — that the session has stopped — before you do it. The worker is very likely saying the same thing in its own words at the same moment; relay whichever reached you, once, and discard once. Every other reason still asks: "you submitted a review" and "review request removed" both leave a pull request open. |
-| `review_request_closed` | **A review request was dropped because its pull request is merged or closed**, and `pr_state` says which — read live from GitHub, not from the search. Nothing was recorded for it and nothing was dispatched: there is nothing left to revise, approve or post. Report it once, one line, naming the pull request and the state, and **offer nobody for it** — GitHub goes on requesting the review after a merge, which is why you can still see the request. A `merged` one is over. A `closed` one can be reopened, and if it is, the request comes back round on its own as a `review_request`. One line per pull request per `reemit_after_secs`; a key a live session holds arrives as `review_cleared` instead, which names the session. |
+| `review_request_closed` | **A review request was dropped because its pull request is merged or closed**, and `pr_state` says which — read live from GitHub, not from the search. Nothing was dispatched: there is nothing left to revise, approve or post. **`review_desk_id` says whether the request made it onto the Reviews list** — a number means this was a pull request Review Desk had never held a review of and it is now recorded as a first review (`review` links the page); `null` means a review already existed and was deliberately left alone, or the store could not be asked. Report it once, one line, naming the pull request, the state and which of those two it was, and **offer nobody for it** — GitHub goes on requesting the review after a merge, which is why you can still see the request. A `merged` one is over. A `closed` one can be reopened, and if it is, the request comes back round on its own as a `review_request`. One line per pull request per `reemit_after_secs`; a key a live session holds arrives as `review_cleared` instead, which names the session. |
 | `session_blocked` | **PushNotification**: "`<KEY>` worker is waiting on a prompt in allele." A blocked worker gets nowhere until a human acts. |
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
 | `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |

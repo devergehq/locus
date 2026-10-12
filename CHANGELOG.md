@@ -158,7 +158,15 @@ refuses to build when they disagree.
   `review_query` without `is:open` is never. Where that sweep will not speak — a first tick, a
   key GitHub had not shown before, and a request no session ever held — **`review_request_closed`
   says it instead**, once per key per `reemit_after_secs`, because it was the only silent refusal
-  in a poller whose every other refusal names itself.
+  in a poller whose every other refusal names itself. **One request is still recorded, and only
+  one: a pull request Review Desk has never held a review of at all**, written as a first review
+  so that no round can be spent on it. The first cut of this recorded none, on the ticket's
+  original wording; the review of that commit objected that this deletes the single row DEV-945
+  exists to produce — a request nobody got to, on a pull request that then merged unreviewed,
+  which is the review that did not happen — and Patrick narrowed the criterion to match. A pull
+  request it HAS reviewed is never written to again, because `review open` on a head the author
+  has pushed since is the next round. Nothing is dispatched from either case, and the event's
+  `review_desk_id` says which one it was.
 - **`workers/review.md` tells a review worker what to do when its pull request goes.** One line
   to the Dispatcher naming the round and whether its draft was posted, its own terminal ledger
   status (`merged` on a merge, `done` on a close, because a close is reversible), and then it
