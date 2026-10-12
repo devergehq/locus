@@ -422,12 +422,24 @@ def held_back():
 def document(review):
     held = held_back()
     current = state()
-    return {
-        "review": {"id": int(review), "repo": "acme/portal", "pr": 412, "head_sha": "3f9c2ab",
-                   "round": 1, "title": "Retry failed webhook deliveries", "ticket_id": "ABC-231",
-                   "nit_ticket_status": current["status"], "nit_ticket_id": current["ticket_id"]},
-        "findings": held,
-    }
+    doc = {"id": int(review), "repo": "acme/portal", "pr": 412, "head_sha": "3f9c2ab",
+           "round": 1, "title": "Retry failed webhook deliveries", "ticket_id": "ABC-231",
+           "dismissed_at": None, "dismissed_reason": None,
+           "nit_ticket_status": current["status"], "nit_ticket_id": current["ticket_id"]}
+    # A review this stand-in has OPENED answers from that store instead, for the three fields a
+    # reader of `review show` acts on: the commit it is of, and whether the developer dismissed
+    # it. A hardcoded `head_sha` here would tell the poller its recorded commit had changed and
+    # send it back to `review open` every tick. Reviews the opens store has never heard of keep
+    # the fixed document above, which is what the nit-ticket assertions were written against.
+    for slot, held_open in opened().items():
+        if held_open["id"] != int(review):
+            continue
+        repo, pr = slot.split("#")
+        doc.update({"repo": repo, "pr": int(pr), "head_sha": held_open["head"],
+                    "round": held_open["round"],
+                    "dismissed_at": held_open.get("dismissed_at"),
+                    "dismissed_reason": held_open.get("dismissed_reason")})
+    return {"review": doc, "findings": held}
 
 
 def opened():
@@ -494,7 +506,12 @@ def open_review(argv):
     review = {"id": held["id"], "repo": repo, "pr": int(pr), "head_sha": head,
               "round": held["round"], "title": opt(argv, "--title"),
               "ticket_id": opt(argv, "--ticket"), "ledger_id": held["ledger"],
-              "session_id": None}
+              "session_id": None,
+              # On every one of the three paths -- created, found and moved -- as review-desk
+              # 5dae8f6 answers. A push on a dismissed request moves its head and leaves it
+              # dismissed, because a push is not the developer changing their mind.
+              "dismissed_at": held.get("dismissed_at"),
+              "dismissed_reason": held.get("dismissed_reason")}
     print(json.dumps({"review": review, "created": created, "head_moved_from": moved,
                       "carryable": None}))
     raise SystemExit(0)
@@ -528,6 +545,15 @@ if argv[:2] == ["review", "nit-ticket"]:
                                      "ticket_id": ticket.strip(), "finding_seqs": seqs,
                                      "requested_at": 1791520400, "filed_at": 1791520500}}))
 elif argv[:2] == ["review", "show"]:
+    # Its own health, so a `review show` that refuses can be driven while `review open` still
+    # answers. `refused` is a review that is GONE -- the developer deleted one that never
+    # started, which is the only delete Review Desk allows.
+    show = (work / "rd.show.mode").read_text().strip() \
+        if (work / "rd.show.mode").exists() else "ok"
+    if show == "broken":
+        refuse("cannot_open_database", "scripted broken review show", 2)
+    if show == "refused":
+        refuse("not_found", "no review with id %s" % review)
     print(json.dumps(document(review)))
 else:
     # Loud, not null: a call site this stand-in has never seen must not pass by being answered.
@@ -614,6 +640,7 @@ PY
   rm -f "$work/rd.nit" "$work/rd.held"
   # DEV-945's three: the recorded reviews, how `review open` answers, and what GitHub shows.
   rm -f "$work/rd.opens.json" "$work/rd.open.mode" "$work/rd.open.argv" "$work/gh.search"
+  rm -f "$work/rd.show.mode"
   echo drafting > "$work/rd.draft.status"
 }
 
@@ -676,6 +703,47 @@ PY
 # one. `rd.calls` is the record; these two are how an assertion reads it.
 opens () { grep -c '^review open ' "$work/rd.calls" 2>/dev/null || true; }
 last_open () { grep '^review open ' "$work/rd.calls" | tail -1; }
+shows () { grep -c '^review show ' "$work/rd.calls" 2>/dev/null || true; }
+
+# dismiss <repo> <pr> <reason> / restore <repo> <pr>: the developer's act, which has no command
+# line in Review Desk at all -- it is the dashboard's API -- so a test performs it on the
+# stand-in's store directly. That absence IS the guarantee the dispatcher cannot do this.
+dismiss () {
+  python3 - "$work/rd.opens.json" "$@" <<'PY'
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+store = json.loads(path.read_text())
+held = store["%s#%s" % (sys.argv[2], sys.argv[3])]
+held["dismissed_at"] = 1791780000
+held["dismissed_reason"] = sys.argv[4] if len(sys.argv) > 4 else "the pull request was closed"
+path.write_text(json.dumps(store))
+PY
+}
+restore () {
+  python3 - "$work/rd.opens.json" "$@" <<'PY'
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+store = json.loads(path.read_text())
+held = store["%s#%s" % (sys.argv[2], sys.argv[3])]
+held["dismissed_at"] = None
+held["dismissed_reason"] = None
+path.write_text(json.dumps(store))
+PY
+}
+
+# What the poller remembers about one request: the commit recorded, the review, and whether it
+# is dismissed. `recorded.<key>.<field>`, or the empty string when there is nothing there.
+remembered () {
+  python3 - "$inst/runtime/poll-state.json" "$1" "$2" <<'PY'
+import json, sys, pathlib
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print((state.get("recorded") or {}).get(sys.argv[2], {}).get(sys.argv[3], ""))
+PY
+}
+recorded_count () {
+  python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("recorded") or {}))' \
+    "$inst/runtime/poll-state.json"
+}
 
 # work_doc <kind> <review_id> <repo> <pr> [entered_at] [ledger_id] [note]
 work_doc () {
@@ -1143,11 +1211,17 @@ harvested () {
 # The clock, rather than a sleep: an interval is a number this test should not have to wait out.
 # The seconds matter for the rotation case below, where two marks must differ in age.
 age_marker () {
+  # A marker that is not there is counted as a FAILURE rather than raised. It used to raise a
+  # KeyError, which under `set -e` took the whole harness down -- including its tally -- so a
+  # mistyped or not-yet-set mark read as "the suite stopped" rather than as one bad assertion.
   python3 -c "
 import json, pathlib, sys
 p = pathlib.Path(sys.argv[1]); s = json.loads(p.read_text())
+if sys.argv[2] not in s['emitted']:
+    sys.exit('no such marker')
 s['emitted'][sys.argv[2]] -= int(sys.argv[3])
-p.write_text(json.dumps(s))" "$inst/runtime/poll-state.json" "$1" "${2:-100000}"
+p.write_text(json.dumps(s))" "$inst/runtime/poll-state.json" "$1" "${2:-100000}" 2>/dev/null \
+    || { fail=$((fail + 1)); printf '  FAIL  %-60s %s\n' "age_marker found no such marker" "$1"; }
 }
 harvests () { grep -c "^harvest --repo $1 --json" "$work/rd.calls" 2>/dev/null || true; }
 
@@ -2926,7 +3000,9 @@ instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 Retry
 rc=$(run "$disp" poll 3)
 ok "three ticks on one commit record once"             "$(opens)" 1
-ok "  and the state remembers the commit"              "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+ok "  and the state remembers the commit"              "$(remembered gh-portal-412 head)" sha412
+ok "  and the review it recorded"                      "$(remembered gh-portal-412 review)" 1
+ok "  which it does not think dismissed"               "$(remembered gh-portal-412 dismissed)" False
 
 # A new commit on a request nobody started MOVES it in Review Desk, which is why the mark is
 # the pair and not the key: a dispatcher that recorded once per key would leave the record
@@ -2973,7 +3049,7 @@ search_doc acme/portal 412 sha412 Retry
 echo broken > "$work/rd.mode"
 rc=$(run "$disp" poll 1)
 ok "a broken Review Desk exits clean"                  "$rc" 0
-ok "  nothing is recorded"                             "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "  nothing is recorded"                             "$(recorded_count)" 0
 ok "  and the notice is still one notice"              "$(count '"event": "review_desk_unavailable"')" 1
 
 # Broken on one tick, mended on the next. The mark is written only when the call succeeded, so
@@ -2983,11 +3059,11 @@ instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 Retry
 echo broken > "$work/rd.open.mode"
 rc=$(run "$disp" poll 1)
-ok "a \`review open\` that fails records nothing"        "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "a \`review open\` that fails records nothing"        "$(recorded_count)" 0
 echo ok > "$work/rd.open.mode"
 rc=$(run "$disp" poll 1)
 ok "  and is tried again on the next tick"             "$(opens)" 2
-ok "  which records it"                                "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+ok "  which records it"                                "$(remembered gh-portal-412 head)" sha412
 
 # One install answers for every request, so an absent or broken one is asked ONCE a tick. At a
 # 30s timeout the alternative is one stalled tick per page of requests.
@@ -3010,7 +3086,7 @@ ok "an older Review Desk refusing --ledger exits clean" "$rc" 0
 ok "  is retried once, without the flag"               "$(opens)" 2
 ok "  and the second call carries no ledger id"        "$(last_open)" \
   "review open --repo acme/portal --pr 412 --head sha412 --title Retry --json"
-ok "  the request is recorded all the same"            "$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"].get("gh-portal-412",""))' "$inst/runtime/poll-state.json")" sha412
+ok "  the request is recorded all the same"            "$(remembered gh-portal-412 head)" sha412
 ok "  and nothing extra is said about it"              "$(count review_desk_unavailable)" 0
 
 instance '{"mode":"auto"}'
@@ -3018,7 +3094,7 @@ search_doc acme/portal 412 sha412 Retry
 echo refused > "$work/rd.open.mode"
 rc=$(run "$disp" poll 1)
 ok "a refusal that is not about the flag is not retried" "$(opens)" 1
-ok "  records nothing"                                 "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "  records nothing"                                 "$(recorded_count)" 0
 ok "  says nothing"                                    "$(count review_desk_unavailable)" 0
 ok "  and does not stop the next tick trying"          "$(opens)" 1
 
@@ -3093,13 +3169,123 @@ for kind in brief_settled draft_sent_back draft_approved nits_to_ticket; do
   ok "a requested PR still relays $kind"               "$(count '"event": "review_desk_resume"')" 1
 done
 
+printf '\n  a review the developer dismissed is not dispatched\n'
+# review-desk 5dae8f6. A dismissal is the dashboard's API and has no command line at all, which
+# is why `dismiss` above edits the stand-in's store directly: there is no command for this file
+# to call even if it wanted one. Review Desk's own `work list` already leaves a dismissed review
+# out, so this is the GITHUB source being told -- GitHub goes on requesting the review, because
+# dismissing is not withdrawing.
+
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "an undismissed request is dispatched as before"    "$(count '"event": "review_request"')" 1
+dismiss acme/portal 412 "the pull request was closed unmerged"
+rc=$(run "$disp" poll 2)
+ok "once dismissed, the request is read not opened"    "$(shows)" 1
+ok "  and no request is emitted for it"                "$(count '"event": "review_request"')" 0
+ok "  the dismissal is said once"                      "$(count '"event": "review_dismissed"')" 1
+ok "  naming the review"                               "$(says '"review_desk_id": 1')" yes
+ok "  and the developer's reason"                      "$(says 'the pull request was closed unmerged')" yes
+ok "  with the page it is on"                          "$(says 'reviews/1')" yes
+ok "  and the state remembers it"                      "$(remembered gh-portal-412 dismissed)" True
+rc=$(run "$disp" poll 1)
+ok "a later tick says nothing and dispatches nothing"  "$(( $(count '"event": "review_dismissed"') + $(count '"event": "review_request"') ))" 0
+
+# The other way the dismissal arrives: the author pushes, so the request is recorded again, and
+# `review open`'s own answer carries it. A push moves a dismissed review's head and leaves it
+# dismissed.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 412 "a duplicate of 411"
+search_doc acme/portal 412 sha999 Retry
+rc=$(run "$disp" poll 1)
+ok "a push on a dismissed request is recorded"         "$(opens)" 2
+ok "  on the new commit"                               "$(remembered gh-portal-412 head)" sha999
+ok "  it is still dismissed"                           "$(remembered gh-portal-412 dismissed)" True
+ok "  said once, with that reason"                     "$(count 'a duplicate of 411')" 1
+ok "  and nothing is dispatched"                       "$(count '"event": "review_request"')" 0
+ok "  without reading the review as well"              "$(shows)" 0
+
+# Restored. The read is on `reemit_after_secs`, which is the cadence everything else in this
+# file re-asks on, so the clock is moved rather than waited out.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$disp" poll 1)
+ok "a dismissed request stops the dispatch"            "$(count '"event": "review_request"')" 0
+restore acme/portal 412
+rc=$(run "$disp" poll 1)
+ok "  and a restore is not seen before it is asked for" "$(count '"event": "review_request"')" 0
+age_marker 'review_desk|dismissal|gh-portal-412'
+# And the re-emission clock, which is a different one: the request was emitted before it was
+# dismissed, and `reemit_after_secs` governs saying it again whatever happened in between.
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+ok "a restored request is dispatched again"            "$(count '"event": "review_request"')" 1
+ok "  and the state no longer calls it dismissed"      "$(remembered gh-portal-412 dismissed)" False
+# Dismissed a second time: a new decision about the same request, so it is said again.
+dismiss acme/portal 412 "closed again"
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$disp" poll 1)
+ok "a second dismissal is said again"                  "$(count '"event": "review_dismissed"')" 1
+ok "  with the second reason"                          "$(says 'closed again')" yes
+
+# A Review Desk older than the dismissal field answers without the two keys, which reads as not
+# dismissed -- which is exactly how this behaved before dismissal existed.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "no dismissal field at all is not a dismissal"      "$(remembered gh-portal-412 dismissed)" False
+ok "  and the request is dispatched"                   "$(count '"event": "review_request"')" 1
+
+# A review that is GONE: the developer deleted one that never started. Forgotten rather than
+# remembered as missing, so the next tick records the request again from GitHub.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+echo refused > "$work/rd.show.mode"
+rc=$(run "$disp" poll 1)
+ok "a deleted review is forgotten"                     "$(recorded_count)" 0
+echo ok > "$work/rd.show.mode"
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+ok "  and the request is recorded again"               "$(opens)" 2
+ok "  and still dispatched"                            "$(count '"event": "review_request"')" 1
+
+# A read that cannot be made leaves the dismissal where it was. Not knowing is not a restore.
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$disp" poll 1)
+echo broken > "$work/rd.show.mode"
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$disp" poll 1)
+ok "a broken read leaves the dismissal standing"       "$(remembered gh-portal-412 dismissed)" True
+ok "  and still dispatches nothing"                    "$(count '"event": "review_request"')" 0
+ok "  and exits clean"                                 "$rc" 0
+
+printf '\n  what the Dispatcher is told about all this\n'
+ok "SKILL.md says a request is recorded on sight"      "$(grep -c 'recorded the moment your poller sees it' "$skill_md")" 1
+ok "  that dispatching is unchanged"                   "$(grep -c 'Nothing changes about dispatching' "$skill_md")" 1
+ok "  that one request still reaches it once"          "$(grep -c 'One request still reaches you once' "$skill_md")" 1
+ok "  that a dismissed review is not dispatched"       "$(grep -c 'dismissed is not dispatched' "$skill_md")" 1
+ok "  and names the event, in prose and as a row"      "$(grep -c 'review_dismissed' "$skill_md")" 2
+ok "  that dismiss, restore and delete are the developer's" "$(grep -c "are your principal.s, from the page" "$skill_md")" 1
+ok "  with no command line for any of them"            "$(grep -c 'no command line for any of them' "$skill_md")" 1
+ok "  and it tells nobody to dispatch a dismissed one" "$(grep -c 'do not offer to dispatch it' "$skill_md")" 1
+
 printf '\n  only the developer signs off\n'
 ok "nothing in the dispatcher dismisses, deletes, restores or approves" \
    "$(grep -cE '"(dismiss|delete|restore|approve)"' "$disp")" 0
 ok "  and the only commands it runs of Review Desk are these" \
    "$(grep -o 'review_desk_run(rd, [^,)]*' "$disp" | sed 's/.*run(rd, //' | sort -u | tr '\n' ' ')" \
-   '"--version" "db" "draft" "harvest" "work" *facts '
+   '"--version" "db" "draft" "harvest" "review" "work" *facts '
 ok "  where \`facts\` is \`review open\` and nothing else"  "$(grep -c '"review", "open", "--repo"' "$disp")" 1
+ok "  and the only \`review\` it reads with is \`show\`"    "$(grep -c '"review", "show", "--review"' "$disp")" 1
 
 # =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'
@@ -3422,7 +3608,7 @@ work_doc review_requested 11 acme/portal 412 1791520282 gh-portal-412
 rc=$(run "$work/noorphan.py" poll 1)
 ok "  without it a withdrawn request is dispatched"    "$(count '"event": "review_desk_requested"')" 1
 
-sed 's/^        if self\.state\["recorded"\]\.get(key) == head:$/        if False:  # MARK REVERSED/' \
+sed 's/^        if held\.get("head") != head:$/        if True:  # MARK REVERSED/' \
     "$disp" > "$work/nomark.py"
 ok "the mark reversal changed one line"                "$(grep -c 'MARK REVERSED' "$work/nomark.py")" 1
 instance '{"mode":"auto"}'
@@ -3443,21 +3629,142 @@ no_sessions
 
 sed 's/^            self\.record_stopped = True$/            pass  # STOP REVERSED/' \
     "$disp" > "$work/nostop.py"
-ok "the stop-once reversal changed one line"           "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 1
+ok "the stop-once reversal changed both its lines"     "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 2
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 echo broken > "$work/rd.open.mode"
 rc=$(run "$work/nostop.py" poll 1)
 ok "  without it a broken install is asked per request" "$(opens)" 2
 
-sed 's/^            state, _, detail = review_desk_run(rd, \*facts, "--json")$/            pass  # RETRY REMOVED/' \
+sed 's/^            state, payload, detail = review_desk_run(rd, \*facts, "--json")$/            pass  # RETRY REMOVED/' \
     "$disp" > "$work/noretry.py"
 ok "the retry reversal changed one line"               "$(grep -c 'RETRY REMOVED' "$work/noretry.py")" 1
 instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 Retry
 echo oldledger > "$work/rd.open.mode"
 rc=$(run "$work/noretry.py" poll 1)
-ok "  without it an older Review Desk records nothing" "$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1]))["recorded"]))' "$inst/runtime/poll-state.json")" 0
+ok "  without it an older Review Desk records nothing" "$(recorded_count)" 0
+
+printf '\n  DEV-945: and the dismissal that stops a dispatch\n'
+
+sed 's/^                if self\.dismissed_request(rd, key, repo, pr\["number"\], pr):$/                if False:  # DISMISSAL IGNORED/' \
+    "$disp" > "$work/nodismiss.py"
+ok "the dismissal reversal changed one line"           "$(grep -c 'DISMISSAL IGNORED' "$work/nodismiss.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+# The re-emission clock as well, or this control would pass for the wrong reason: the request
+# was emitted on the tick above, and that alone keeps it quiet for fifteen minutes.
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$work/nodismiss.py" poll 1)
+ok "  without it a dismissed review is dispatched"     "$(count '"event": "review_request"')" 1
+ok "  and nothing says why it should not have been"    "$(count '"event": "review_dismissed"')" 0
+
+sed 's/^        elif self\.due(f"review_desk|dismissal|{key}", every):$/        elif False:  # DISMISSAL NEVER READ/' \
+    "$disp" > "$work/noread.py"
+ok "the re-read reversal changed one line"             "$(grep -c 'DISMISSAL NEVER READ' "$work/noread.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/noread.py" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$work/noread.py" poll 1)
+ok "  without it a dismissal on the same commit is missed" "$(count '"event": "review_dismissed"')" 0
+
+sed 's/^            self\.state\["once"\]\.pop(mark, None)$/            pass  # MARK KEPT/' \
+    "$disp" > "$work/nounmark.py"
+ok "the clear-on-restore reversal changed one line"    "$(grep -c 'MARK KEPT' "$work/nounmark.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$work/nounmark.py" poll 1)
+dismiss acme/portal 412 "closed unmerged"
+rc=$(run "$work/nounmark.py" poll 1)
+restore acme/portal 412
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$work/nounmark.py" poll 1)
+dismiss acme/portal 412 "closed again"
+age_marker 'review_desk|dismissal|gh-portal-412'
+rc=$(run "$work/nounmark.py" poll 1)
+ok "  without it a second dismissal is never said"     "$(count '"event": "review_dismissed"')" 0
+
+# =============================================================================================
+printf '\nAgainst the real Review Desk, when one is given\n'
+# `REVIEW_DESK_BIN=/path/to/review-desk sh scripts/test-dispatcher-review-desk.sh` runs the
+# poller against the real binary on its own temporary database. It is the only thing in this
+# file that can say the stand-in above tells the truth, and it is OPT-IN for the reason the
+# header gives: nothing here may need a built binary, or this harness stops running in CI.
+#
+# What it does NOT do: touch `~/.review-desk`, serve anything on a port, or ask GitHub for
+# anything. `REVIEW_DESK_DB` is a file under $work, and the dismissal is written with `sqlite3`
+# because a dismissal has no command line at all -- it is the dashboard's API, which is the
+# whole of why no session can perform one.
+#
+# One noise to expect and not to read as a failure: `harvest` is real here too, and the real
+# harvest asks GitHub through `gh`, which is a stand-in that answers its calls with nothing it
+# understands. The assertions below are about the recording, the guard and the dismissal, and
+# the harvest's own notice is counted separately so it is named rather than ignored.
+
+if [ -z "${REVIEW_DESK_BIN:-}" ]; then
+  printf '  skipped -- set REVIEW_DESK_BIN=/path/to/review-desk to run this section\n'
+elif [ ! -x "${REVIEW_DESK_BIN}" ]; then
+  fail=$((fail + 1)); printf '  FAIL  REVIEW_DESK_BIN is not executable: %s\n' "$REVIEW_DESK_BIN"
+else
+  real=$(python3 -c 'import json,sys;print(json.dumps({"mode":"auto","command":sys.argv[1]}))' \
+    "$REVIEW_DESK_BIN")
+  printf '  %s\n' "$("$REVIEW_DESK_BIN" --version)"
+  export REVIEW_DESK_DB="$work/real.db"
+  rm -f "$REVIEW_DESK_DB"
+
+  instance "$real"
+  search_doc acme/portal 412 sha412 "Retry failed webhook deliveries"
+  rc=$(run "$disp" poll 1)
+  ok "a real Review Desk records the request"            "$rc" 0
+  ok "  the review it opened is remembered"              "$(remembered gh-portal-412 review)" 1
+  ok "  on the commit GitHub showed"                     "$(remembered gh-portal-412 head)" sha412
+  ok "  and it is not dismissed"                          "$(remembered gh-portal-412 dismissed)" False
+  ok "  the request is emitted once"                      "$(count '"event": "review_request"')" 1
+  real_work () { "$REVIEW_DESK_BIN" work list --repo acme/portal --json; }
+  ok "  the real work list calls it review_requested"     "$(real_work | python3 -c 'import json,sys;w=json.load(sys.stdin)["work"];print(len(w) and w[0]["kind"])')" review_requested
+  ok "  carrying the ledger entry it was given"           "$(real_work | python3 -c 'import json,sys;print(json.load(sys.stdin)["work"][0]["ledger_id"])')" gh-portal-412
+  ok "  and the Review Desk pass does not offer it again" "$(count '"event": "review_desk_requested"')" 0
+
+  # The same request on a new commit: ONE review, moved, and still one item on the real list.
+  search_doc acme/portal 412 sha999 "Retry failed webhook deliveries"
+  rc=$(run "$disp" poll 1)
+  ok "a push moves the real review"                       "$(real_work | python3 -c 'import json,sys;w=json.load(sys.stdin)["work"];print("%d %s %s" % (len(w), w[0]["head_sha"], w[0]["round"]))')" "1 sha999 1"
+  ok "  which the poller remembers"                       "$(remembered gh-portal-412 head)" sha999
+
+  # Dismissed, in the only way there is: the record, not a command.
+  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = 1791780000, dismissed_reason = 'the pull request was closed unmerged' WHERE id = 1;"
+  ok "a dismissed review leaves the real work list"       "$(real_work | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["work"]))')" 0
+  # No dismissal marker to age: the tick above went down the `review open` path, because the
+  # commit had moved, so the read has never been due. It is due on the next tick by itself.
+  age_marker 'gh-portal-412|review_request'
+  rc=$(run "$disp" poll 1)
+  ok "  the poller reads the dismissal"                   "$(remembered gh-portal-412 dismissed)" True
+  ok "  dispatches nothing"                               "$(count '"event": "review_request"')" 0
+  ok "  and says so once, with the reason"                "$(count 'the pull request was closed unmerged')" 1
+
+  # Restored, the same way. A dismissal is a decision and so is taking it back.
+  sqlite3 "$REVIEW_DESK_DB" "UPDATE reviews SET dismissed_at = NULL, dismissed_reason = NULL WHERE id = 1;"
+  age_marker 'review_desk|dismissal|gh-portal-412'
+  age_marker 'gh-portal-412|review_request'
+  rc=$(run "$disp" poll 1)
+  ok "a restored review is dispatched again"              "$(count '"event": "review_request"')" 1
+  ok "  and is no longer remembered as dismissed"         "$(remembered gh-portal-412 dismissed)" False
+
+  # Nothing this harness ran could have dismissed, restored or deleted anything: the binary has
+  # no such command. Asserted against the real one's own help rather than claimed.
+  set +e
+  "$REVIEW_DESK_BIN" review dismiss --review 1 > "$work/noway" 2>&1; code=$?
+  set -e
+  # Exit 1: review-desk remaps clap's usage exit to its own "understood and refused", which
+  # is the same door a `--ledger` an older build has never heard of comes back through.
+  ok "the real binary has no \`review dismiss\`"            "$code" 1
+  ok "  and says so as a usage error"                     "$(grep -c 'unrecognized subcommand' "$work/noway")" 1
+
+  export REVIEW_DESK_DB="$work/test.db"
+fi
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1263,7 +1263,15 @@ class Poller:
             # leaves a `lost` entry, which is not ALIVE, so the next tick records it.
             if recording and status not in ALIVE:
                 self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
-                                    pr.get("title"))
+                                    pr.get("title"), every)
+                # **A dismissed review is not dispatched**, and nothing below this line runs
+                # for one: not the backlog, not the request, not the re-request. The developer
+                # took it out of play, in the dashboard, with a reason — the one decision of
+                # theirs that reaches this file as a reason not to act. GitHub goes on
+                # requesting the review either way, which is why the GitHub source needs
+                # telling at all: Review Desk's own list already leaves a dismissed review out.
+                if self.dismissed_request(rd, key, repo, pr["number"], pr):
+                    continue
             common = dict(key=key, repo=repo, number=pr["number"], title=pr["title"], url=pr["url"],
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
                           opened=(pr.get("createdAt") or "")[:10],
@@ -1337,8 +1345,8 @@ class Poller:
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items() if k in present}
 
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
-                       title: str | None) -> bool:
-        """Record one review request in Review Desk, before any session starts. Says nothing.
+                       title: str | None, every: int) -> None:
+        """Keep Review Desk's record of one review request current. Says nothing.
 
         `review open` is the command, and Review Desk's own README says why there is not one of
         its own: a review with no brief **is** a request — `work list` reports it as
@@ -1367,38 +1375,126 @@ class Poller:
         broken or too old, with its own rate limit. A second voice here would be the "nothing
         extra said" that an instance without Review Desk is owed.
 
-        Returns whether the request is now recorded, for the tests and for nothing else.
+        **Two calls on two cadences, and the second is what makes a dismissal reach this
+        poller.** `review open` runs when the recorded commit is not the one GitHub is showing,
+        because that is when there is something to write. Whether the developer has DISMISSED
+        the review is a different question, it has no commit of its own, and it is asked by
+        reading — `review show`, at `reemit_after_secs`, which is the cadence everything else
+        in this file re-asks on. Both keep `recorded[key]` current, and the caller decides from
+        that record rather than from whichever call happened this tick.
+
+        Writes nothing and returns nothing: `self.state["recorded"][key]` is the whole answer,
+        and it carries the commit recorded, the review's id, and whether it is dismissed.
         """
         if self.record_stopped or not head:
             # No head commit, no recording: `review open` requires one, and a search row without
             # `headRefOid` is a row this file cannot describe a review of.
-            return False
-        if self.state["recorded"].get(key) == head:
-            return False
+            return
+        held = self.state["recorded"].get(key) or {}
+        if held.get("head") != head:
+            review = self.open_request(rd, key, repo, number, head, title)
+        elif self.due(f"review_desk|dismissal|{key}", every):
+            review = self.read_request(rd, key, held.get("review"))
+        else:
+            return
+        if review is None:
+            # Nothing was learned — absent, broken, refused, or a review that is gone. What was
+            # already recorded stands, including a dismissal: a Review Desk that cannot be
+            # reached is not the developer changing their mind.
+            return
+        self.state["recorded"][key] = {
+            "head": review.get("head_sha") or head,
+            "review": review.get("id"),
+            # `dismissed_at` is the fact and the reason is for the reader, so they are kept
+            # apart: a build older than migration 16 has neither key, which reads as not
+            # dismissed, which is exactly how this behaved before dismissal existed.
+            "dismissed": bool(review.get("dismissed_at")),
+            "reason": review.get("dismissed_reason"),
+        }
+
+    def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,
+                     title: str | None) -> dict | None:
+        """`review open`: the request, written. Returns the review, or None if it was not."""
         facts = ["review", "open", "--repo", repo, "--pr", str(number), "--head", head]
         if title:
             facts += ["--title", title]
-        state, _, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
+        state, payload, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
         if state == "refused" and detail.startswith(REVIEW_DESK_USAGE_REFUSAL):
             # An older Review Desk: it has `review open` and has never heard of `--ledger`. The
             # request is still worth recording without it — the worker writes the ledger id with
             # `review link` when it starts, which is how it reached the record before DEV-945 —
             # so it is retried ONCE, without the flag, and never again. A second refusal is a
             # refusal about something else and is left alone.
-            state, _, detail = review_desk_run(rd, *facts, "--json")
+            state, payload, detail = review_desk_run(rd, *facts, "--json")
         if state in ("absent", "broken"):
             # One install answers for every request, so there is nothing to learn from asking
             # again this tick — and a great deal to lose: at a 30s timeout, a hung binary asked
             # once per request is one stalled tick per page of requests. Asked once, it costs
             # what the `review_desk` section's own call already costs.
             self.record_stopped = True
-            return False
+            return None
         if state != "ok":
             # A refusal this file has nothing to say about, and it is about THIS request rather
-            # than about the install, so the rest of the page is still recorded. Unmarked, so
-            # the next tick tries it again.
+            # than about the install, so the rest of the page is still recorded. Nothing is
+            # remembered, so the next tick tries it again.
+            return None
+        review = (payload or {}).get("review")
+        return review if isinstance(review, dict) else None
+
+    def read_request(self, rd: dict, key: str, rid) -> dict | None:
+        """`review show`: whether the developer has dismissed a request already recorded.
+
+        **A read, deliberately, and not another `review open`.** Opening again would answer the
+        same question — the review comes back either way — but it WRITES, and a write every
+        fifteen minutes on a request nobody has started is the `last_activity_at` problem the
+        once-per-commit rule above exists to avoid. Nothing in Review Desk moves on a read.
+
+        A review that is GONE is forgotten rather than remembered as missing: the developer
+        deleted a review that never started, which they may only do while it never started, and
+        the next tick records the request again from GitHub. That is the intended shape rather
+        than a hole in it — delete is for a row that should not exist, and the way to tell this
+        poller to leave a real request alone is to dismiss it.
+        """
+        if not isinstance(rid, int):
+            return None
+        state, payload, _ = review_desk_run(rd, "review", "show", "--review", str(rid), "--json")
+        if state in ("absent", "broken"):
+            self.record_stopped = True
+            return None
+        if state == "refused":
+            self.state["recorded"].pop(key, None)
+            return None
+        review = (payload or {}).get("review")
+        return review if isinstance(review, dict) else None
+
+    def dismissed_request(self, rd: dict, key: str, repo: str, number: int, pr: dict) -> bool:
+        """Has the developer dismissed this request's review? Says so once if they have.
+
+        **A dismissal is a decision, and the only one of the developer's decisions that reaches
+        this file as a reason not to act.** Review Desk's own list already leaves a dismissed
+        review out, so nothing arrives from that source either; this is the GitHub source being
+        told the same thing, because GitHub goes on requesting the review whatever Review Desk
+        holds — dismissing is not withdrawing.
+
+        Said once per request and per review, not once per tick: the Dispatcher is told why it
+        is not dispatching a request it can see, and then left alone about it. The mark is
+        cleared the moment the review is not dismissed, so a RESTORE followed by a second
+        dismissal is said again — it is a new decision about the same request.
+
+        Nothing here dismisses, restores or deletes anything, and there is no command that
+        could: Review Desk's dismissal is the dashboard's API and has no command-line path at
+        all. The developer's decision is read here and nowhere made.
+        """
+        held = self.state["recorded"].get(key) or {}
+        mark = f"review_dismissed|{key}|{held.get('review')}"
+        if not held.get("dismissed"):
+            self.state["once"].pop(mark, None)
             return False
-        self.state["recorded"][key] = head
+        if self.once(mark):
+            emit("review_dismissed", key=key, repo=repo, number=number,
+                 review_desk_id=held.get("review"), reason=held.get("reason"),
+                 review=review_desk_link(rd, held.get("review")),
+                 title=pr.get("title"), url=pr.get("url"))
         return True
 
     def request_spoken_for(self, key: str, entry: dict, item: dict) -> bool:
