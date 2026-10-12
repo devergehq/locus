@@ -15,6 +15,24 @@ this session, to post. Then post exactly what they approved, as a single review 
 they name (COMMENT / REQUEST_CHANGES / APPROVE) through `gh api`. It is their review. No agent
 signature unless they ask for one.
 
+## The hashes in this file are where a claim was measured
+
+**They name review-desk master, and master is cited here because branch hashes kept dying.** A
+branch's commits are not stable: a rebase rewrites them. `41bbc10` is master with DEV-929 and
+DEV-936 both merged, and every claim below was measured against a binary built from it. The
+four branch hashes this file carried before 12 October 2026 all stopped resolving in one
+rebase, and `f762e61`, which replaced one of them that same day, was gone within hours when its
+pull request rebased once more before merging. A hash a reader cannot find looks checkable and
+is not, which is why these now point at the default branch, where a merge commit stays put.
+
+So read a missing hash as a date rather than as a contradiction, and re-measure the claim
+beside it. Most are one `--help`, one `--json` refusal or one `draft handover` away; **the
+send-back has no command line at all** and is measured by posting to the dashboard's API on
+127.0.0.1, which is the developer's route and not yours. `scripts/test-review-lint.sh`
+re-checks the composed shape on every push, and `scripts/test-review-desk-hunks-and-parts.sh`
+re-checks it against a real binary whenever one is on PATH. **Never read a flag's name or an
+error code off this file when the command will tell you.**
+
 ## Steps
 
 **The understanding comes first — all of it, before a test is run or a lens applied — because its
@@ -122,10 +140,61 @@ API can approve a draft, and reaching for it would be signing off in your princi
 ### Open it, link it, and write the id down
 
 1. `review-desk review open --repo OWNER/REPO --pr <n> --head <sha>` prints the review id and
-   nothing else, so keep it in a variable. Pass `--title`, `--ticket` and `--changed-lines`
-   while you have them. A head commit already reviewed hands the same id back; a **new** head
-   commit starts the next round, so read the previous round first with
+   nothing else, so keep it in a variable. Pass `--title`, `--ticket`, `--ticket-url` and
+   `--changed-lines` while you have them — **the address only ever goes with the id**, for the
+   reason below. A head commit already reviewed hands the same id back;
+   a **new** head commit starts the next round, so read the previous round first with
    `review-desk review show --review <id> --json` and say in your draft what moved.
+
+   **`--ticket-url` is the ticket's address, and you are the only one who can supply it.**
+   Review Desk cannot work an address out from an id: the tracker and its workspace are your
+   dispatch's knowledge, not the record's. So every page of the review links to the ticket when
+   you pass it and prints the id as plain text when you do not. Build it from what your dispatch
+   block already names — for Linear, the workspace and the id:
+   `https://linear.app/<workspace>/issue/<TICKET-ID>`. It must start `https://`. **If you cannot
+   build an address you are sure of, leave the flag off**: a guessed address is a link to
+   somebody else's ticket, and the id as text is the honest rendering of a ticket nobody located.
+
+   **Pass it only in a call that also passes `--ticket`**, unless you know the record already
+   holds the id from an earlier round. The page draws the address *as* the id, so an address
+   with no id to draw has nothing to be — and Review Desk refuses that call rather than storing
+   a link nothing can render. Measured on review-desk master `41bbc10`: an address alone is
+   refused with `invalid_value` naming **`ticket_id`**, and the store held zero reviews
+   afterwards.
+
+   **Read the flag's name from the command, not from this file.** `review-desk review open
+   --help` lists `--ticket-url <URL>` where it exists. Checking at run time is what lets this
+   instruction outlive a rename, and it is cheaper than a refusal.
+
+   **If it is refused, drop that one flag and run it again — once.** Pass `--json` so the
+   refusal is a document on standard output rather than prose on standard error, and read
+   `error.code`:
+
+   | `error.code` | What it means | What you do |
+   |---|---|---|
+   | `usage` — "unexpected argument '--ticket-url'" | this Review Desk is older than the flag | drop **only** `--ticket-url` and retry once |
+   | `invalid_value`, naming **`ticket_url`** | the address was refused; it is not `https` | drop **only** `--ticket-url` and retry once, and say the address was rejected |
+   | `invalid_value`, naming **`ticket_id`** | an address with no id — this call passed no `--ticket` and the record holds none | drop **only** `--ticket-url` and retry once; the review opens with no ticket at all, so say that too |
+
+   **Two refusals share the code `invalid_value` and are told apart by the field the message
+   names.** Both are measured, and the second one is the newer: read the field, not just the
+   code, or an address with no id reads as an address that is not `https` and the report says
+   the wrong thing about the developer's ticket.
+
+   **All three exit 1, not 2**, and that is measured on the built binary rather than assumed:
+   this command line reserves 2 for being unable to run, and a request it will not take is a
+   refused one. So branch on `error.code` and the field its message names, never on the exit
+   code — which cannot tell these three from each other, or from anything else refused.
+
+   **`--ticket` stays.** The id is the field the record has always had and the thing the nit
+   ticket's team is read from; only the address comes off. And the retry is safe because a
+   refused call writes nothing — measured: after a refused `--ticket-url` the store held zero
+   reviews, and the retry created the review as a first round. Retry **once**: a second refusal
+   of a command line with no `--ticket-url` in it is a different problem, and looping on it
+   would spend the round on a flag.
+
+   With `--json` the id is `.review.id` rather than the whole of standard output, and `.created`
+   says whether this opened a review or handed an existing one back.
 2. `review-desk review link --review <id> --session <your allele session id> --ledger <KEY>`.
 3. `D ledger put <KEY> review_desk_id=<id> --by worker --note "recorded as Review Desk <id>"`.
    **Before you record anything else.** This one field is what makes your watcher poll the
@@ -673,10 +742,13 @@ with nothing in the diff to anchor to" asks for. The hunk is for the developer's
 GitHub.
 
 **Do not also write that rule's "Corrections and unanchored findings" comment.** It exists so an
-unanchorable finding stays navigable from a body that is a short index; here the body carries the
-finding in full, in its own section, so a second copy in a top-level comment is the same words
-twice and one more thing to keep in step. Write it where the house style's sectioned layout puts
-it, and nowhere else.
+unanchorable finding stays navigable from a body that is a short index, and the composed body is
+that index: this finding gets a row of its own, pointing at the line at the head commit — or at
+the pull request where it has no file at all — and a section below. The row does **not** link to
+the section, because an anchor into a review body never resolves and `review_lint.py`'s
+`index.no_dead_anchors` forbids one. A second copy in a top-level comment is the same words
+twice, one more thing to keep in step, and a comment the developer never decided on. Write the
+block, and nothing else.
 
 **A finding with no file, or a file and no line, carries no hunk at all** — a correction to the
 pull request's description, a missing ticket, a wrong figure. There is no line to read, so there
@@ -734,20 +806,30 @@ regrade change the heading instead of leaving a second copy of the severity to a
 
 ### Which house-style part is which block
 
-The house style's **sectioned** layout is the one the composition reproduces, and that is not a
-compromise: it is the layout `house-style.md` already prescribes for a finding that needs more
-than a table cell, and the one `review_lint.py` already budgets. Measured on a two-finding draft
-composed by Review Desk 0.1.0: **every check in `review_lint.py` passes**, and only one of them
-— `sections.status_line` — was added for this. Nothing in it was relaxed.
+**The house style's own shape is what the composition produces, and the blocks are its parts
+rather than its whole.** Review Desk builds the index from the findings themselves, hands each
+finding with a line inside the diff to GitHub as its own thread in the alert its live severity
+picks, and keeps a finding with nowhere to anchor as a section in the body. Measured on the
+body it composes, on review-desk master `41bbc10`: a six-finding draft with four of them
+anchored hands over four threads, and keeps the other two as sections under a six-row index.
+**27 of 27 checks in this repository's `review_lint.py` pass** on that composed shape, which
+the fixture in `scripts/test-review-lint.sh` re-checks on every push. Nothing in the house
+style is relaxed here, and nothing in it is overridden here. The linter needed one fix of its
+own to get there — a finding with both a row and a section was counted twice — so an older copy
+of it reports two failures on a body that is correct.
 
-| The body's part | Block | Why |
+**You do not write the index, and you do not write the threads.** Both are composed from the
+blocks and the findings' live severities, which is what makes a regrade or a cut move them. What
+you write is the blocks.
+
+| The review's part | Block | Why |
 |---|---|---|
 | the verdict line and the `**Method**` line | one `prose` | nothing decides on them, and they sit together under the eye |
 | `### Problem fit` and its 2–3 sentences | one `prose` | it is the understanding's conclusion, not a finding |
 | each Blocker, Should, Question and **each Nit** you are raising | one `finding`, in severity order | one block is what a decision needs |
 | the folded provenance block, with `Suppressed` | one `prose` | it is the last thing in the body, and nothing decides on it |
 
-Five things that table does not say on its own:
+Seven things that table does not say on its own:
 
 - **Write only the title; the heading is not yours.** `### 🟠 Should · S1 · …` would compose to
   `### Should · F1 · ### 🟠 Should · S1 · …`. The glyph is gone from a section heading and the id
@@ -760,19 +842,32 @@ Five things that table does not say on its own:
   a thread: a nit folded into another finding's block has no block of its own, so every decision
   about it is refused. Where the volume is the problem, hold the nit back or suppress it with a
   reason — both are on the record — rather than grouping it out of reach of a decision.
-- **Every posted finding gets a block, past three.** The house style's "at most three findings
-  raised in the body" and "the body is triage" are about a body you write whole; here the body
-  *is* the blocks, and a finding left out of them cannot be cut or regraded. Raise fewer
-  findings if there are too many — do not write fewer blocks than you raised.
+- **Every posted finding gets a block, and the house style's limits still hold.** The body is no
+  longer the blocks joined end to end, so "the body is triage" and "at most three findings raised
+  in the body" apply exactly as `house-style.md` writes them. A block is not a section: a finding
+  with a line inside the diff has a block, an index row and a thread, and no section at all. What
+  fills the body is the findings with **nowhere to anchor**, so that is where the three bite —
+  many unanchored findings make a long body, and the lever is the house style's **Volume** rule,
+  raising fewer and holding the rest back or suppressing them with a reason. **Never write fewer
+  blocks than you raised**: a finding with no block cannot be cut or regraded, and hiding it from
+  the developer's decision is worse than a long body.
+- **A Blocker, a Should and a Question carry three labels in the block**: `**What**`,
+  `**Why it matters**` and `**What I'd do**`. `review_lint.py` reads them off the **composed
+  thread**, and the only text it has to read there is your block's. The check is called
+  `threads.four_parts` because the fourth part is the claim, and that one is the title line
+  Review Desk composes above them — so writing it yourself would compose it twice.
+- **A nit stays light, in its block as on a thread.** A nit whose block carries all three of
+  those labels trips `threads.nit_light` — a warning rather than a failure, and still the house
+  style saying weight should track severity. One line of claim is a nit's whole shape.
 - **One block per finding, and only for a finding that posts.** A second block about one finding
   is refused, and so is a block about a finding that is `held_back`, `suppressed`, or carried
   into this round as `fixed`, `accepted`, `withdrawn` or `ticketed`. What the round found about
   such a finding is prose.
 
 A block's text may not begin or end with a newline — blocks are joined by exactly one blank line,
-and a block bringing its own would compose a body nobody wrote. `--file` is optional once
-`--sections` is given, because the body is then what the blocks compose to; pass both and the
-write is refused unless the two agree.
+and a block bringing its own would compose a body nobody wrote. **`--file` together with
+`--sections` is refused**: the body is what the blocks compose to, so a file beside them is a
+second answer to a question that now has one. Send the blocks alone.
 
 **Lint the composed body, not your draft.** `draft put --sections` prints the body it stored, and
 that is the text GitHub will carry. Read it back with `review-desk draft show --review <id>
@@ -882,25 +977,122 @@ Then tell the Dispatcher the id, what it covers, and that the draft is still wai
 Review Desk has no lease — so a session that posts and then dies is followed by one that would
 post again, on somebody's pull request, under your principal's name.
 
-1. `review-desk draft show --review <id> --json` is your only authority. `status` must read
-   `approved`; `event` is the GitHub review event the developer chose and `approved_at` is when.
-2. **Ask GitHub whether it is already up**:
+1. `review-desk draft show --review <id> --json` is your only authority **on whether you may
+   post at all**. `status` must read `approved`; `event` is the GitHub review event the
+   developer chose and `approved_at` is when. Nothing else establishes approval — not a
+   hand-over that answered, not a message in this session, not the absence of an error.
+
+   **Read it immediately before you post, not once at the top.** A sign-off can be taken back
+   while you work: your principal may send an approved draft back, which clears `event` and
+   `approved_at` with it. An `approved` you read minutes ago is a claim about the past, and
+   step 6 carries the one case where acting on a stale one cannot be undone.
+2. **`review-desk draft handover --review <id> --json` is what you post.** One read — write it
+   out to a file, because steps 3, 4 and 5 all work from it — and it is the only thing you post
+   from:
+
+   | What it hands you | What it is |
+   |---|---|
+   | `body` | the body the developer signed off, composed in the house style's shape. Posted **verbatim** |
+   | `threads[]` | one entry per finding with a line inside the diff — `path`, `line`, `side`, and the comment as it will post |
+   | `threads[].finding_seq` | that finding's own number, for `finding link` once GitHub has answered |
+   | `review.head_sha` | the commit to post at |
+   | `draft.event` | the event the developer chose, upper-cased for GitHub |
+
+   `body` is byte for byte `draft show`'s `draft.body` — Review Desk has a test that asserts
+   it — so there is one approved body and no way to pick the wrong one. `side` is always
+   `RIGHT` and `line` is always the new file's numbering, because a removed line carries no
+   number in this record; a finding on one has no thread and stays a section in the body.
+
+   **A refusal here is not permission to improvise.** Read `error.code` from the `--json`
+   document, because the two refusals mean opposite things:
+
+   | `error.code` | What it means | What you do |
+   |---|---|---|
+   | `draft_status`, and step 1 read a status **other than** `approved` | the draft is not signed off | **do not post.** Go back to waiting, and say what it said |
+   | `draft_status`, and step 1 read `approved` | the stored body is **not what its blocks compose to** — it was approved in the older shape, before the composition changed | **do not post, and do not wait.** Say it has to be sent back and written again |
+   | `usage` — "unrecognized subcommand 'handover'" | this Review Desk is older than the hand-over | **the fallback below** |
+
+   Telling them apart by the code and never by the bare fact that the command failed is the
+   whole of this step. A `draft_status` refusal read as an old Review Desk would post a body
+   nobody signed off, under your principal's name — the one outcome this arrangement exists to
+   prevent.
+
+   **Two different refusals carry `draft_status`, and the status separates them.** Measured on
+   review-desk master `41bbc10`: an unapproved draft refuses with "the draft of review N is
+   ready, and only an approved draft is handed over"; an approved draft whose body predates the
+   composition refuses with "…is approved, and a draft whose body is what its blocks compose
+   to". Read the status, not the sentence.
+
+   **Step 1 already refused to go on unless the status read `approved`, so if you got here the
+   second row is what a `draft_status` refusal means.** Re-read `draft show` rather than reason
+   about it: the status it reports now is the answer, and the first row is the guard that makes
+   this command safe to call on its own rather than a branch a worker who did step 1 takes.
+
+   **The second one needs the developer, and it is the one thing in this section they have to
+   be asked for.** The draft was approved in the old shape — every finding a section, no index —
+   and the threads are composed from the record as it is now, so handing both over would put
+   each anchored finding on the pull request twice, once as a section and once as a comment,
+   under your principal's name. So: **never post the old body.**
+
+   What to do is **ask once, say it is stuck, and then go back to waiting.** Tell the Dispatcher
+   and say to your principal that the draft has to be **sent back from the draft page** so the
+   blocks can be written again; then wait for `draft_sent_back` and handle it exactly as **The
+   draft, and then wait** describes. The round is not lost; only the body is. Do not look for a
+   command that does it: there is none, and sending a draft back is the developer's act for the
+   same reason approving it is.
+
+   **Why the asking is the part that matters, and not the waiting.** Nothing about an approved
+   draft changes on its own, so a session that only waits waits forever on a review that needed
+   one sentence to a person. Going back to waiting afterwards is still right — it costs nothing
+   and your watcher is the thing that will hand you the send-back — but it is not what clears
+   this, and a brief that said only "it refused, so wait" would have had sessions sitting on
+   dead reviews.
+
+   **The sign-off goes back with the draft, which is what makes this safe to wait on.**
+   Measured on review-desk master `41bbc10`: sending an approved draft back answers `200`, and
+   afterwards `draft show` reads `sent_back` with `event` and `approved_at` **cleared** and the
+   note carried. So the status your watcher polls cannot read `approved` on a draft that is
+   waiting to be rewritten, and `draft put --sections` is accepted again — measured, the draft
+   goes back to `ready`. There is no state here that only a person can see.
+
+   (This was briefly a dead end, and the history is worth one line because the shape of the fix
+   is the reason to trust it: an approved draft could not be sent back at all — `409`, "only a
+   draft that is ready can be sent back" — and could not be rewritten either, so the review had
+   no exit. Raised from this brief's side and fixed in Review Desk rather than worked around
+   here, which is why the refusal above now names a transition that exists.)
+
+   **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
+   the step after this one, and a session that posted and then died before reporting it needs
+   this same payload to ask GitHub about its own review. It is not a second licence to post:
+   step 1 is the only thing that grants that, and step 3 says whether it has already happened.
+
+3. **Ask GitHub whether it is already up**:
    `D review-posted <KEY> --approved-at <approved_at> --body-file body.md --json`. It is
    read-only. `"posted": true` means **do not post** — record the `review_id` it hands back with
-   step 4 and stop.
+   step 5 and stop.
 
-   **`body.md` is `draft show`'s `body`, written out — never a draft file of your own.** The
+   **`body.md` is the hand-over's `body`, written out — never a draft file of your own.** The
    approved body is the one the blocks composed to, and a decision the developer made has
-   already rewritten a block of it. Your own copy is a body from before he decided, and both
-   this check and the post below would then be about text he never approved.
-3. Post exactly the approved body with the approved event, as **one** review, through
-   `gh api repos/OWNER/REPO/pulls/<n>/reviews`. It is your principal's review: no agent
-   signature unless they asked for one.
+   already rewritten a block of it. Your own copy is a body from before they decided, and both
+   this check and the post below would then be about text they never approved.
+4. Post exactly the hand-over's `body` with the approved event, as **one** review, through
+   `gh api repos/OWNER/REPO/pulls/<n>/reviews`, with `threads[]` in `comments` on that same
+   call. It is your principal's review: no agent signature unless they asked for one.
 
-   **The body is theirs; the inline threads are yours, and they go in `comments` on this same
-   call.** What the developer approved is the review *body*. The house style puts each finding on
-   the line it concerns and Review Desk's draft holds no thread text, so the threads are yours to
-   write — and the `comments` array of this one `reviews` call is the only place they may go.
+   ```sh
+   review-desk draft handover --review "$REVIEW" --json > handover.json   # step 2
+   jq -r .body handover.json > body.md                                    # step 3's body.md
+   jq '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
+        body: .body, comments: [.threads[] | {path, line, side, body}]}' \
+     handover.json > review.json
+   gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
+   ```
+
+   **The threads are no longer yours to write.** They were, for as long as the draft held no
+   thread text. Review Desk now composes each one from the same block the developer decided on,
+   in the alert its live severity picks, so writing your own beside them would put text on the
+   pull request that nobody approved and hang two threads on one finding. Post what you were
+   handed.
 
    **Adding a thread afterwards creates a second review, and that is measured rather than
    feared.** `POST /pulls/<n>/comments` makes a standalone review comment, and GitHub wraps it in
@@ -918,13 +1110,84 @@ post again, on somebody's pull request, under your principal's name.
    Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
    posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with nothing
    it could have linked — which is why it is spelled out rather than implied.
-4. `review-desk finding link --review <id> --finding <seq> --github-comment <id>` for each
-   inline comment, then
-   `review-desk draft posted --review <id> --github-review <the review id>`.
-5. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
+5. **Link each comment GitHub made back to its finding.** Read the comments back rather than
+   looking for them in the answer to the `reviews` call:
+   `gh api "repos/$REPO/pulls/$PR/comments" --paginate`, keeping the ones whose
+   `pull_request_review_id` is the review you just created. That is the same route
+   `review_lint.py` takes to find a review's threads.
+
+   **Join on the marker in the comment's own body, not on where it sits.** Every composed
+   thread ends with `<!-- review-desk:F<seq> -->`, and `threads[].finding_key` carries the same
+   `F<seq>` so that nothing has to format it twice. GitHub stores the marker in `body` and hands
+   it back verbatim, and it renders as nothing to a reader: the join is carried by the thing
+   being joined.
+
+   Measured on review-desk master `41bbc10`, on a blocker, a should and a nit:
+   **as Review Desk hands it over**, the body's last line is the marker, the line before it is
+   blank, and it sits outside the alert rail — a nit, which has no rail, carries it the same
+   way. "Last" is true of
+   what you are handed; if you sign your comments, see below for what goes after it.
+
+   **Why not `path` and `line`:** two findings on one line is ordinary — a Should about what
+   the line does and a Nit about what it is called — and measured on review-desk master
+   `41bbc10`, two such threads come back carrying one `path` and one `line` between them.
+   Pairing on those has nothing to choose with, and `finding link` would attach each comment to
+   whichever finding was found first: both calls return success, the record is wrong, and
+   nothing says so.
+
+   | What the comment carries | Do |
+   |---|---|
+   | `<!-- review-desk:F<seq> -->` | join on it — the normal case, and the only one that is unambiguous |
+   | no marker, but a title naming `**{Severity} · F{seq}**` | an older Review Desk — join on that, and **not** on the body's first line, where an alert marker sits above the title |
+   | neither, or two findings for one comment | **link nothing for that comment and say so loudly**, naming the comment id. A wrong link is worse than a missing one: it is silent, and it is on the record |
+
+   Never join on a comment's position in the array, which nothing promises.
+
+   **If you sign your comments, the `agent:` marker goes after Review Desk's.** `review_lint.py`
+   reads `threads.marker_last` off the body's last physical line, so appending the signature
+   before the composed marker leaves the HTML comment last and fails that check. Measured both
+   ways: after it, `marker_last` passes; before it, it fails. The join survives either order —
+   the marker does not have to be last to be found — so the ordering is owed to the linter
+   rather than to the join.
+
+   Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
+   for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.
+6. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
    the ledger. The record will say the draft is approved and unposted while GitHub says
-   otherwise, and the check in step 2 is what makes the retry safe rather than duplicative.
-6. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
+   otherwise, and the check in step 3 is what makes the retry safe rather than duplicative.
+
+   **Unless it failed with `draft_status` reading `sent_back`, and then retrying never works.**
+   That is your principal taking the sign-off back in the window between your post and your
+   report. Measured on review-desk master `41bbc10`: `draft posted` refuses with "the draft of
+   review N is sent_back, and only an approved draft can be marked posted", and the review is
+   left with
+   **no `github_review_id`** — so nothing in the record says the review you just posted exists.
+
+   Four things follow, in this order:
+
+   - **Put the id in the record first: `review-desk review link --review <id> --github-review
+     <the GitHub review id>`.** It writes `reviews.github_review_id` on its own, and that is the
+     whole of what it does here — measured on review-desk master `41bbc10`: the draft stays
+     `sent_back` with no event, and the review's `session_id` and `ledger_id` are untouched. So
+     the record says which review is on the pull request without anything claiming the draft was
+     posted, and both facts stay true.
+   - **Then name the id to the Dispatcher and in the ledger anyway, in the same breath as the
+     failure** — because the field is not durable. A later `--github-review` overwrites a
+     different id silently and exits 0, and the next successful `draft posted` on this same
+     review does exactly that: measured, the recovered id was replaced by the second review's
+     the moment that one was reported. So the record holds the number until this round posts
+     again, and what you said out loud is what holds it after.
+   - **Then treat the send-back as any other**, from the event table: revise the blocks and
+     `draft put --sections` again.
+   - **Say that the pull request already carries a review.** The next sign-off is a different
+     body, so step 3's check — which matches on the body — will not find the first one and will
+     let you post, correctly: it is a new review. Your principal should hear that there will be
+     two, because they are the one who can decide what to do about the first.
+
+   This is not a session getting posting wrong. "Posting exactly once" holds for everything a
+   session controls; this is the one way the count can move that no session can prevent, which
+   is exactly why it is reported rather than guarded against.
+7. **Then `review_lint.py` — and if it fails on the BODY, report it; do not edit it.** Step 13's
    "fix what it names by editing the review" governs your own text and nothing else. Your threads
    you may edit freely. **The body you may not touch**, because the developer signed off on those
    characters and replacing them puts text they never read on the pull request under their name —
@@ -944,6 +1207,30 @@ post again, on somebody's pull request, under your principal's name.
    count after it), the verdict's severity counts against the rows your own tables hold, and each
    thread under its prose budget — because after approval the only person who can fix the body is
    the one who approved it.
+
+### An older Review Desk, with no hand-over
+
+**If `draft handover` is not there** — `error.code` is `usage` and the message reads
+`unrecognized subcommand 'handover'`, measured on Review Desk 0.1.0, or `review-desk draft
+--help` does not list it — **you post `draft show`'s `body` and no threads at all**, and step
+3's `body.md` is that same body. That is what every session did before the hand-over existed,
+and it is still a review: the body is the approved body, step 1 established that, and nothing
+about the sign-off changes. What is lost is the shape. An older Review Desk composes no thread
+text and stores a body that is the blocks joined end to end, so the pull request gets one long
+body, no index, and no finding on the line it concerns.
+
+**Say so, loudly, in three places**: to the Dispatcher, in the ledger, and in what you report
+when you are done. Name it as the install it is — *"posted the body with no inline threads:
+this Review Desk has no `draft handover`"* — and name the version if `review-desk --version`
+answers. The reason this has to be said rather than noticed is that the degraded result looks
+exactly like a careless session: a reader seeing a 300-line body with no threads cannot tell
+an old binary from a worker that ignored the house style, and the only thing that
+distinguishes them is you saying which it was. A silent fallback spends your principal's
+credibility to hide a version number.
+
+**Loud is never blocking, and nothing here exits 2.** You post, you report, you carry on. The
+lint will read a body of sections and no threads — which is what that shape was — so report
+what it names and do not edit the body to suit it; step 7 governs this too.
 
 ## After that
 

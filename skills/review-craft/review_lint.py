@@ -47,12 +47,22 @@ def die(msg):
 MERMAID = re.compile(r"^[ \t>]*```mermaid\b.*?^[ \t>]*```[ \t]*$", re.S | re.M)
 
 
+COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
 def visible(md: str) -> str:
-    """Folds and diagrams removed. A mermaid fence is read as a picture, not as prose, and its
-    source alone runs ~700 characters for a dozen nodes — a single-finding thread's whole budget.
-    Charging it would punish exactly the findings house-style asks to draw."""
+    """Folds, diagrams and HTML comments removed. A mermaid fence is read as a picture, not as
+    prose, and its source alone runs ~700 characters for a dozen nodes — a single-finding thread's
+    whole budget. Charging it would punish exactly the findings house-style asks to draw.
+
+    An HTML comment renders as nothing at all, so charging one is charging a reader for text they
+    cannot see. That is load-bearing from DEV-929: Review Desk ends every composed thread with
+    `<!-- review-desk:F<seq> -->`, the marker a session joins each posted comment to its finding
+    by, so every thread in a composed review carries one. Measured on review-desk `bae4f5e`.
+    Stripping it is right either way — a comment has never been readable — and the marker is
+    only what made charging for one stop being theoretical."""
     s = re.sub(r"<details>.*?</details>", "", md or "", flags=re.S)
-    return MERMAID.sub("", s)
+    return COMMENT.sub("", MERMAID.sub("", s))
 
 
 def prose(md: str) -> str:
@@ -125,6 +135,47 @@ def first_line(section: str) -> str:
 # The tag is prose no other part of the shape carries.
 IN_DIFF = re.compile(r"\b(in diff|pre-existing)\b", re.I)
 CHIP = re.compile(r"·\s*`[^`]+`")
+
+# A finding in the composed body carries BOTH an index row and — when it has nowhere to anchor —
+# a section, so adding every section heading to the rows counts that finding twice. Measured on
+# the body Review Desk composes for a six-finding draft with four findings anchored: a correct
+# `2 Blockers · 2 Should · 2 Nits` verdict failed as "says 2 Should, rows hold 3" and again as
+# "says 2 Nits, rows hold 3". The two findings with no line in the diff were each counted as a
+# row and as a section. **A section counts only where its finding has no row.**
+#
+# Identity is the finding's number. Review Desk composes the row's first cell as
+# `{glyph} {Severity} · F{seq}` and the heading as `### {Severity} · F{seq} · {title}`, so
+# `F{seq}` is the one token both carry — and it is the finding's identity across rounds, which
+# the severity and the title are not. A heading written by hand may have no number at all; it
+# falls back to its title, which the index's Finding column holds character for character.
+FSEQ = re.compile(r"\bF(\d+)\b")
+
+
+def head_title(head: str) -> str:
+    """A section heading's title: what is left after the severity word and the finding's number."""
+    s = re.sub(r"^(Blocker|Should|Nit|Question)\b", "", prose(head), flags=re.I).strip(" \u00b7")
+    return re.sub(r"^F\d+\b", "", s).strip(" \u00b7")
+
+
+def unrowed(heads: list[str], row_lines: list[str]) -> list[str]:
+    """The section headings whose finding has no row — the only ones a count may add to the rows.
+
+    A title has to be substantial before it is matched, because a short one is a word that could
+    appear in any row; with no number and no title to go on, the heading counts, which keeps the
+    old behaviour for a body nobody composed."""
+    seqs = {m.group(1) for r in row_lines for m in FSEQ.finditer(r)}
+    out = []
+    for head in heads:
+        nums = {m.group(1) for m in FSEQ.finditer(head)}
+        if nums:
+            if not nums & seqs:
+                out.append(head)
+            continue
+        title = head_title(head)
+        if not (len(title) >= 12 and any(title in prose(r) for r in row_lines)):
+            out.append(head)
+    return out
+
 
 # A heading's severity is NOT read with `SEV`: that pattern requires the word in bold, which is
 # right for a thread's title line and wrong for a heading, where the word stands on its own.
@@ -346,7 +397,8 @@ def main():
                     f"says {claimed_fixed.group(1)} fixed, tables hold {n}")
 
     if verdict:
-        all_rows = open_rows + done_rows + [h for h, _ in found]
+        table_rows = open_rows + done_rows
+        all_rows = table_rows + unrowed([h for h, _ in found], table_rows)
         for word, plural in (("Blocker", "Blockers"), ("Should", "Should"), ("Nit", "Nits")):
             claimed = re.search(rf"(\d+)\s+{plural}\b", verdict.group("v"))
             if not claimed:
