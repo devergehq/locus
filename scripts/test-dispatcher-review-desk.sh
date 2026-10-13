@@ -637,6 +637,12 @@ def out_of_play(argv):
         refuse("usage", "error: unrecognized subcommand 'out-of-play'")
     if mode == "broken":
         refuse("cannot_open_database", "scripted broken out-of-play", 2)
+    if mode == "notobject":
+        # Exit 0 with JSON that PARSES and carries no review. `review show` has been modelled
+        # with this shape since the fifth review pass of DEV-945 and both out-of-play commands
+        # had no guard for it, which is the fourth time this file has met the same asymmetry.
+        print("[]")
+        raise SystemExit(0)
     if mode == "refused":
         refuse("database_locked", "the database is locked by another writer")
     reason = opt(argv, "--reason")
@@ -684,6 +690,9 @@ def in_play(argv):
         refuse("usage", "error: unrecognized subcommand 'in-play'")
     if mode == "broken":
         refuse("cannot_open_database", "scripted broken in-play", 2)
+    if mode == "notobject":
+        print("[]")
+        raise SystemExit(0)
     repo, pr = (opt(argv, "--repo") or "").strip().lower(), opt(argv, "--pr")
     store = opened()
     slot = "%s#%s" % (repo, pr)
@@ -5551,6 +5560,59 @@ ok "  bringing it back"                                "$(oop_state acme/portal 
 ok "  clearing the record with it"                     "$(remembered gh-portal-412 out_of_play)" None
 ok "  and saying so, it being a new decision"          "$(count '"event": "review_in_play"')" 1
 
+# **The sixth exit: exit 0 with an answer carrying no review.** `review_desk_run` has four
+# answer shapes and the split above covered three; an `ok` whose body is not a review fell to the
+# same arm as a store saying "it is back in play". Without the guard the Dispatcher is told the
+# review is back, the store still holds it out of play, the record agrees with the announcement
+# rather than the store, the retry window is popped and nothing ever tries again -- a silent
+# permanent divergence with a false `review_in_play` already on the principal's stream. Raised by
+# a review of this branch, which measured all nine of those facts passing.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+echo notobject > "$work/rd.oop.mode"
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "an unreadable in-play announces no return"         "$(count review_in_play)" 0
+ok "  and leaves the record saying out of play"        "$(remembered gh-portal-412 out_of_play)" draft
+ok "  the store agreeing with it"                      "$(oop_state acme/portal 412 | cut -d@ -f1)" draft
+ok "  and it is reported as a broken install"          "$(count '"event": "review_desk_unavailable"')" 1
+ok "  naming the call and the shape"                   "$(says 'review in-play exited 0 with an answer carrying no review')" yes
+ok "  and the poller exits clean"                      "$rc" 0
+# **The window is LEFT STANDING on this one**, so the retry is one per interval rather than none.
+# That is the opposite of the broken path below, and deliberately: nothing was learned, but the
+# call did happen and answered.
+age_marker 'review_desk|in_play|gh-portal-412'
+rm -f "$work/rd.oop.mode"
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "  and the next window brings it back"              "$(oop_state acme/portal 412)" "None@None"
+
+# The same shape on the OTHER half. Returning the reason asked for on an answer this file cannot
+# read would tell the Dispatcher a pull request is out of play when nothing established that it
+# is -- and the record would not say so either, so the prune drops it and the return is never
+# detected. One shape, one guard.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+echo notobject > "$work/rd.oop.mode"
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "an unreadable out-of-play claims nothing"          "$(count review_out_of_play)" 0
+ok "  and remembers no reason"                         "$(remembered gh-portal-412 out_of_play)" ""
+ok "  while reporting the broken install"              "$(says 'review out-of-play exited 0 with an answer carrying no review')" yes
+ok "  and exiting clean"                               "$rc" 0
+rm -f "$work/rd.oop.mode"
+
 # **A broken in-play does NOT spend the window**, which is the other half of the bound: `due`
 # writes its marker when it is evaluated, so a Review Desk broken for one tick would otherwise
 # put the return fifteen minutes away -- a review coming back late, which is worse than the churn
@@ -5637,6 +5699,23 @@ rm -f "$work/rd.oop.mode"
 # and sticks again is said both times rather than once.
 instance '{"mode":"auto"}'
 ok "the stuck marks are dropped over the constant"     "$(grep -c 'for reason in OUT_OF_PLAY_REASONS:' "$disp")" 2
+# **The enumeration is written out, because getting it wrong twice is how it came to be.** Seven
+# return paths from `back_in_play` in three dispositions, and the one that was missed each time
+# was not a failure mode: the first miss was the exit that SUCCEEDS, the second was that success
+# itself splits two ways. A comment that said "four exits" or "cleared on success" was the defect
+# both times, so the count and the split are pinned here rather than trusted to prose.
+ok "the seven paths are enumerated in the comment"     "$(grep -c 'there are seven, in three' "$disp")" 1
+ok "  and the wrong first wording is named"            "$(grep -c '"Cleared on success" was the first wording and it is wrong' "$disp")" 1
+# And the two mark prefixes the prune sweeps, with the shape that does NOT match named. The
+# claim is checked against the file rather than asserted: these are the only two mark strings
+# whose third field is a ledger key.
+# One tuple, named, with the invariant beside it: field 3 is a ledger key. One character
+# separates `review_desk|in_play|` from `review_desk|in_play_refused|`, whose third field is a
+# repository slug, so a mark shaped `review_desk|in_play|<repo>` would be swept on every tick
+# with no symptom but a rate limit that never holds.
+ok "the prune sweeps one named tuple of prefixes"      "$(grep -c 'swept = ("review_desk|head_moved|", "review_desk|in_play|")' "$disp")" 1
+ok "  with the invariant named beside it"              "$(grep -c 'the invariant is that field 3 is a LEDGER KEY' "$disp")" 1
+ok "  and in_play_refused is keyed by repository"      "$(grep -c 'review_desk|in_play_refused|{repo}' "$disp")" 1
 
 
 printf '\n  a Review Desk with no out-of-play at all\n'
@@ -6554,7 +6633,12 @@ rm -f "$work/rd.nostarted"
 
 sed 's/^        self\.record_unreachable(rd, every)$/        pass  # NOTICE AFTER THE RETURN/' \
     "$disp" > "$work/nountrusted.py"
-ok "the truncation reversal changed one line"          "$(grep -c 'NOTICE AFTER THE RETURN' "$work/nountrusted.py")" 1
+# TWO lines now: the notice is said again after the clearance sweep, because the out-of-play
+# writes live there and the first call runs before the untrusted early return. Reversing both is
+# equivalent for THIS control -- a truncated page returns before the second call ever runs, so
+# the only one that could report on such a tick is the first -- and pinning two rather than one
+# is what stops the `sed` silently matching neither after the next edit.
+ok "the truncation reversal changed its lines"         "$(grep -c 'NOTICE AFTER THE RETURN' "$work/nountrusted.py")" 2
 NOMAP=1 instance '{"mode":"on"}'
 search_page acme/portal 50 60
 echo broken > "$work/rd.mode"

@@ -120,6 +120,20 @@ refuses to build when they disagree.
   limit added to fix something else. The window is cleared on success too, and the per-key marks
   in `emitted` — `review_desk|head_moved|` and `review_desk|in_play|` — are both swept by the
   prune at the end of `review_requests`, so neither bucket grows unbounded.
+- **`review out-of-play` and `review in-play` answering exit 0 with a body that carries no review
+  are called broken, which is the guard `review open`, `review find` and `review show` all have
+  and these two did not.** Without it, an unreadable in-play was indistinguishable from the store
+  saying the review is back: the Dispatcher was told it had returned, the store still held it out
+  of play, the record agreed with the announcement rather than with the store, the retry window
+  was dropped and nothing ever tried again — a silent permanent divergence with a false
+  `review_in_play` already on the principal's stream. The out-of-play half had the mirror of it,
+  returning the reason it had asked for. Both now write nothing, announce nothing and report the
+  install broken, leaving the retry window standing so the next interval tries again.
+- **A broken Review Desk met by the clearance sweep is reported.** `record_unreachable` runs
+  before the untrusted early return, and the out-of-play writes happen after it, so a broken
+  `review out-of-play` or `review in-play` was noted and never said — "broken is loud in every
+  mode but `off`" did not hold for the two newest commands in the file. It is said a second time
+  after the sweep; the `due` gate means a fault both calls can see is still one line.
 
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a

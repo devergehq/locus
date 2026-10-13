@@ -1926,6 +1926,20 @@ class Poller:
                     continue
                 emit("review_cleared", key=key, reason=reason, out_of_play=left,
                      session_id=entry.get("session_id"), session_name=entry.get("session_name"))
+        # **Said a second time, because the clearance sweep writes AFTER the first call.** The
+        # out-of-play writes live in that sweep, and `record_unreachable` runs before the
+        # untrusted early return — so a broken `review out-of-play` or `review in-play` was
+        # noted into `record_broken` and then never said, which breaks "broken is loud in every
+        # mode but off" for the two newest commands in the file. Measured by a test that asked
+        # for the notice and got none.
+        #
+        # **Calling it twice costs nothing and the `due` gate is why.** Every line it emits is
+        # rate-limited on the same mark the first call used, so a fault both calls can see is
+        # said once; what the second call adds is the faults that did not exist yet when the
+        # first one ran. The first call stays where it is because a TRUNCATED page returns
+        # before this point, and reporting a broken install on such a tick is what it was added
+        # for.
+        self.record_unreachable(rd, every)
         self.state["prs_present"] = present
         # Pruned with `prs_present` and on the same evidence: this tick is trusted to say what is
         # requested, so what it does not name is not requested. That bounds the dict by the
@@ -1957,10 +1971,18 @@ class Poller:
         # anything, so this sweep is the backstop for a key whose in-play never succeeded before
         # the request left the list. **`review_desk|in_play_refused|<repo>` does NOT match**, and
         # that is checked rather than assumed: it is keyed by repository, so its third field is a
-        # slug and not a key, and the prefix test fails on the character after `in_play`.
-        for mark in [m for m in self.state["emitted"]
-                     if m.startswith("review_desk|head_moved|")
-                     or m.startswith("review_desk|in_play|")]:
+        # slug and not a key, and the prefix test fails on the character after `in_play`. The
+        # whole set of mark shapes in this file was read off it to establish that those two are
+        # the only matches, and `split("|")[2]` cannot raise on either: a bare prefix with no key
+        # yields the empty string, which is not in `present` and is deleted, which is right.
+        # **A tuple of exact prefixes, and the invariant is that field 3 is a LEDGER KEY.** One
+        # character separates `review_desk|in_play|` from `review_desk|in_play_refused|`, whose
+        # third field is a repository slug — so a later mark shaped `review_desk|in_play|<repo>`
+        # would be dropped on every tick with no symptom but a rate limit that never holds.
+        # Naming the invariant beside the tuple is what a reader adding a mark needs; the hazard
+        # was raised by a review of this branch rather than imagined.
+        swept = ("review_desk|head_moved|", "review_desk|in_play|")
+        for mark in [m for m in self.state["emitted"] if m.startswith(swept)]:
             if mark.split("|")[2] not in present:
                 del self.state["emitted"][mark]
         # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
@@ -3382,7 +3404,20 @@ class Poller:
                      call="review out-of-play", detail=detail, example=True)
             return None
         review = review_of(payload)
-        if isinstance(review, dict) and key in self.state["recorded"]:
+        if review is None:
+            # **The same guard as `back_in_play`'s, and it was missing here for the same reason.**
+            # Returning `want` on an answer this file cannot read tells the caller the record
+            # moved — so `review_out_of_play` is emitted claiming a pull request is out of play
+            # when nothing established that it is, and the record does not say so either, which
+            # means the prune drops it and the return is never detected. Found in the same review
+            # pass as the `review in-play` half; the two commands have one shape and now one
+            # guard.
+            self.out_of_play_stopped = True
+            self.note_broken("review out-of-play", "broken",
+                             f"{rd.get('command')} review out-of-play exited 0 with an answer "
+                             f"carrying no review — too old to use", repo)
+            return None
+        if key in self.state["recorded"]:
             # Recorded from the ANSWER, not from what was asked for. The store is the fact, and
             # on the one shape where the two could differ — a build that accepted the call and
             # held a different reason — believing the request would send the next tick looking
@@ -3481,7 +3516,30 @@ class Poller:
                 # again every tick would learn the same thing for ever.
                 self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
             return
-        held, review = self.state["recorded"].get(key), review_of(payload)
+        review = review_of(payload)
+        if review is None:
+            # **Exit 0 with an answer this file cannot read is BROKEN, and this was the one write
+            # that never grew the guard.** `review_desk_run` has FOUR answer shapes and the
+            # five-way split above covered three of them: `ok` with a review, cleared or stuck.
+            # An `ok` whose body carries no review — empty output, `[]`, `{"review": null}` — fell
+            # to the `isinstance` arm below and was indistinguishable from the store saying "it is
+            # back in play". Measured by a review of this branch against a stand-in answering
+            # `[]`: the Dispatcher was told the review was back, the store still held it out of
+            # play, the record agreed with the announcement rather than with the store, the retry
+            # window was popped, and three further ticks made no attempt. A silent permanent
+            # divergence with a false `review_in_play` already on the principal's stream.
+            #
+            # **The fourth time this file has found the same asymmetry.** `review open` grew the
+            # guard, then `review find`, then `review show` — "the write path grew this guard a
+            # pass earlier and the read path did not" is `read_request`'s own sentence about it.
+            # Nothing is written and nothing is announced; the window is LEFT STANDING, so the
+            # retry is one per `reemit_after_secs` rather than never.
+            self.out_of_play_stopped = True
+            self.note_broken("review in-play", "broken",
+                             f"{rd.get('command')} review in-play exited 0 with an answer "
+                             f"carrying no review — too old to use", repo)
+            return
+        held = self.state["recorded"].get(key)
         if isinstance(held, dict):
             # **Read off the ANSWER, which is `out_of_play`'s own rule in the other direction:
             # the store is the fact, and believing the request would send the next tick looking
@@ -3523,8 +3581,28 @@ class Poller:
         # know it existed. Raised against my own change.
         for reason in OUT_OF_PLAY_REASONS:
             self.state["once"].pop(f"review_in_play_stuck|{key}|{reason}", None)
-        # **The retry window is cleared on SUCCESS too, and this is the exit that was missed.**
-        # The bound was reasoned about as four exits and there are five: the one that works.
+        # **The retry window is cleared on a success that CLEARED, and this is the exit that was
+        # missed.** The bound was reasoned about as four exits; there are seven, in three
+        # dispositions, and the enumeration is written out because getting it wrong twice is how
+        # this paragraph came to exist:
+        #
+        #   absent or broken                     CLEAR — the call did not happen
+        #   refused, no such subcommand          KEEP  — about the BUILD, which cannot change
+        #                                                until somebody upgrades it
+        #   refused, no such review              FORGET the field — nothing is out of play, and
+        #                                                the field is what the gate reads
+        #   refused, anything else               CLEAR — a locked database, a validation unmet
+        #   exit 0, still out of play ("sticky") KEEP  — the one case the bound exists FOR
+        #   exit 0, cleared                      CLEAR — here
+        #   the record is not a dict             CLEAR — unreachable: the gate only calls this
+        #                                                for a key whose record holds a reason,
+        #                                                and nothing between touches the state.
+        #                                                The `isinstance` is a type guard against
+        #                                                a hand-edited state file, not a path
+        #
+        # **"Cleared on success" was the first wording and it is wrong**, because success splits
+        # two ways and the sticky half deliberately keeps the marker. Said precisely here rather
+        # than left as a sentence a reader has to disbelieve.
         # Keeping the marker here can never rate-limit a retry, because a successful clear makes
         # the gate's own first condition false — there is nothing left to retry. All it can do is
         # land on the NEXT genuine return and skip it.
