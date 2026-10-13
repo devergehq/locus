@@ -5515,6 +5515,42 @@ rc=$(run "$disp" poll 1)
 ok "a store that is fixed brings it back"              "$(oop_state acme/portal 412)" "None@None"
 ok "  and the return is said"                          "$(count '"event": "review_in_play"')" 1
 
+# **The fifth exit: SUCCESS, which clears the window too.** The retry bound was reasoned about as
+# four exits and there are five. Keeping the marker on the one that WORKS can never rate-limit a
+# retry -- a successful clear makes the gate's own first condition false, so there is nothing left
+# to retry -- and all it can do is land on the next genuine return and skip it. Raised by a review
+# of this branch, which measured it against two commits: out of play, back, out of play, back
+# again inside one `reemit_after_secs`, which is a developer marking a pull request ready, putting
+# it back to draft and marking it ready again within fifteen minutes.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "the first return brings it back"                   "$(oop_state acme/portal 412)" "None@None"
+ok "  and leaves no marker to skip the next one"       "$(marks 'review_desk|in_play|')" 0
+# Out of play again and back again, with no window aged in between. Every assertion here failed
+# before the pop, and the one above is why: the marker written by the first return was still
+# there, so `due` refused the second.
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+ok "a second draft takes it out of play again"         "$(oop_state acme/portal 412 | cut -d@ -f1)" draft
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "and a second return inside the window still asks"  "$(inplays)" 1
+ok "  bringing it back"                                "$(oop_state acme/portal 412)" "None@None"
+ok "  clearing the record with it"                     "$(remembered gh-portal-412 out_of_play)" None
+ok "  and saying so, it being a new decision"          "$(count '"event": "review_in_play"')" 1
+
 # **A broken in-play does NOT spend the window**, which is the other half of the bound: `due`
 # writes its marker when it is evaluated, so a Review Desk broken for one tick would otherwise
 # put the return fifteen minutes away -- a review coming back late, which is worse than the churn
@@ -5561,7 +5597,14 @@ cleared_doc 412 OPEN draft
 search_doc acme/portal 999 shaother Retry
 rc=$(run "$disp" poll 1)
 ok "the record says it is out of play"                 "$(remembered gh-portal-412 out_of_play)" draft
-echo '{}' > "$work/rd.opens.json"
+# `delete`, not an emptied store: the helper pops the row AND writes the tombstone, so
+# `review show` refuses the id it refuses in life. Emptying `rd.opens.json` leaves `review show`
+# answering for an id `review open`, `find` and `in-play` no longer hold, which is the
+# half-deleted shape this file's own `in_play` comment calls "how the first version of this let a
+# test pass for the wrong reason" -- and it changes what happens AFTER: measured, the record is
+# never dropped and the request is never re-recorded until the author pushes, where a real delete
+# recovers within one window. Raised by a review of this branch.
+delete acme/portal 412
 cleared_doc 412 OPEN ready
 search_doc acme/portal 412 sha412 Retry
 forget_calls

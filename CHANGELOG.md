@@ -111,6 +111,15 @@ refuses to build when they disagree.
   `last_activity_at` churn the whole path is arranged to avoid, arriving through the one branch
   meant to end it. Bounded by `due` at `reemit_after_secs`, and reported as a broken install once
   per key and reason. Nothing blocks — the request is dispatched either way.
+- **A review that goes out of play, comes back, and goes out again inside one
+  `reemit_after_secs` still comes back the second time.** The retry bound above was written with
+  four exits in mind and there are five: the one that succeeds. Keeping its marker could never
+  rate-limit a retry — a successful clear leaves nothing to retry — so all it did was land on the
+  next genuine return and skip it, for up to fifteen minutes, while the poller went on offering
+  the key. That is the state the prune exemption was added to prevent, reached through the rate
+  limit added to fix something else. The window is cleared on success too, and the per-key marks
+  in `emitted` — `review_desk|head_moved|` and `review_desk|in_play|` — are both swept by the
+  prune at the end of `review_requests`, so neither bucket grows unbounded.
 
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a

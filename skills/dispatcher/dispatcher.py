@@ -1951,7 +1951,16 @@ class Poller:
         # That is the "a dict that only grows is a file that only grows" problem this prune was
         # written for, reached through a different bucket. Dropped for any key this trusted tick
         # did not name: a request that is no longer open has no session left to wake.
-        for mark in [m for m in self.state["emitted"] if m.startswith("review_desk|head_moved|")]:
+        #
+        # **Two prefixes, both keyed on a ledger key in the third field.** `review_desk|in_play|`
+        # is the retry bound on bringing a review back; it is popped the moment it stops meaning
+        # anything, so this sweep is the backstop for a key whose in-play never succeeded before
+        # the request left the list. **`review_desk|in_play_refused|<repo>` does NOT match**, and
+        # that is checked rather than assumed: it is keyed by repository, so its third field is a
+        # slug and not a key, and the prefix test fails on the character after `in_play`.
+        for mark in [m for m in self.state["emitted"]
+                     if m.startswith("review_desk|head_moved|")
+                     or m.startswith("review_desk|in_play|")]:
             if mark.split("|")[2] not in present:
                 del self.state["emitted"][mark]
         # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
@@ -3432,12 +3441,21 @@ class Poller:
                 # **The store holds no review of this pull request, so nothing is out of play and
                 # the record saying otherwise is stale.** The only way to reach this is a review
                 # DELETED between the out-of-play write and now, which the developer may do while
-                # it never started. Forgotten rather than retried, which is `read_request`'s own
-                # treatment of this one refusal — and it is the field the gate reads, so
-                # forgetting it is also what stops the retry. Kept instead, as the first version
-                # of this did, it was one `review in-play` every `reemit_after_secs` for the life
-                # of the instance, on a review that does not exist. The next tick records the
-                # request again from GitHub, in play, which is what it is.
+                # it never started. Forgotten rather than retried, which is the same DISPOSITION
+                # `read_request` takes towards this one refusal — and it is the field the gate
+                # reads, so forgetting it is also what stops the retry. Kept instead, as the
+                # first version of this did, it was one `review in-play` every
+                # `reemit_after_secs` for the life of the instance, on a review that does not
+                # exist.
+                #
+                # **Not the same WRITE, and the difference decides when the request comes back.**
+                # `read_request` pops the whole record; this clears one field, so the rest of it
+                # survives — `same_commit(held["head"], head)` then leaves `writing` False and no
+                # `review open` is made on the next tick. Recovery comes when `review show`'s own
+                # window comes round, `read_request` drops the record, and the tick AFTER that
+                # records the request again, in play and on round 1. So `reemit_after_secs` plus
+                # a tick, or at once on the next push. Measured by a review of this branch, which
+                # is also what corrected this paragraph's earlier claim of "the next tick".
                 #
                 # Raised against my own change: I had put this exit on the keep-the-window side
                 # with the build that has no subcommand, on the reasoning that both "answered".
@@ -3505,6 +3523,24 @@ class Poller:
         # know it existed. Raised against my own change.
         for reason in OUT_OF_PLAY_REASONS:
             self.state["once"].pop(f"review_in_play_stuck|{key}|{reason}", None)
+        # **The retry window is cleared on SUCCESS too, and this is the exit that was missed.**
+        # The bound was reasoned about as four exits and there are five: the one that works.
+        # Keeping the marker here can never rate-limit a retry, because a successful clear makes
+        # the gate's own first condition false — there is nothing left to retry. All it can do is
+        # land on the NEXT genuine return and skip it.
+        #
+        # Measured by a review of this branch, against two commits and identical both times: out
+        # of play, back, out of play, back again inside one `reemit_after_secs` — a developer
+        # marking a pull request ready, putting it back to draft and marking it ready again
+        # within fifteen minutes — and the second return made no call, said nothing, and left the
+        # store out of play with the record agreeing, while the poller went on offering the key.
+        # That is the state the prune exemption was added to prevent, reached through the rate
+        # limit added to fix something else.
+        #
+        # It bounds the bucket on the happy path as well: `emitted` is persisted, and the prune
+        # in `review_requests` sweeps this prefix — but a mark popped the moment it stops meaning
+        # anything is one the prune never has to see.
+        self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
         # Said once per return, which is what the `once` mark gives: the mark is cleared the
         # moment the review is out of play again, so a pull request that goes draft twice is
         # reported coming back twice. One line, and it asks for nothing — the `review_request`
