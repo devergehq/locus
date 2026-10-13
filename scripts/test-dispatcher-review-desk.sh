@@ -5538,6 +5538,42 @@ forget_calls
 rc=$(run "$disp" poll 1)
 ok "  and the very next tick tries again"              "$(inplays)" 1
 ok "  bringing it back without waiting the interval"   "$(oop_state acme/portal 412)" "None@None"
+# **A review that is GONE is forgotten, not retried.** The only way to reach it is a delete
+# between the out-of-play write and now, which the developer may do while a review never
+# started -- and the record saying out-of-play is then stale. Kept, it was one `review in-play`
+# every `reemit_after_secs` for the life of the instance on a review that does not exist.
+# Raised against my own change: I had filed this exit beside the build that has no subcommand,
+# on the reasoning that both answered. Both do, but one answered about the BUILD and this one
+# about a row the very next tick may recreate.
+# **Two ticks before the delete, and the second one is what makes this shape reachable.** The
+# dismissal read is `reemit_after_secs` apart, so a tick that spends its window is a tick on
+# which `review show` will not run again -- and that is the only window in which `review in-play`
+# meets a review that is gone before the read has forgotten it. Without the second tick the read
+# fires first, answers from the store, and the gate never sees an out-of-play record at all. A
+# test is only about the branch it can reach.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+rc=$(run "$disp" poll 1)
+ok "the dismissal read has spent its window"           "$(shows)" 1
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+ok "the record says it is out of play"                 "$(remembered gh-portal-412 out_of_play)" draft
+echo '{}' > "$work/rd.opens.json"
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "a review that is gone is asked once"               "$(inplays)" 1
+ok "  and the read did not run ahead of it"            "$(shows)" 0
+ok "  and forgotten rather than remembered as out"     "$(remembered gh-portal-412 out_of_play)" None
+ok "  saying nothing about a review that does not exist" "$(count review_desk_unavailable)" 0
+forget_calls
+rc=$(run "$disp" poll 3)
+ok "  and never asked again"                           "$(inplays)" 0
+
 # A build that has never heard of the subcommand is the other way: it ANSWERED, so asking again
 # every tick would learn the same thing for ever and the window is kept.
 instance '{"mode":"auto"}'

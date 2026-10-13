@@ -3428,17 +3428,39 @@ class Poller:
                          detail=f"{rd.get('command')} has no `review in-play`, so a review taken "
                                 f"out of play cannot be brought back from here and stays off the "
                                 f"Reviews list until the dashboard does it: {detail[:120]}")
-            elif not review_desk_missing(detail):
+            elif review_desk_missing(detail):
+                # **The store holds no review of this pull request, so nothing is out of play and
+                # the record saying otherwise is stale.** The only way to reach this is a review
+                # DELETED between the out-of-play write and now, which the developer may do while
+                # it never started. Forgotten rather than retried, which is `read_request`'s own
+                # treatment of this one refusal — and it is the field the gate reads, so
+                # forgetting it is also what stops the retry. Kept instead, as the first version
+                # of this did, it was one `review in-play` every `reemit_after_secs` for the life
+                # of the instance, on a review that does not exist. The next tick records the
+                # request again from GitHub, in play, which is what it is.
+                #
+                # Raised against my own change: I had put this exit on the keep-the-window side
+                # with the build that has no subcommand, on the reasoning that both "answered".
+                # Both do — but one answered about the BUILD, which cannot change until somebody
+                # upgrades it, and this one answered about a row that the very next tick may
+                # recreate. Nothing said: a line about a review that does not exist is noise.
+                held = self.state["recorded"].get(key)
+                if isinstance(held, dict):
+                    held["out_of_play"] = None
+            else:
+                # `else`, not `elif not review_desk_unknown(detail)`: the first branch already
+                # excluded that, so the test was always true and read as a guard that was not
+                # one. Everything that reaches here is a refusal about neither the build nor a
+                # row that is gone.
                 if self.due(f"review_desk|in_play_refused|{repo}", every):
                     emit("review_desk_unavailable", state="refused", mode=rd["mode"],
                          command=rd["command"], repo=repo, number=pr["number"],
                          call="review in-play", detail=detail, example=True)
                 # A locked database, a validation this file has not met: the next tick should try
                 # again rather than wait out the window, on the same argument as the broken path
-                # above. **Not on the two refusals above it**, and the asymmetry is the point —
-                # a build with no `review in-play` and a pull request the store holds no review
-                # of have both ANSWERED, and asking either again every tick learns the same thing
-                # for ever.
+                # above. **Not on the build that has never heard of the subcommand**, which is
+                # the one refusal here that cannot change until the install does — asking it
+                # again every tick would learn the same thing for ever.
                 self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
             return
         held, review = self.state["recorded"].get(key), review_of(payload)
