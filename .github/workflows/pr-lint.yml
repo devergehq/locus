@@ -27,6 +27,13 @@ name: PR lint
 #      the Actions tab, which is where an author goes to read the findings anyway. The status
 #      that branch protection would key on comes from the push and edit triggers.
 #
+# IT RUNS ON UBICLOUD. `ubicloud-standard-2`, through the organisation's Ubicloud GitHub
+# App, like every other Linux job across the three repositories; macOS and Windows jobs
+# stay on GitHub, which has the only runners for them. Switching back is the label alone --
+# this job checks nothing out, builds nothing and reads the pull request over `gh api`, so
+# the image underneath it is not load-bearing. See ci.yml's WHERE THIS RUNS, and
+# `.github/actionlint.yaml`, which is what stops actionlint calling the label unknown.
+#
 # `pull_request`, NOT `pull_request_target`. The lint only ever reads, so the read-only
 # GITHUB_TOKEN a fork's pull request gets is sufficient. `pull_request_target` would hand a
 # WRITE token to a check that needs no writes, which is the documented way to turn a linter
@@ -121,7 +128,7 @@ jobs:
       (github.event_name != 'issue_comment' ||
        (github.event.issue.pull_request != null && github.event.issue.state == 'open')) &&
       (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     timeout-minutes: 10
     steps:
       # Needed only because the action is referenced by local path. The action itself reads

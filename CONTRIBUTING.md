@@ -65,9 +65,20 @@ A ready pull request runs `.github/workflows/ci.yml`:
 
 | Check | Runs on |
 | --- | --- |
-| `rustfmt` | ubuntu-latest |
-| `clippy` | ubuntu-latest |
-| `test` | ubuntu-latest + macos-14 |
+| `rustfmt` | ubicloud-standard-2 |
+| `clippy` | ubicloud-standard-2 |
+| `test` | ubicloud-standard-2 + macos-14 |
+
+**Every Linux job runs on Ubicloud**, through the organisation's Ubicloud GitHub App, and
+that includes `PR lint` and the Linux legs of `release.yml`. **macOS and Windows stay on
+GitHub**, which has the only runners for either. **Switching back is the label alone** — no
+job installs anything the image is expected to provide, so `ubicloud-standard-2` →
+`ubuntu-latest` is the whole revert, plus dropping the label from
+[`.github/actionlint.yaml`](.github/actionlint.yaml).
+
+The label is part of the check name, so the Linux test context is `test
+(ubicloud-standard-2)` rather than `test (ubuntu-latest)`. If you are filling in a
+branch-protection rule, use the new name.
 
 All three must pass. `clippy` runs with `-D warnings`, so a new warning fails
 the build rather than scrolling past — the tree is at zero warnings and the

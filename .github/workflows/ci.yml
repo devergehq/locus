@@ -7,11 +7,11 @@ name: CI
 #   * No `architecture` job. That one gates Allele's tests/architecture.rs.
 #     Locus has no equivalent test, and a job that asserts nothing is worse
 #     than no job at all -- it reports green for work it never did.
-#   * `rustfmt` and `clippy` run on ubuntu-latest, not macOS. Allele pins
+#   * `rustfmt` and `clippy` run on Linux, not macOS. Allele pins
 #     macOS because it links cocoa/objc/core-text; Locus has no such
 #     dependency, and release.yml already builds five targets. Linux runners
 #     are faster and cheaper for platform-independent checks.
-#   * `test` runs on both ubuntu-latest and macos-14. macOS is the primary
+#   * `test` runs on both Linux and macos-14. macOS is the primary
 #     user platform and the hook/adapter code touches real filesystem paths,
 #     so a Linux-only test run would miss the failures that matter most.
 #
@@ -46,6 +46,30 @@ name: CI
 # release.yml still uses bare `rustup show`. It has never run against the pin
 # (the pin landed after the last release tag), so that is a latent failure on
 # the next `v*` tag rather than a known-good pattern to copy. See DEV-611.
+#
+# WHERE THIS RUNS, and it is no longer all GitHub. Every Linux job below runs
+# on Ubicloud, through the organisation's Ubicloud GitHub App:
+# `ubicloud-standard-2` in place of `ubuntu-latest`. macOS stays on GitHub
+# because Ubicloud has no macOS runners -- and no Windows ones either, which is
+# why release.yml's `windows-latest` leg stays too. The org's Actions minutes
+# were exhausted and more are waitlisted; this repository is public so its own
+# minutes are free, and the move is the one rule all three repositories now
+# follow rather than a saving here. That is DEV-961, same ticket as the draft
+# gate below.
+#
+# SWITCHING BACK IS THE LABEL ALONE. No job here installs anything the image is
+# expected to provide, uses `sudo` or `apt`, or names a GitHub image anywhere
+# but in `runs-on` -- so `ubicloud-standard-2` -> `ubuntu-latest` is the whole
+# revert, plus dropping the label from `.github/actionlint.yaml`. Ubicloud's x64
+# images are built from GitHub's own actions/runner-images packer templates and
+# documented as "fully compatible with default runners", which is what makes
+# that true rather than hopeful.
+#
+# The label is part of the check name, so moving it RENAMED a context:
+# `test (ubuntu-latest)` is now `test (ubicloud-standard-2)`. Nothing required
+# the old name -- this repository has no branch-protection rule at all -- but
+# the required-check paragraph below is written in terms of these names, so it
+# was updated with them.
 #
 # WHEN THIS RUNS, and it is not "every push". A draft pull request runs
 # NOTHING: every job below is gated on the pull request not being a draft, so a
@@ -121,8 +145,8 @@ name: CI
 # `clippy` and NOT of the two `test` contexts, and whoever fills in that rule
 # needs the difference. A skipped matrix job is never expanded, so on a draft
 # the only test context that exists is the literal `test (${{ matrix.os }})`
-# (measured on commit b78eaf6). A rule requiring `test (ubuntu-latest)` would
-# find it ABSENT on a draft, not skipped, and a required check that never
+# (measured on commit b78eaf6). A rule requiring `test (ubicloud-standard-2)`
+# would find it ABSENT on a draft, not skipped, and a required check that never
 # reports leaves the pull request waiting rather than passing. That is the
 # correct outcome for a draft -- it cannot merge either way -- but it looks like
 # a stuck check rather than a deliberate one. If it ever needs to look
@@ -136,7 +160,7 @@ name: CI
 #
 #     rustfmt
 #     clippy
-#     test (ubuntu-latest)
+#     test (ubicloud-standard-2)
 #     test (macos-14)
 
 on:
@@ -167,7 +191,7 @@ jobs:
     # `false` both coerce to 0 -- so it would pass by accident rather than by
     # intent on a `workflow_dispatch`.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -184,7 +208,7 @@ jobs:
   clippy:
     name: clippy
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -210,9 +234,9 @@ jobs:
     # commit b78eaf6: a draft's check runs are `rustfmt`, `clippy` and one
     # unexpanded `test (${{ matrix.os }})`. The matrix is never expanded,
     # because expansion happens on the way to allocating runners and this job
-    # never gets there. So on a draft the contexts `test (ubuntu-latest)` and
-    # `test (macos-14)` are ABSENT rather than skipped -- see the required-check
-    # paragraph in the header, which is where that distinction bites.
+    # never gets there. So on a draft the contexts `test (ubicloud-standard-2)`
+    # and `test (macos-14)` are ABSENT rather than skipped -- see the
+    # required-check paragraph in the header, which is where that bites.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -221,7 +245,7 @@ jobs:
       # diagnosis; fail-fast would hide it.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubicloud-standard-2, macos-14]
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -15,6 +15,20 @@ name: Release
 #   * selects the release asset whose filename CONTAINS the Rust target triple,
 #   * extracts .tar.gz archives (the only format enabled via tar + flate2),
 #   * looks for the binary named `locus` (unix) / `locus.exe` (windows) inside.
+#
+# WHERE THIS RUNS. The Linux legs and the version guard run on Ubicloud,
+# through the organisation's Ubicloud GitHub App; the macOS and Windows legs
+# stay on GitHub, which has the only runners for either. Switching back is the
+# label alone -- nothing below installs a package, uses `sudo`, or names an
+# image anywhere outside `runs-on`. That is DEV-961.
+#
+# THIS WORKFLOW ONLY FIRES ON A TAG, so the Ubicloud labels below were never
+# exercised before the first release that used them. An unrecognised `runs-on`
+# label does not fail a job -- GitHub leaves it queued waiting for a runner
+# that never comes -- so each label here is a string Ubicloud's runner-types
+# page writes out verbatim, rather than one inferred from its documented
+# naming pattern. If a release ever hangs with the Linux legs queued and
+# macOS/Windows green, that is this, and the fix is the label.
 
 on:
   push:
@@ -32,7 +46,7 @@ jobs:
   # ---------------------------------------------------------------------------
   verify:
     name: Verify tag matches Cargo.toml version
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-2
     steps:
       - uses: actions/checkout@v5
 
@@ -68,10 +82,26 @@ jobs:
           # Intel runner pool, which can queue indefinitely.
           - target: x86_64-apple-darwin
             os: macos-14
+          # UBUNTU 22.04, NOT 24.04, AND THAT IS THE POINT OF THESE TWO LINES.
+          # A release binary links the glibc of the machine that built it, then
+          # refuses to start on anything older -- so the build image IS the
+          # minimum supported Linux. 22.04 is glibc 2.35; 24.04 is 2.39 and
+          # would drop every user on an older distribution, with nothing here
+          # failing to say so. The floor may not rise.
+          #
+          # Ubicloud's bare `ubicloud-standard-N` labels are 24.04, so either
+          # of those would have raised it silently. The `-ubuntu-2204` suffix
+          # is what pins the image. 4 vCPU rather than the 2 these legs had on
+          # GitHub is not an upgrade anyone asked for: the two labels below are
+          # the only 22.04 ones the runner-types page writes out verbatim, the
+          # 2-vCPU forms follow its documented pattern but appear nowhere on
+          # it, and an unrecognised label queues for ever rather than failing
+          # (see the header). A bigger runner is what being sure of the string
+          # cost.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
+            os: ubicloud-standard-4-ubuntu-2204
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04-arm
+            os: ubicloud-standard-4-arm-ubuntu-2204
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}

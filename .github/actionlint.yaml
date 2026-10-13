@@ -1,0 +1,12 @@
+# Ubicloud runner labels. actionlint checks `runs-on` against GitHub's own list and errors
+# `label "..." is unknown` on anything else, so every label the org's Ubicloud GitHub App
+# serves has to be declared here or the workflows fail lint. Declaring a label asserts
+# nothing about it existing on Ubicloud's side -- it only stops actionlint guessing.
+self-hosted-runner:
+  labels:
+    # ci.yml (rustfmt, clippy, test) + pr-lint.yml (description) + release.yml (verify).
+    - ubicloud-standard-2
+    # release.yml's two Linux build legs. 22.04 pins the glibc floor at 2.35; see the
+    # comment on the matrix entries in release.yml.
+    - ubicloud-standard-4-ubuntu-2204
+    - ubicloud-standard-4-arm-ubuntu-2204

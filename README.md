@@ -599,6 +599,11 @@ version tag (`v*`) is pushed. Each tag produces a GitHub Release with a
 triple so that `locus upgrade` can find the right one.
 
 - Targets: macOS (Apple Silicon + Intel), Linux (x86_64 + ARM64), Windows (x86_64)
+- The Linux legs and the tag/version guard run on Ubicloud; the macOS and Windows legs run
+  on GitHub, which has the only runners for either. The Linux legs are pinned to Ubuntu
+  22.04 images (`ubicloud-standard-4-ubuntu-2204` / `-arm-`) because a release binary links
+  the glibc of the machine that built it: 22.04 is glibc 2.35, and a newer image would
+  quietly drop users on older distributions. Switching back to GitHub is the label alone
 - Built on each platform's own runner, except `x86_64-apple-darwin`, which is
   cross-compiled from the Apple Silicon runner to avoid the scarce macos-13
   Intel pool. Release builds resolve the toolchain from `rust-toolchain.toml`
