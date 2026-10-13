@@ -13,6 +13,128 @@ refuses to build when they disagree.
 
 ### Added
 
+- **A round is a posted review: new commits before a post update the review in place instead of
+  opening round 2.** Patrick's queue showed one pull request twice, round 1 and round 2 "changes
+  since your last review", though he had never posted round 1 — and the only new commits were
+  the author merging the base branch in. Another reached round 4 unposted before it merged.
+  `Poller.record_request` now branches on `action` from `review open --json`: `created` is a
+  round and reaches the Dispatcher as a `review_request`; `head_moved` is the SAME review on the
+  SAME round and reaches it as a new `review_head_moved`, which asks for one SendMessage to the
+  session already on it and dispatches nobody; `unchanged` and `diff_unchanged` ask for nothing.
+  `created: false` no longer distinguishes the middle two, which is why the field is read rather
+  than inferred. The gate that kept the poller out of a live session's review entirely is gone,
+  deliberately: an unposted round moves, so the poller is the right caller — it is the one that
+  sees the push on every tick and the only one that can tell the Dispatcher not to dispatch.
+  **A moved head on a round nobody has STARTED is still offered for dispatch**, because an
+  unclaimed request moves its head too and suppressing it would take a review nobody began off
+  the list the moment its author pushed. DEV-962 items 5 and 7, DEV-954's Locus rows.
+- **Commits that only bring the base branch in change nothing and wake nobody.** The poller
+  fingerprints the pull request's own diff — `gh api repos/O/R/pulls/N/files`, which serves the
+  merge-base diff, paginated 100 at a time to GitHub's 3000-file cap — hashing `filename`,
+  `previous_filename`, `status` and `patch` per file, or the blob `sha` where a file has no
+  patch. The digest is kept in the poll state against the commit it was taken at, and
+  `--diff-unchanged` is passed only when the new digest equals the stored one. **Every
+  uncertainty omits the flag**: no stored digest, a page that is not a list, a file with neither
+  a patch nor a blob sha, a walk that reached the cap, or any `gh` that failed. An omitted flag
+  moves the head and wakes a session that need not have woken; a wrongly asserted one would hide
+  a real change, which is the one direction this must not fail in.
+- **A pull request converted to draft, or whose review request is withdrawn, leaves play with
+  its reason and comes back on the round it was on.** `review out-of-play --reason
+  draft|withdrawn` from the clearance sweep, which lives inside the trusted block so a
+  disbelieved or truncated GitHub tick cannot take a live review out of play; `review in-play`
+  the moment GitHub shows the request again. `why_cleared` gained `isDraft` on the live read it
+  already made — a draft pull request is still `OPEN`, so before this the clearance was reported
+  as "review request removed", a withdrawal that never happened. Merged and closed are NOT this:
+  they stay DEV-957's finished state. A review worker's watcher now stops on a draft pull
+  request as it does on a closed one, gated on `github.skip_drafts` so an instance that reviews
+  drafts neither takes them out of play nor stops their workers. `review_out_of_play` and
+  `review_in_play` are the two new events for a key no session held; `review_cleared` carries
+  `out_of_play` for one that was.
+- **The worker links its session on its first `review open`.** `--session <allele session id>`
+  on that call, dropping only that flag on an `error.code` of `usage` and following with
+  `review link --session` as before. Review Desk's `started` is true from that call, which closes
+  the window in which a push between a brief and a link could be read as a round nobody had
+  begun (DEV-954). `round_started` prefers the store's own `started` — wider than "a session is
+  linked" by four more facts — and falls back to the ledger's claim where a build does not offer
+  it. That fallback is computed in one place now; it used to be a local in `record_request` and
+  an inline copy of the same expression in `review_requests`, so the negative control that
+  reverses it could only reach one of the two.
+- **One probe, `review open --help`, decides whether the install carries any of this.** A build
+  without `--diff-unchanged` has no `action`, no move on a started round and no out-of-play —
+  they are one Review Desk commit — so it gets exactly the behaviour this file had before
+  DEV-962 and one loud `review_desk_unavailable` naming all three facts. **It has to be a
+  forward probe and the reason is worth keeping**: on such a build `review open` on a started
+  round's new head opens round N+1 and `action` is absent from the answer that reports it, so
+  reading the answer would learn the fact one spent round too late — DEV-962's own harm arriving
+  through DEV-962's fix. The probe is a read, made once a tick, and never cached across ticks.
+
+### Fixed
+
+- **`github.skip_drafts` is read in one place, so the poller and the watcher cannot disagree
+  about a config that does not carry the key.** `review_requests` has always read it as
+  `g.get("skip_drafts")` — absent is falsy, so a draft row is kept, offered and dispatched — and
+  DEV-962's new draft stop was written as `.get("skip_drafts", True)`. On any `config.json` older
+  than the key those are opposites: the poller would dispatch a review worker onto a draft and
+  that worker's own watcher would stop on its first tick, so the review was never done and the
+  record never taken out of play. `skip_drafts(cfg)` is the one reader, absent means False —
+  the poller's long-standing reading, not the new one — and `watch_stop_reason`'s parameter
+  defaults to False with every caller passing the config value. `prunable_cursors` and
+  `live_watchers` were that forgotten caller: they called it three-arg and took the old `True`,
+  so on an instance with the key off `D reap` would SIGTERM and unlink a live review watcher that
+  `cmd_watch` on the same instance would have kept — which is exactly the "second rule that could
+  disagree with the first" `prunable_cursors`' own docstring promises not to be.
+- **A first tick over a pull request that is both closed and a draft reports the close again.**
+  DEV-962's `pr_draft` block was written between the two halves of `pr_state`'s `if`/`elif` and
+  took the `elif` that belonged to the second, so that shape emitted `pr_draft` and swallowed the
+  one piece of history a first tick does not suppress — in the case that branch exists for: `D
+  reap` prunes a finished key's cursor, a replacement arms a fresh one, and it gets one tick. The
+  two questions are independent and are two chains now.
+- **An out-of-play recording survives the `recorded` prune**, like a dismissal and a closed one.
+  A key taken out of play has by definition just left `present`, so the field was discarded on
+  the tick it was written and the return depended on `find_request` re-reading it — a read that
+  is skipped whenever `look_stopped` or `record_stopped` is set, so one transient broken
+  `review find` on the return tick left the review out of play while the poller went on offering
+  the key.
+- **The wake's rate-limit marks are pruned with the record they are about.** `emitted` is
+  persisted and nothing pruned it but the Linear trigger marks, so
+  `review_desk|head_moved|<key>|<from>|<to>` was one permanent entry per push per reviewed pull
+  request for the life of the instance.
+- **`why_cleared`'s live `gh pr view` is made only when something will read its answer.** It was
+  moved above the live-session test so the out-of-play write could use it, which made it one
+  subprocess per cleared key — including, on an instance with Review Desk off, keys whose answer
+  is discarded immediately.
+- **A Review Desk that answers `review in-play` with exit 0 and still reports a reason is retried
+  on the interval, not on every tick, and says so once.** The poller believes the store's answer
+  rather than its own request — which is right, and is `review out-of-play`'s rule in the other
+  direction — but the gate that calls in-play re-reads that field, so on such a build this was
+  one subprocess per tick for as long as the pull request stayed on GitHub's list: the
+  `last_activity_at` churn the whole path is arranged to avoid, arriving through the one branch
+  meant to end it. Bounded by `due` at `reemit_after_secs`, and reported as a broken install once
+  per key and reason. Nothing blocks — the request is dispatched either way.
+- **A review that goes out of play, comes back, and goes out again inside one
+  `reemit_after_secs` still comes back the second time.** The retry bound above was written with
+  four exits in mind and there are five: the one that succeeds. Keeping its marker could never
+  rate-limit a retry — a successful clear leaves nothing to retry — so all it did was land on the
+  next genuine return and skip it, for up to fifteen minutes, while the poller went on offering
+  the key. That is the state the prune exemption was added to prevent, reached through the rate
+  limit added to fix something else. The window is cleared on success too, and the per-key marks
+  in `emitted` — `review_desk|head_moved|` and `review_desk|in_play|` — are both swept by the
+  prune at the end of `review_requests`, so neither bucket grows unbounded.
+- **`review out-of-play` and `review in-play` answering exit 0 with a body that carries no review
+  are called broken, which is the guard `review open`, `review find` and `review show` all have
+  and these two did not.** Without it, an unreadable in-play was indistinguishable from the store
+  saying the review is back: the Dispatcher was told it had returned, the store still held it out
+  of play, the record agreed with the announcement rather than with the store, the retry window
+  was dropped and nothing ever tried again — a silent permanent divergence with a false
+  `review_in_play` already on the principal's stream. The out-of-play half had the mirror of it,
+  returning the reason it had asked for. Both now write nothing, announce nothing and report the
+  install broken, leaving the retry window standing so the next interval tries again.
+- **A broken Review Desk met by the clearance sweep is reported.** `record_unreachable` runs
+  before the untrusted early return, and the out-of-play writes happen after it, so a broken
+  `review out-of-play` or `review in-play` was noted and never said — "broken is loud in every
+  mode but `off`" did not hold for the two newest commands in the file. It is said a second time
+  after the sweep; the `due` gate means a fault both calls can see is still one line.
+
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a
   session ran `review open`, so it could not say how many requests had come in, which were never

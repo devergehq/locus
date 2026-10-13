@@ -139,12 +139,36 @@ API can approve a draft, and reaching for it would be signing off in your princi
 
 ### Open it, link it, and write the id down
 
-1. `review-desk review open --repo OWNER/REPO --pr <n> --head <sha>` prints the review id and
-   nothing else, so keep it in a variable. Pass `--title`, `--ticket`, `--ticket-url` and
-   `--changed-lines` while you have them — **the address only ever goes with the id**, for the
-   reason below. A head commit already reviewed hands the same id back;
-   a **new** head commit starts the next round, so read the previous round first with
-   `review-desk review show --review <id> --json` and say in your draft what moved.
+1. `review-desk review open --repo OWNER/REPO --pr <n> --head <sha> --session <your allele
+   session id>` prints the review id and nothing else, so keep it in a variable. Pass `--title`,
+   `--ticket`, `--ticket-url` and `--changed-lines` while you have them — **the address only
+   ever goes with the id**, for the reason below.
+
+   **`--session` goes on your FIRST `review open` and that is the whole point of it.** Step 2
+   below links you as well, and it still runs — but a link a minute later leaves a window, and
+   in that window a push can have the Dispatcher's poller treat your round as one nobody has
+   begun. Review Desk's `started` becomes true on this call, which is what closes it (DEV-954).
+   On `error.code` `usage` — a build older than the flag — **drop only `--session`** and carry
+   on to step 2, which is where it was always written; say nothing louder than you would about
+   any other flag an older build refuses.
+
+   **A round is a posted review, so what a new head commit does depends on whether you have
+   posted** (DEV-962). Read `action` from `--json` and do what it says:
+
+   | `action` | What happened | What you do |
+   |---|---|---|
+   | `created` | there was no round, or your last round was **posted** | a new round. Review it as this brief describes, from the top |
+   | `head_moved` | your round is unposted and its head moved. `head_moved_from` names the commit before. **Same review id, same round number** | **update in place.** Read the delta from `head_moved_from`, revise the findings and draft blocks the delta reaches, and say what moved. Do not start a round |
+   | `unchanged` | the same head you already opened on | nothing |
+   | `diff_unchanged` | somebody passed `--diff-unchanged`: the commits only brought the base branch in | nothing. Say one line and change nothing — the diff you reviewed is the diff that is there |
+
+   **Read the previous round before you touch it**, on `head_moved` as much as on `created`:
+   `review-desk review show --review <id> --json`, and say in your draft what moved.
+
+   **`created: false` no longer tells you which of three things happened.** It is false for a
+   head that moved and false for a head that did not, and those ask opposite things of you. On a
+   Review Desk too old to answer with an `action` at all, `head_moved_from` being present is the
+   move and its absence is the same head back again — but prefer `action` wherever it is there.
 
    **`--ticket-url` is the ticket's address, and you are the only one who can supply it.**
    Review Desk cannot work an address out from an id: the tracker and its workspace are your
@@ -193,9 +217,13 @@ API can approve a draft, and reaching for it would be signing off in your princi
    of a command line with no `--ticket-url` in it is a different problem, and looping on it
    would spend the round on a flag.
 
-   With `--json` the id is `.review.id` rather than the whole of standard output, and `.created`
-   says whether this opened a review or handed an existing one back.
+   With `--json` the id is `.review.id` rather than the whole of standard output, `.action` says
+   what the call did (the table above), and `.review.started` says whether anybody has begun
+   anything on the round — `true` on your own first call once `--session` landed.
 2. `review-desk review link --review <id> --session <your allele session id> --ledger <KEY>`.
+   **Still run it even when step 1 carried `--session`.** `--ledger` is the half the open may
+   not have — a review the poller opened carries it and a review you opened does not — and
+   re-asserting the session writes the same value twice, which costs one call and nothing else.
 3. `D ledger put <KEY> review_desk_id=<id> --by worker --note "recorded as Review Desk <id>"`.
    **Before you record anything else.** This one field is what makes your watcher poll the
    review for the developer's acts, and what tells a replacement session — through the
@@ -1255,11 +1283,25 @@ what it names and do not edit the body to suit it; step 7 governs this too.
 ## After that
 
 - `pr_pushed`: review the delta since the head you reviewed, update the draft, and say what
-  moved.
+  moved. **This is the same round until you have posted** (DEV-962): `review open` on the new
+  head MOVES your round, so revise the findings and draft blocks the delta reaches and leave the
+  rest alone. Do not open a round, do not start the review again, and do not write a second
+  draft. If the Dispatcher relays the same push to you as a message, it is the same push — act
+  on whichever reached you first and say so once.
+
+  **If the push only brought the base branch in, say so and change nothing.** The pull request's
+  own diff against its base is what you reviewed; a merge of the base that leaves it identical
+  has changed nothing you had an opinion about. The poller usually spots this and nobody is woken
+  at all, so if you are reading a delta that turns out to be only a base merge, one line is the
+  whole of the answer.
 - `pr_review` / `pr_comment` from others: fold them in. If someone already raised your point,
   say so rather than duplicating it.
 - `pr_state` merged or closed: **your work is over. Say one line and end** — the next section
   is the whole of it.
+- `pr_draft` with `"current": true`: **the author converted the pull request to a draft.** Your
+  work is paused, not over — the section after next is the whole of it.
+- `pr_draft` with `"current": false`: it is ready again. If you are still running, carry on from
+  where you were; nothing was lost.
 
 ## When the pull request merges or closes
 
@@ -1337,6 +1379,49 @@ discarded by the Dispatcher without a question, once it has stopped, and the Dis
 afterwards which session it was and why. So **the line in step 3 is the last thing you will ever
 say about this key** — write it as if nothing else can follow it, because nothing will. Anything
 you were holding back for a follow-up question goes in those two or three lines or is lost.
+
+## When it goes to draft, or the request is withdrawn
+
+**Both are reversible, and that is the one thing that makes this section different from the one
+above.** A merge is the end of the work. A draft goes ready again and a withdrawn review request
+is made again — so the record is not finished, it is **out of play**: Review Desk keeps every
+round, every draft and any sign-off, and the review comes back on the round it was on. Nobody
+needs to re-read anything.
+
+How you learn it:
+
+| | |
+|---|---|
+| **Converted to draft** | `pr_draft` with `"current": true` from your own watcher, and then `watch_stopped` with `"reason": "pull_request"` whose `detail` names the draft |
+| **Request withdrawn** | the Dispatcher relays it: `review_cleared` reaching it with `"reason": "review request removed"`. Your watcher does not see this one — GitHub's review-request list is not on the pull request your watcher reads |
+
+Then, in this order and nothing else:
+
+1. **Write nothing more that would advance the review.** The same line as the merge section
+   draws, and the same four exceptions: a post you have already made is still reported
+   (`draft posted`, `finding link`, `review link --github-review`), and a nit ticket you have
+   already filed is still recorded. **The poller writes the out-of-play itself** — it is the one
+   that can see the conversion and the withdrawal — so there is no `review out-of-play` for you
+   to run, and there is no command on your side that could bring it back either.
+2. **Write your status**, so nothing is waiting on you and the key can come back:
+   `D ledger put <KEY> status=done --by worker --note "PR converted to draft"`, or
+   `--note "review request withdrawn"`. **`done`, never `merged`** — and the reason is the
+   reason a close without a merge is also `done`: `merged` is this file's word for "never
+   dispatched again", and a draft that goes ready has to be able to come back round.
+3. **Say one line to the Dispatcher**, naming the same three things the merge section asks for —
+   the key and which of the two it was, the round you were on and what state it was in, and
+   whether your draft was posted. One more, because this one is coming back:
+
+   `gh-portal-412 review: converted to draft — round 1 draft was waiting on approval, not posted. The record is out of play; it returns on round 1 when it is ready.`
+4. **End.** Stop working: do not re-arm your Monitor, do not wait for a sign-off that cannot be
+   acted on, and do not ask whether you should stop.
+
+**You are discarded, and the Dispatcher asks first.** That is the difference from a merge, where
+it discards without asking: a merge is irreversible and a draft is somebody still working, so
+the question is worth one line of your principal's attention. When the pull request is ready
+again, or the request is made again, the poller offers the key and a **replacement** is
+dispatched — it reads the record, finds your round and your draft, and continues. So write step
+3 as if a stranger will read it next, because one will.
 
 It is still not yours to do. `_common.md`'s "never discard your own session" is unchanged and
 absolute: you stop, and something else reclaims the slot. Nor is the discard destructive —

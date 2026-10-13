@@ -546,6 +546,27 @@ def group_problems(cfg: dict) -> list[str]:
 REVIEW_DEFAULTS = {"blind_options_pass": True}
 
 
+def skip_drafts(cfg: dict) -> bool:
+    """Does this instance treat a DRAFT pull request as not-work? (`github.skip_drafts`)
+
+    **One reader, because DEV-962 gave the key a second half and the two defaulted
+    differently.** `review_requests` has always read it as `g.get("skip_drafts")` — absent means
+    falsy means a draft row is kept, offered and dispatched — and the watcher's new draft stop
+    was written as `.get("skip_drafts", True)`. On any `config.json` that predates the key those
+    two are opposites: the poller dispatches a review worker onto a draft and the worker's own
+    watcher stops on its first tick, so the review is never done and the record is never taken
+    out of play. The comment in `watch_stop_reason` asserted they could not disagree; this is
+    what makes that true rather than claimed.
+
+    **Absent is False, which is the poller's long-standing reading and not the new one.**
+    `config.example.json` ships `true` and `init` writes it, so the only instances that reach
+    the default are hand-written or older than the key — and changing what THEY do is a
+    behaviour change this ticket was not asked for. The shipped default is in the config file,
+    where an operator can see it, rather than in code where it would silently override them.
+    """
+    return bool((cfg.get("github") or {}).get("skip_drafts"))
+
+
 def review_cfg(cfg: dict) -> dict:
     """The `review` block with every key defaulted. `None` is treated as absent, as elsewhere."""
     block = dict(REVIEW_DEFAULTS)
@@ -632,6 +653,77 @@ def review_desk_unknown(detail: str) -> bool:
 # record that has been deleted. Read off review-desk's `error.code` for a missing row, the same
 # code its `work list --review` refuses an unknown id with.
 REVIEW_DESK_MISSING_REFUSAL = "not_found:"
+
+
+def review_desk_missing(detail: str) -> bool:
+    """Is this refusal Review Desk saying it holds no such review?
+
+    **One predicate, three callers, and it became a function when the third arrived.** The test
+    was written inline in `read_request`, where it decides whether to FORGET a record; DEV-962's
+    `review out-of-play` and `review in-play` ask the same question to decide whether to say
+    anything at all. Three copies of a `startswith` would be three chances to disagree about
+    which refusal means "gone" — and that disagreement is expensive in one direction: every
+    other refusal read as "gone" sends the next tick back to `review open`, which WRITES, on a
+    record somebody may have deliberately taken out of play.
+    """
+    return (detail or "").startswith(REVIEW_DESK_MISSING_REFUSAL)
+
+# The flag whose presence on `review open --help` says this build carries DEV-962's contract:
+# a round's head moves while the round is UNPOSTED whoever calls, `review open --json` answers
+# with an `action`, and `review out-of-play` / `review in-play` exist.
+#
+# **A forward probe, and it has to be forward.** Every other degradation in this file is learned
+# from the answer to the call it was going to make anyway — a refused `--ledger`, a `review find`
+# that does not exist. This one cannot be, and the asymmetry is the whole reason the probe is
+# here: on a build without the contract, `review open` on the new head of a STARTED round opens
+# round N+1, and `action` is absent from the answer that reports it. Reading the answer would
+# learn the fact one spent round too late, which is precisely DEV-962's own harm arriving through
+# DEV-962's fix. So the question is asked before the write, with a command that cannot write.
+#
+# **`--diff-unchanged` stands for all three**, on the same argument this file already makes about
+# `--ledger` and the move landing together in review-desk 0e0bf1b: they are one change. Measured
+# 13 October 2026 against the installed review-desk 0.1.0, which has `--session` (review-desk
+# #44) and has NOT got this flag — so the two facts are independently observable and the legacy
+# path is testable against a real binary rather than only against a stand-in.
+#
+# `review open --help` and not `--version`: a version string is a number this file would have to
+# interpret, and a build from a branch has none that means anything. clap prints the flag or it
+# does not, which is the fact itself rather than a proxy for it.
+REVIEW_DESK_DIFF_FLAG = "--diff-unchanged"
+
+# What `review open --json` answers in `action`, and what each one asks of the poller:
+#
+#   created        no round yet, or the newest round has POSTED. A worker is dispatched for it.
+#   head_moved     the newest round has not posted. Its head moved; `head_moved_from` names the
+#                  commit before. The session already on it is WOKEN, and nobody is dispatched.
+#   unchanged      the same head the review already had. Nothing.
+#   diff_unchanged this call passed `--diff-unchanged`. Nothing, and no head moved.
+#
+# **An `action` not in this tuple is read as a build this file cannot use**, loud and once,
+# falling back to today's behaviour — not guessed at. `review_desk_work` takes the same line
+# about a work KIND it has never heard of, and the argument is the same one: a dispatch invented
+# for a word nobody here has read is worse than a dispatch not made.
+REVIEW_DESK_ACTIONS = ("created", "head_moved", "unchanged", "diff_unchanged")
+
+# The two reasons a pull request is out of play, as `review out-of-play --reason` names them.
+# Merged and closed are deliberately NOT here: they are DEV-957's harvest-driven finished state
+# and are not reversible, where both of these are — a draft goes ready again and a withdrawn
+# request is made again, and the review returns on the round it was on.
+OUT_OF_PLAY_REASONS = ("draft", "withdrawn")
+
+# How a pull request's own file list is walked, and where the walk gives up.
+#
+# **100 a page and at most 30 pages is GitHub's own cap written down**: the pull-request files
+# endpoint serves at most 3000 files however it is paged, and past that it simply stops — with
+# no field in the answer saying so. A walk that reached the last allowed page and found it FULL
+# has therefore learned that it cannot see the whole diff, and the only honest answer is to
+# fingerprint nothing. `--diff-unchanged` asserted over two thirds of a diff is the one failure
+# this whole mechanism must not have.
+#
+# `--paginate` is deliberately not used. It would merge the pages for us, and in doing so would
+# take away the one thing the cap makes us read: how many pages there were.
+DIFF_PAGE = 100
+DIFF_MAX_PAGES = 30
 
 # `harvest` gets its own, and the reason is that it is the one Review Desk command that is not a
 # local read: it asks GitHub for every open pull request a posted review is waiting on, so its
@@ -833,6 +925,35 @@ def review_id(value) -> int | None:
     if isinstance(value, str) and value.strip().isdigit():
         return int(value.strip())
     return None
+
+
+def round_started(held: dict, entry: dict) -> bool:
+    """Has anybody begun anything on the round this record describes?
+
+    **`started` is wider than "a session is linked", and that gap is the whole of DEV-954.**
+    Review Desk refuses to move a round that holds a brief, a finding, a draft, a layer past
+    `pending` or round commits; a session linking itself is only one of those five. So in the
+    window where a worker has written a brief and not yet run `review link --session`, a push
+    read through `session_id` alone looks like an unstarted round — and on a build that opens
+    round N+1 for a started one, the poller spends that round. `review find`'s row now carries
+    the store's own judgement, and this is where it is preferred to the guess.
+
+    The ledger's own claim is the fallback and nothing more. It is `linked`'s two sources — a
+    session on the review and a session on this instance's ledger entry — and it is what this
+    file read before the field existed. A row that offers `started` overrules it in BOTH
+    directions, including the surprising one: a `started: false` row with a `session_id` on this
+    poller's ledger entry is a session CLAIMED and not yet begun, and the store is the better
+    witness to that than a claim written before the session existed.
+    """
+    value = held.get("started")
+    if isinstance(value, bool):
+        return value
+    # **The fallback, computed HERE and in no other place.** It was a `linked` local in
+    # `record_request` and an inline copy of the same expression in `review_requests`, which is
+    # one question asked twice — and the negative control that reverses it could only reach one
+    # of them, so half the behaviour was unguarded. Found by a control that measured a wake where
+    # it had asked for an offer.
+    return bool(entry.get("session_id")) or bool(held.get("session"))
 
 
 def review_of(payload) -> dict | None:
@@ -1177,6 +1298,31 @@ class Poller:
         # usually the read, which is the dismissal guard.
         self.record_broken: dict = {}
         self.broken_seq: dict = {}
+        # Whether the install answering this tick carries DEV-962's contract: `action` on
+        # `review open`, a head that moves on an unposted round whoever calls, and
+        # `review out-of-play`. `None` until asked, and asked at most once a tick because one
+        # install answers for every request and the answer cannot change inside a tick. See
+        # `open_contract_held`.
+        self.open_contract = None
+        # One pull request's diff fingerprint, per tick. Keyed `(repo, number)` exactly as
+        # `pr_states` is, and for the same reason: the answer cannot change inside a tick, and
+        # the two callers that want it — the comparison and the record of it — must not each pay
+        # for a walk of up to thirty GitHub pages.
+        self.pr_diffs: dict = {}
+        # allele's live sessions, per tick, for the one question `review_requests` now has to
+        # answer: is the session named on this ledger entry still there. `None` means "not read
+        # this tick"; a read that THROWS leaves it None and the caller says so rather than
+        # guessing — see `head_moved`.
+        self.allele_live = None
+        # Whether asking GitHub for a pull request's own file list has been given up on for this
+        # tick. One broken or rate-limited `gh api` answers for every request, and the fallback
+        # is to pass no `--diff-unchanged` at all — which wakes a session that need not have
+        # been woken, and never hides a change. See `pr_diff_digest`.
+        self.diff_stopped = False
+        # And whether taking a pull request out of play has been given up on: a build with no
+        # `review out-of-play` refuses every one of them. Separate from `record_stopped` for the
+        # same reason `read_stopped` is — such a build records and reads perfectly well.
+        self.out_of_play_stopped = False
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1348,6 +1494,11 @@ class Poller:
         self.record_old = False
         self.record_broken = {}
         self.broken_seq = {}
+        self.open_contract = None
+        self.pr_diffs = {}
+        self.allele_live = None
+        self.diff_stopped = False
+        self.out_of_play_stopped = False
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
         # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
@@ -1488,7 +1639,7 @@ class Poller:
         recording = not review_desk_off(rd)
         present = {}
         for pr in nodes:
-            if not pr or (g.get("skip_drafts") and pr.get("isDraft")):
+            if not pr or (skip_drafts(cfg) and pr.get("isDraft")):
                 continue
             repo = pr["repository"]["nameWithOwner"]
             key = pr_key(repo, pr["number"])
@@ -1593,9 +1744,20 @@ class Poller:
             # something gives that repository a ledger entry the row is one the developer can
             # see and this poller will not dispatch from. The GitHub pass dispatches it, which
             # is what creates that entry.
-            if recording and status not in ALIVE:
-                self.record_request(rd, key, repo, pr["number"], pr.get("headRefOid"),
-                                    pr.get("title"), every, entry)
+            # **No longer `status not in ALIVE`, and the relaxation is DEV-962's own.** Today
+            # a key a session holds was never recorded for at all, because `review open` on a
+            # new head of a started review opened round N+1 — so the poller stayed away and the
+            # worker spent the round when it next looked. Under DEV-962's contract an UNPOSTED
+            # round moves instead, whoever calls, which makes this the right caller: it is the
+            # one that sees the push on every tick, the one that keeps the diff fingerprint
+            # `--diff-unchanged` rests on, and the only one that can tell the Dispatcher not to
+            # dispatch. `record_request` is where the narrowing moved to — it probes the install
+            # before it writes to a started or live review, and on a build without the contract
+            # it writes exactly what this gate used to allow and no more.
+            if recording:
+                moved, was = self.record_request(rd, key, repo, pr["number"],
+                                                 pr.get("headRefOid"), pr.get("title"),
+                                                 every, entry)
                 # **A dismissed review is not dispatched**, and nothing below this line runs
                 # for one: not the backlog, not the request, not the re-request. The developer
                 # took it out of play, in the dashboard, with a reason — the one decision of
@@ -1610,7 +1772,52 @@ class Poller:
                 # dismissal, nothing said it, and a replacement was dispatched onto a review the
                 # developer had taken out of play, which is the one thing this is here to stop.
                 # Whether to WRITE is `record_request`'s question and is narrower.
-                if self.dismissed_request(rd, key, repo, pr):
+                # **Back in play, before anything decides what to do about this key.** GitHub
+                # is showing the request and `skip_drafts` did not filter the row, which is
+                # exactly "the pull request is ready again, or it is being asked about again" —
+                # and the record says it was out of play. The write is `review in-play`'s and
+                # nothing else clears it; `back_in_play` has the measurement for why a
+                # successful `review open` must never be read as a return.
+                #
+                # **Bounded by `due`, which costs nothing on the first call and everything after
+                # it.** `due` fires the moment it is first evaluated, so a review comes back on
+                # the tick GitHub shows the request — and a store that answers `review in-play`
+                # with exit 0 and still reports a reason is then retried every
+                # `reemit_after_secs` rather than every tick. Found in review of this branch:
+                # without it, believing the store's answer (which is right) turned this gate into
+                # one subprocess per tick for as long as the key stayed present.
+                if (self.state["recorded"].get(key) or {}).get("out_of_play") \
+                        and not self.out_of_play_stopped \
+                        and self.due(f"review_desk|in_play|{key}", every):
+                    self.back_in_play(rd, key, repo, pr, every)
+                #
+                # **Still only for a key that could be dispatched**, which the gate above no
+                # longer says for itself. `dismissed_request`'s own docstring draws that line and
+                # it has not moved: a dismissal is a reason not to DISPATCH, and a key a live
+                # session holds is not a candidate for dispatch whatever the developer did.
+                if status not in ALIVE and self.dismissed_request(rd, key, repo, pr):
+                    continue
+                # **A head that moved on a STARTED round is a wake, and nothing below this
+                # line runs for one.** Not the backlog, not the request, not the re-request: the
+                # round did not change, so there is nothing to dispatch and offering one would
+                # be the second session on one review, which is what this ticket exists to stop.
+                #
+                # **`started` is the gate, and leaving it out was a regression this branch's own
+                # fixtures caught.** A request nobody has begun also moves its head — that is
+                # what has happened on every unclaimed request since DEV-945 — and suppressing
+                # its `review_request` would take an unclaimed review off the Dispatcher's list
+                # the moment its author pushed, which is a review that never happens. Only a
+                # round somebody is ON has a session to wake instead of work to offer.
+                #
+                # A `diff_unchanged` is suppressed on the same gate and emits nothing at all:
+                # the commits only brought the base in, so there is nothing for the session that
+                # holds the round to read. An unstarted one falls through and is still offered,
+                # because an unclaimed request is unclaimed whatever its author merged into it.
+                held = self.state["recorded"].get(key) or {}
+                begun = round_started(held, entry)
+                if moved in ("head_moved", "diff_unchanged") and begun:
+                    if moved == "head_moved":
+                        self.head_moved(rd, cfg, key, repo, pr, entry, was, every)
                     continue
             common = dict(key=key, repo=repo, number=pr["number"], title=pr["title"], url=pr["url"],
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
@@ -1670,11 +1877,69 @@ class Poller:
         })
         if previous is not None:
             for key, where in previous.items():
-                entry = ledger.get(key) or {}
-                if key in present or entry.get("status") not in ALIVE:
+                if key in present:
                     continue
-                emit("review_cleared", key=key, reason=self.why_cleared(cfg, where),
+                entry = ledger.get(key) or {}
+                # **One live read and TWO readers, where it used to have one.** It was made only
+                # for a key a session held, because a clearance nobody was working asked nothing
+                # of the Dispatcher. DEV-962 gives it a second reader: the record has to say a
+                # draft or withdrawn pull request is out of play whether or not anybody was
+                # working it, or Patrick's Reviews list goes on showing it as live work. So the
+                # read is made for a key that either of those two wants it for, and for no other
+                # — the condition below names both rather than leaving a reader to infer them.
+                # One `gh pr view` per clearance, once: a key is in `previous` and out of
+                # `present` on exactly one tick, because the commit below overwrites
+                # `prs_present`.
+                #
+                # **An earlier version of this paragraph said "for every key that left the
+                # list"**, which was true of the commit that moved the read above the
+                # live-session test and false of the one that gated it a few hours later. A
+                # reader costing this out from the heading got the wrong answer.
+                #
+                # **Inside the trusted block, which is where it has to be.** A disbelieved or
+                # truncated tick returns long before this, so the one thing that could take a
+                # live review out of play — GitHub's list looking empty when it is not — cannot
+                # reach it. `source_empty` is what that tick says instead.
+                #
+                # **And only when something will READ it.** It used to be computed for every key
+                # that left the list, and on an instance with Review Desk off (`recording` false)
+                # a cleared key with no live session discards it immediately — one `gh pr view`
+                # per key for a value nobody looks at, on a tick where a page's worth of requests
+                # clears at once. Both readers are named in the condition rather than inferred.
+                alive_here = entry.get("status") in ALIVE
+                reason = self.why_cleared(cfg, where) if recording or alive_here else ""
+                left = self.out_of_play(rd, key, where, reason, entry, every) if recording \
+                    else None
+                if not alive_here:
+                    # Nobody to discard, so no `review_cleared` — but the record moved, and a row
+                    # leaving Patrick's queue with a reason is the whole of what he asked for.
+                    # Said once per key and reason, through `once` rather than `due`, because a
+                    # pull request that goes draft and comes back and goes draft again is two
+                    # decisions about it and both are worth a line.
+                    if left and self.once(f"review_out_of_play|{key}|{left}"):
+                        held = self.state["recorded"].get(key) or {}
+                        rid = review_id(held.get("review")) or \
+                            review_id(entry.get("review_desk_id"))
+                        emit("review_out_of_play", key=key, repo=where["repo"],
+                             number=where["number"], out_of_play=left, reason=reason,
+                             review_desk_id=rid, review=review_desk_link(rd, rid))
+                    continue
+                emit("review_cleared", key=key, reason=reason, out_of_play=left,
                      session_id=entry.get("session_id"), session_name=entry.get("session_name"))
+        # **Said a second time, because the clearance sweep writes AFTER the first call.** The
+        # out-of-play writes live in that sweep, and `record_unreachable` runs before the
+        # untrusted early return — so a broken `review out-of-play` or `review in-play` was
+        # noted into `record_broken` and then never said, which breaks "broken is loud in every
+        # mode but off" for the two newest commands in the file. Measured by a test that asked
+        # for the notice and got none.
+        #
+        # **Calling it twice costs nothing and the `due` gate is why.** Every line it emits is
+        # rate-limited on the same mark the first call used, so a fault both calls can see is
+        # said once; what the second call adds is the faults that did not exist yet when the
+        # first one ran. The first call stays where it is because a TRUNCATED page returns
+        # before this point, and reporting a broken install on such a tick is what it was added
+        # for.
+        self.record_unreachable(rd, every)
         self.state["prs_present"] = present
         # Pruned with `prs_present` and on the same evidence: this tick is trusted to say what is
         # requested, so what it does not name is not requested. That bounds the dict by the
@@ -1693,12 +1958,59 @@ class Poller:
         # request, for as long as the instance lives, and that is the right side to err on: the
         # entry is small and the write is on a row somebody said to leave alone.
         #
+        # **The wake marks are pruned here too, because `emitted` is persisted and nothing else
+        # prunes them.** `review_desk|head_moved|<key>|<from>|<to>` is keyed on both commits, so
+        # that a second push speaks and the same push does not — which is right, and which means
+        # one permanent entry per push per reviewed pull request for the life of the instance.
+        # That is the "a dict that only grows is a file that only grows" problem this prune was
+        # written for, reached through a different bucket. Dropped for any key this trusted tick
+        # did not name: a request that is no longer open has no session left to wake.
+        #
+        # **Two prefixes, both keyed on a ledger key in the third field.** `review_desk|in_play|`
+        # is the retry bound on bringing a review back; it is popped the moment it stops meaning
+        # anything, so this sweep is the backstop for a key whose in-play never succeeded before
+        # the request left the list. **`review_desk|in_play_refused|<repo>` does NOT match**, and
+        # that is checked rather than assumed: it is keyed by repository, so its third field is a
+        # slug and not a key, and the prefix test fails on the character after `in_play`. The
+        # whole set of mark shapes in this file was read off it to establish that those two are
+        # the only matches, and `split("|")[2]` cannot raise on either: a bare prefix with no key
+        # yields the empty string, which is not in `present` and is deleted, which is right.
+        # **A tuple of exact prefixes, and the invariant is that field 3 is a LEDGER KEY.** One
+        # character separates `review_desk|in_play|` from `review_desk|in_play_refused|`, whose
+        # third field is a repository slug — so a later mark shaped `review_desk|in_play|<repo>`
+        # would be dropped on every tick with no symptom but a rate limit that never holds.
+        # Naming the invariant beside the tuple is what a reader adding a mark needs; the hazard
+        # was raised by a review of this branch rather than imagined.
+        swept = ("review_desk|head_moved|", "review_desk|in_play|")
+        for mark in [m for m in self.state["emitted"] if m.startswith(swept)]:
+            if mark.split("|")[2] not in present:
+                del self.state["emitted"][mark]
         # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
         # the fact it holds is "this row is on the work list and must never be dispatched from";
         # `request_spoken_for`'s fourth shape is its only reader, and losing it is a review
         # worker eventually sent to a pull request that shipped.
+        #
+        # **And an OUT-OF-PLAY recording, which is the third fact of the same kind.** A key taken
+        # out of play has by definition just left `present`, so without this the field written a
+        # few lines above is discarded on the same tick — and bringing the review back then
+        # depends on `find_request` re-reading it on the tick the pull request returns. That read
+        # is skipped whenever `look_stopped` or `record_stopped` is set, so one transient broken
+        # `review find` on the return tick left the review out of play in Review Desk while the
+        # poller went on offering the key. Found in review of this branch.
+        #
+        # **The cost is one dict entry per out-of-play pull request, and two shapes never give it
+        # back.** `back_in_play` clears the field, but it only runs for a key GitHub shows again —
+        # so a draft that merges or closes while still a draft (filtered out of the query by
+        # `skip_drafts`, so `request_closed` never runs and no `closed` flag is set either) and a
+        # withdrawn request nobody asks for again are both held for the life of the instance.
+        # That is the same bargain `dismissed` and `closed` already take and it is accepted on
+        # the same argument — the fact is held nowhere else and losing it sends the next tick
+        # towards a write on a row somebody took out of play. **An earlier version of this
+        # paragraph promised `back_in_play` cleared them all**, which a review of this branch
+        # measured as false; the bargain is stated rather than hidden behind a promise.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
-                                  if k in present or v.get("dismissed") or v.get("closed")}
+                                  if k in present or v.get("dismissed") or v.get("closed")
+                                  or v.get("out_of_play")}
 
     def record_unreachable(self, rd: dict, every: int) -> None:
         """Say that Review Desk could not be reached while recording a request.
@@ -1749,6 +2061,56 @@ class Poller:
             emit("review_desk_unavailable", state=state, mode=rd["mode"], command=rd["command"],
                  repo=repo, call=call, detail=detail)
 
+    def open_contract_held(self, rd: dict, repo: str, every: int) -> bool:
+        """Does this install move an unposted round's head, and say so in `action`? (DEV-962)
+
+        **A READ, and the only probe in this file that is not the call it was going to make.**
+        `review open --help` writes nothing, opens no review and spends no round — `review_desk_run`
+        is handed `--help` with `json_out=False` exactly as `--version` is. Everything else here
+        learns a build's limits from the answer to a real call, and the paragraph beside
+        `REVIEW_DESK_DIFF_FLAG` says why this one cannot: the fact is only legible in an answer
+        that has already opened the round it was meant to prevent.
+
+        **Once per tick, never remembered across them.** One install answers for every request
+        and the answer cannot change inside a tick, so a page of fifty requests costs one
+        subprocess rather than fifty. And it is NOT cached in the poll state: "there is no cached
+        verdict about whether it is installed — an install you fix is used on the very next poll"
+        is this file's rule, and a build somebody upgrades between two ticks is the same case.
+
+        **False on anything but a clear yes, and that is the safe direction.** A probe that is
+        absent, broken, refused or answers help text without the flag all mean the same thing
+        here: do not relax the guard that stops a round being spent. A `False` costs the ticket's
+        feature; a wrong `True` costs a round per push, which is the bug.
+
+        Said once per `reemit_after_secs`, loudly, blocking nothing — and ONE line for all three
+        facts, because they are one change in Review Desk and three lines about one upgrade is
+        three lines.
+        """
+        if self.open_contract is not None:
+            return self.open_contract
+        state, text, detail = review_desk_run(rd, "review", "open", "--help", json_out=False)
+        if state == "ok" and isinstance(text, str) and REVIEW_DESK_DIFF_FLAG in text:
+            self.open_contract = True
+            return True
+        self.open_contract = False
+        # An `absent` install is silent under `auto` like everything else, and `say_unreachable`
+        # is where that rule lives — but it is not the carrier here, because this is not an
+        # install-level failure: the install answered, and what it said is that it is older than
+        # the contract. `absent` and `broken` are reported by the recording path's own calls a
+        # moment later, with the repository they met it on.
+        if state == "ok" and self.due("review_desk|no_round_contract", every):
+            emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                 command=rd["command"], repo=repo, call="review open --help",
+                 detail=f"{rd.get('command')} review open has no `{REVIEW_DESK_DIFF_FLAG}`, so "
+                        f"this build predates DEV-962: a push to a started review opens a new "
+                        f"round rather than moving its head, `review open` answers with no "
+                        f"`action`, and there is no `review out-of-play`. The poller falls back "
+                        f"to the behaviour it had before DEV-962 — it writes nothing to a "
+                        f"started review, so no round is spent and no pull request is taken out "
+                        f"of play. Nothing is blocked. Upgrade Review Desk to pick it up: "
+                        f"{detail[:80]}")
+        return False
+
     def record_request(self, rd: dict, key: str, repo: str, number: int, head: str | None,
                        title: str | None, every: int, entry: dict) -> None:
         """Keep Review Desk's record of one review request current. Says nothing.
@@ -1792,19 +2154,32 @@ class Poller:
         in this file re-asks on. Both keep `recorded[key]` current, and the caller decides from
         that record rather than from whichever call happened this tick.
 
-        Returns nothing, because `self.state["recorded"][key]` is the whole answer: the commit
-        recorded, the review's id, and whether the developer has dismissed it.
+        Returns `(action, previous)`: **what `review open` says it did** — `created`,
+        `head_moved`, `unchanged`, `diff_unchanged`, or `None` for a tick that wrote nothing or
+        could not read the answer — and, on a move, the commit it moved FROM. The second element
+        is Review Desk's own `head_moved_from` where it gave one, and the commit this record held
+        before the write otherwise; it is `None` on every other action.
+        It used to return nothing, on the reasoning that `self.state["recorded"][key]` was the
+        whole answer; DEV-962 is what made that false. A head that MOVED has to reach the
+        session already on the review and must reach nobody else, and that is a fact about one
+        call rather than about the record — see `open_action` for why it is handed back instead
+        of remembered.
         """
         if not head:
             # No head commit, no recording: `review open` requires one, and a search row without
             # `headRefOid` is a row this file cannot describe a review of.
-            return
+            return None, None
         # Per KEY, not per tick: it is a fact about the build that answered for THIS request,
         # and as a tick-wide flag it leaked onto every key recorded after the one that set it —
         # permanently, because the record keeps it and a key marked `old` never has its head
         # followed again. Found by review of this branch.
         self.record_old = False  # per key, and the comment above says why
         held = self.state["recorded"].get(key) or {}
+        # Read before anything can overwrite it. `remember` below replaces the record wholesale,
+        # so the commit this key was last recorded at exists only in this local from here on —
+        # and a wake that cannot name the commit the session reviewed is a wake that says
+        # "something changed" and nothing else.
+        was = held.get("head")
         # **`record_stopped` stops writing and looking. It does not stop reading**, and the
         # early return it used to sit in did: `find_request` sets it for a new key, and the
         # dismissal read for every key already recorded was then cancelled for the rest of the
@@ -1842,7 +2217,26 @@ class Poller:
             if self.record_stopped or found == "refused":
                 looked = False
             elif found is not None:
-                held = self.remember(key, found, found.get("head_sha") or head)
+                at = found.get("head_sha") or head
+                # **The fingerprint is taken on the LOOK as well, and without it item 6 could
+                # never fire on the first push.** `--diff-unchanged` is a comparison against the
+                # pull request's own diff AT THE PREVIOUS HEAD, and GitHub only ever serves the
+                # diff at the CURRENT one — so a digest that was not taken while the store's head
+                # was current can never be taken at all. Before this, a poller that learned of a
+                # review and then saw the base merged in had nothing to compare and woke the
+                # session. One call per key this poller has no record of, which is once per key
+                # rather than once per tick.
+                #
+                # **Only when the store's head IS the one GitHub is showing.** If they differ,
+                # the digest this call would get is at GitHub's commit and not at the store's,
+                # and recording it against the store's would be a claim about a diff nobody
+                # measured — the one direction that produces a false "unchanged". The write that
+                # runs this same tick stores it at GitHub's commit instead, which is true.
+                taken = None
+                if same_commit(at, head) and self.open_contract_held(rd, repo, every):
+                    found_digest = self.pr_diff_digest(repo, number)
+                    taken = {"head": at, "digest": found_digest} if found_digest else None
+                held = self.remember(key, found, at, diff=taken)
         asked = f"review_desk|dismissal|{key}"
         # **The ledger is a second source for the review's id, and the only one for a review
         # this poller never recorded.** A worker writes `review_desk_id` on its entry before it
@@ -1851,12 +2245,12 @@ class Poller:
         # no id from either source there is nothing to read, and the window is left alone rather
         # than spent: re-entering this branch every tick to learn nothing was found in review.
         rid = review_id(held.get("review")) or review_id(entry.get("review_desk_id"))
-        # **A review a session has been linked to is never written to**, and the LEDGER is what
-        # says so first: the worker links its session a minute after it starts, where a read of
-        # the record is `reemit_after_secs` away. `session_id` on the entry rather than its
+        # **Whether a session has been linked to this review is `round_started`'s fallback and
+        # lives there.** It used to be a local here, and `review_requests` grew an inline copy of
+        # the same expression — one question in two places, which left the negative control that
+        # reverses it able to reach only one of them. `session_id` on the entry rather than its
         # status, because `lost`, `failed`, `discarded`, `merged` and `deferred` are all keys a
         # session has held and the field survives every one of them.
-        linked = bool(entry.get("session_id")) or bool(held.get("session"))
         # **A review a session has been linked to is read and never written to either, and that
         # is a harder rule than the ledger's.** Review Desk moves an unstarted request's head and
         # starts a NEW ROUND once a session is linked — measured at review-desk 2180224: link a
@@ -1895,12 +2289,59 @@ class Poller:
         # was written to prevent. `old` is set on the retry path and remembered, so such a build
         # records a request once and then leaves it alone: exactly the behaviour that preceded
         # this branch, which is what every other degradation here falls back to.
-        writing = (looked and not self.record_stopped and not held.get("dismissed") and not linked
+        # **The store's own judgement of "started", preferred over this file's guess.** DEV-954's
+        # field; `round_started` carries why it is wider than `linked` and why it wins in both
+        # directions.
+        started = round_started(held, entry)
+        # Whether a session this instance dispatched is on this key RIGHT NOW. Today's code never
+        # recorded for such a key at all — the caller's gate was `status not in ALIVE` — and
+        # DEV-962 is what reverses that: a push to a live, unposted review is the thing the
+        # poller now has to tell Review Desk about, because moving the head is what stops a
+        # round being spent and `action: head_moved` is the only signal that says who to wake.
+        alive = entry.get("status") in ALIVE
+        writing = (looked and not self.record_stopped and not held.get("dismissed")
                    and not (held.get("old") and held.get("head"))
                    and not same_commit(held.get("head"), head))
+        # **The probe, asked only when there is something to write AND something to lose.** A
+        # round nobody has begun moves on every build that has `--ledger`, so the question only
+        # arises for a started round or a key a session holds — and asking it there costs one
+        # `review open --help` per tick, where asking it unconditionally would cost one on every
+        # instance that has Review Desk and no pushes.
+        #
+        # **On a build without the contract this is exactly today's behaviour**, and that is the
+        # claim worth checking rather than trusting: `started` false and not `alive` is the
+        # unstarted request today's code moved; anything else is the request today's code left
+        # alone. So a legacy build writes what it wrote before DEV-962 and spends no round.
+        # **Asked whenever there is anything to write, and that is wider than it needs to be for
+        # the guard alone.** The guard below only matters for a started or live review, but
+        # `--diff-unchanged` must never be passed to a build that has never heard of it — clap
+        # refuses the whole call, and the retry below it is `--ledger`'s, which would drop the
+        # wrong flag and refuse again. One `review open --help` per tick answers both questions,
+        # so there is nothing to save by asking only one of them.
+        modern = self.open_contract_held(rd, repo, every) if writing else False
+        if writing and not modern and (started or alive):
+            # A build without the contract opens round N+1 for a started round's new head, which
+            # is the harm. This is today's behaviour exactly: the request is left alone.
+            writing = False
+        # **Whether to assert that the pull request's own diff has not changed.** Only with a
+        # commit to compare against, only on a build that has the flag, and only when the
+        # fingerprint of the pull request's own files is byte-identical to the one taken at that
+        # commit. `pr_diff_digest` refuses on truncation, on a file it cannot fingerprint and on
+        # a `gh` that failed, and every refusal omits the flag — which moves the head and wakes
+        # a session that need not have woken. That is the cheap failure; the expensive one is a
+        # change of Patrick's that nothing told him about.
+        # Computed once for the whole of this key's tick, and read twice: here, to decide the
+        # flag, and below, to be recorded against the commit it was taken at. `pr_diff_digest`
+        # caches per `(repo, number)` so the second read costs nothing.
+        digest = self.pr_diff_digest(repo, number) if writing and modern else None
+        unchanged = bool(digest and held.get("head")
+                         and self.diff_unchanged(repo, number, held))
+        payload, action = None, None
         if writing:
-            review = self.open_request(rd, key, repo, number, head, title, every)
-        elif rid is not None and not self.read_stopped and self.due(asked, every):
+            payload = self.open_request(rd, key, repo, number, head, title, every,
+                                        diff_unchanged=unchanged)
+            review = review_of(payload)
+        elif rid is not None and not alive and not self.read_stopped and self.due(asked, every):
             review = self.read_request(rd, key, rid, every, repo)
             if review is None and not self.read_unsupported:
                 # **The window is not spent on a read that did not happen.** `due` writes its
@@ -1915,12 +2356,20 @@ class Poller:
                 # again every tick, for every recorded request, for ever.
                 self.state["emitted"].pop(asked, None)
         else:
-            return
+            return None, None
         if review is None:
             # Nothing was learned — absent, broken, refused, or a review that is gone. What was
             # already recorded stands, including a dismissal: a Review Desk that cannot be
             # reached is not the developer changing their mind.
-            return
+            return None, None
+        # **Read only once there is a review to read it beside**, which is the ordering a review
+        # of this branch fixed: it ran before the guard above, so a `review open` answering with
+        # JSON that parses and is not an object — already reported as broken, already answered
+        # `None` — reached the derive path with no document at all and raised an AttributeError
+        # in the middle of the tick. That is the exact shape `review_of` exists to stop, reached
+        # through a second door.
+        if writing:
+            action = self.open_action(rd, repo, payload, every)
         # The commit this record is compared against next tick: GitHub's after a WRITE, and
         # after a read the one Review Desk is holding — which is the record's own if there is
         # one and the answer's otherwise. GitHub's commit is the one thing it must not be on
@@ -1930,9 +2379,167 @@ class Poller:
         # Safe to store either spelling because `same_commit` normalises the comparison.
         self.remember(key, review,
                       head if writing else (held.get("head") or review.get("head_sha") or head),
-                      old=self.record_old or bool(held.get("old")))
+                      old=self.record_old or bool(held.get("old")),
+                      # **The commit it was taken at travels with it**, which is what makes a
+                      # stale digest unusable rather than dangerous: `diff_unchanged` refuses
+                      # unless the digest's own head is the one the record names, so a record
+                      # whose head some other path wrote cannot have an old digest read against
+                      # it. Carried forward untouched when this tick computed none, because a
+                      # digest taken at a commit is still true of that commit.
+                      diff=({"head": head, "digest": digest} if digest else held.get("diff")))
+        # **The action, handed back rather than kept.** It is a fact about ONE call and not about
+        # the record, so remembering it would be the leak `record_old` was found to be — a tick
+        # that records nothing would answer with the last tick's action for ever. The caller has
+        # the pull request's title, url and author, which the wake event needs and this function
+        # was never given; and the caller is where the decision not to emit a `review_request`
+        # for a moved head belongs, beside the decision to emit one.
+        if action != "head_moved":
+            return action, None
+        # Review Desk's own word for it where the answer gave one — the store normalises what it
+        # holds, and `same_commit` is what every comparison of these two goes through — and this
+        # record's previous commit otherwise, which is the only answer a build that derives its
+        # action can give.
+        moved_from = payload.get("head_moved_from") if isinstance(payload, dict) else None
+        return action, (moved_from or was)
 
-    def remember(self, key: str, review: dict, head: str, old: bool = False) -> dict:
+    def head_moved(self, rd: dict, cfg: dict, key: str, repo: str, pr: dict, entry: dict,
+                   was: str | None, every: int) -> None:
+        """A push to a pull request whose review is unposted: wake the session, dispatch nobody.
+
+        **This is DEV-962 item 5, and the event is the whole of it.** Review Desk moved the
+        round's head; no round was spent and none is to be. So the Dispatcher is told three
+        things and asked for one: the review is the SAME review on the SAME round, the commit has
+        moved from one named commit to another, and here is the session to say so to.
+
+        **It carries no `backlog` and is not a `review_request`**, deliberately. A request is an
+        offer of work and this is not one — the work is already claimed, by the session named on
+        it. The Dispatcher's one job is a SendMessage, which is the mechanism
+        `review_rerequested` already uses and the only way it has of speaking to a worker.
+
+        **`session_live` is this file's own judgement and is never Review Desk's.** That store
+        refuses to judge it and says so; `review_desk_live` reads the two things this instance
+        owns — its ledger and allele's state file — and `null` means allele's file could not be
+        read at all, which SKILL.md routes as "read the pull request before you dispatch
+        anything", exactly as it routes a `pr_state` of null.
+
+        **Once per move, not once per tick.** The mark carries both commits, so a second push
+        says itself again and the same push does not. That is the one rate limit here that is a
+        correctness rule rather than a courtesy: a wake repeated every fifteen minutes is a
+        worker re-reading the same delta every fifteen minutes.
+
+        **The worker very likely hears the push first, from its own watcher.** `Watcher.pull_request`
+        emits `pr_pushed` on the same commit change, and `workers/review.md` already tells the
+        worker what to do with it. That overlap is accepted rather than engineered away, on the
+        same reasoning `review_cleared` states about a merge: two processes watching one pull
+        request will sometimes both speak, and the answer is to relay whichever reached you once
+        rather than to make either of them silent. What this event carries that `pr_pushed`
+        cannot is the Review Desk half — the round did not change — and the fallback when the
+        session is gone.
+        """
+        held = self.state["recorded"].get(key) or {}
+        # The record first and this instance's ledger second, which is `record_request`'s own
+        # order. Spelled over two statements rather than one `or` so that the single-line form
+        # in `record_request` stays a unique anchor for the negative control that reverses it —
+        # a `sed` that matched two lines would turn one control into two copies of itself.
+        rid = review_id(held.get("review"))
+        if rid is None:
+            rid = review_id(entry.get("review_desk_id"))
+        head = pr.get("headRefOid")
+        if not self.due(f"review_desk|head_moved|{key}|{was}|{head}", every):
+            return
+        try:
+            # Cached per tick, like `pr_states`: a page can carry several moves and allele's
+            # state file cannot change inside a tick. `review_desk` reads the same file in the
+            # same tick and keeps its own; a shared cache between two sections that fail
+            # differently would be one more thing to reason about for one saved file read.
+            if self.allele_live is None:
+                self.allele_live = allele_state(cfg)[0]
+            alive = review_desk_live(self.allele_live, entry)
+        except Exception:
+            # Unknown, and said as unknown. Guessing `False` would offer a replacement for a
+            # session that is sitting there — two workers on one review, which is the one thing
+            # item 5 forbids — and guessing `True` would leave a moved head with nobody reading
+            # it. `None` is the honest third answer and SKILL.md has a row for it.
+            alive = None
+        emit("review_head_moved", key=key, repo=repo, number=pr["number"],
+             title=pr.get("title"), url=pr.get("url"),
+             author=(pr.get("author") or {}).get("login"),
+             previous=was, current=head, round=held.get("round"),
+             review_desk_id=rid, review=review_desk_link(rd, rid),
+             ledger_status=entry.get("status"), session_id=entry.get("session_id"),
+             session_name=entry.get("session_name"), reply_to=entry.get("reply_to"),
+             session_live=alive)
+
+    def diff_unchanged(self, repo: str, number: int, held: dict) -> bool:
+        """Is the pull request's own diff against its base the same as it was at the old head?
+
+        **This is the whole of DEV-962 item 6, and the conservative direction is the only one
+        that is safe.** Review Desk reads neither git nor GitHub — it takes this file's word for
+        it — so a wrong "unchanged" is a change of Patrick's that nothing woke anybody for, and
+        a wrong "changed" is one session reading a delta that turns out to be empty. The second
+        costs a wake. Every uncertainty therefore answers False.
+
+        False whenever: either digest could not be computed, the stored digest was taken at a
+        different commit from the one the record names, or they simply differ. The commit check
+        is not pedantry — the digest is stored beside the head it was taken at precisely so that
+        a record whose head was written by some other path cannot have a stale digest read
+        against it.
+        """
+        was = held.get("diff")
+        if not isinstance(was, dict) or not same_commit(was.get("head"), held.get("head")):
+            return False
+        now = self.pr_diff_digest(repo, number)
+        if now is None or not was.get("digest"):
+            return False
+        return bool(now == was["digest"])
+
+    def open_action(self, rd: dict, repo: str, payload, every: int) -> str | None:
+        """What `review open` says it DID, from DEV-962's `action`. `None` when it did not say.
+
+        **`created` is no longer the question.** A head that moved and a head that did not both
+        answer `created: false`, and the ticket is the difference between them: one wakes the
+        session already on the review and the other does nothing at all. So `action` is read, and
+        a build that does not offer it gets a derived answer rather than a guess — `created` and
+        `head_moved_from` between them still separate three of the four cases, and the fourth
+        (`diff_unchanged`) cannot arise on a build that has no flag to ask for it.
+
+        An `action` this file has never heard of is **not** derived around. It is said once and
+        answered `None`, which the caller reads as "nothing to wake anybody for" — the same line
+        `unknown_kind` takes about a work kind, and for the same reason: a dispatch invented for
+        a word nobody here has read is worse than a dispatch not made.
+        """
+        if not isinstance(payload, dict):
+            return None
+        action = payload.get("action")
+        if action is None:
+            # Derived, and only ever into the three a pre-DEV-962 build can produce. `created` is
+            # its own answer; a `head_moved_from` is a move; and `created: false` with no move is
+            # the same commit back again. `diff_unchanged` cannot arise here: it needs a flag
+            # such a build has no name for.
+            if payload.get("created"):
+                return "created"
+            return "head_moved" if payload.get("head_moved_from") else "unchanged"
+        if action not in REVIEW_DESK_ACTIONS:
+            if self.due(f"review_desk|unknown_action|{action}", every):
+                emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                     command=rd["command"], repo=repo, call="review open",
+                     detail=f"{rd.get('command')} review open answered with an action this "
+                            f"plugin has never heard of: {str(action)[:40]}. Nothing was woken "
+                            f"and nothing is blocked — the review is recorded and the Dispatcher "
+                            f"is told nothing about it. Review Desk is ahead of the Locus "
+                            f"plugin; the fix is a Locus change.")
+            return None
+        # **`started` is on this same answer** — review-desk's own addition of 13 October 2026,
+        # made for this branch: on a move the caller has to know whether to wake a session or
+        # dispatch one, and a second call to learn it is a second thing that can fail in between.
+        # It needs no handling here, because `remember` reads it off the review object this
+        # document carries, which IS the open's answer. Said rather than left implicit, because
+        # the first version of this function copied it onto the record by hand and that write was
+        # dead the moment `remember` learned the field.
+        return action
+
+    def remember(self, key: str, review: dict, head: str, old: bool = False,
+                 diff: dict | None = None) -> dict:
         """Write what one Review Desk answer says about a request into the poll state.
 
         One place, because three callers answer the same question — `review find` before the
@@ -1974,17 +2581,76 @@ class Poller:
             # from the dashboard, or one a session linked itself to without this dispatcher
             # claiming it.
             "session": review.get("session_id"),
+            # The store's own judgement of whether anybody has begun anything on this round —
+            # DEV-954's field, which is wider than "a session is linked" by four more facts a
+            # caller cannot see. `None` on a build that does not offer it, which `round_started`
+            # reads as "nothing was said" and answers from the ledger instead. **Not defaulted
+            # to False**: a missing field and a round nobody has started must not be one value,
+            # because the first means fall back and the second means a move is safe.
+            "started": review.get("started") if isinstance(review.get("started"), bool) else None,
+            # Why this pull request is out of play, as the store holds it: `draft`, `withdrawn`,
+            # or None for in play. **Read rather than inferred**, which is what makes it cheap:
+            # Review Desk puts the field on every review object it emits — `review find`'s rows
+            # and `review show`'s review as well as `review open`'s — so the look the next tick
+            # makes anyway sees it, and nothing here has to track a decision of the developer's.
+            # Measured by review-desk's own author, 13 October 2026:
+            # `{"out_of_play":"draft","out_of_play_at":1791888255}`.
+            #
+            # **It DOES survive the prune, in the same clause as a dismissal**, and an earlier
+            # version of this paragraph said it did not have to. That was wrong twice over: a key
+            # taken out of play has by definition just left `present`, so the field was discarded
+            # on the tick it was written — and the look it was relying on is skipped whenever
+            # `look_stopped` or `record_stopped` is set, so one transient broken `review find` on
+            # the return tick left the review out of play while the poller went on offering the
+            # key. Found in review of this branch. **Restoring the prune re-opens that**, which
+            # is the same warning the `closed` flag's paragraph carries about itself.
+            #
+            # **A successful `review open` is never read as a return**, and that is the one trap
+            # here: an open on an out-of-play pull request SUCCEEDS, and a round it creates
+            # inherits both the reason and the original time. `review in-play` is the only thing
+            # that clears it, so the field is the fact and the open's exit code is not.
+            "out_of_play": review.get("out_of_play"),
+            # Which round the review is ON. Recorded because a wake has to say it: "still round
+            # 1, updated for the new head" is the sentence DEV-962 is about, and a message that
+            # cannot name the round reads exactly like the round-2 notice it replaces. A move
+            # leaves it alone by the contract's own wording, so the number a move records is the
+            # number that was there.
+            "round": review.get("round"),
             # Whether the build that answered has no `--ledger`, and so no move either. Kept on
             # the record rather than on the Poller because it is a fact about the install this
             # KEY was recorded against, and a tick that records nothing should not forget it.
             "old": old,
+            # `{"head": <the commit>, "digest": <sha256>}`, or None. The fingerprint of the pull
+            # request's own diff against its base, and the commit it was taken at. See
+            # `pr_diff_digest` for what it is a fingerprint OF and `diff_unchanged` for why the
+            # commit has to travel with it. **The caller decides**, exactly as it decides the
+            # head: a write records the digest it just took, and every other path carries
+            # forward whatever was there.
+            "diff": diff,
         }
         self.state["recorded"][key] = held
         return held
 
     def open_request(self, rd: dict, key: str, repo: str, number: int, head: str,
-                     title: str | None, every: int) -> dict | None:
-        """`review open`: the request, written. Returns the review, or None if it was not."""
+                     title: str | None, every: int,
+                     diff_unchanged: bool = False) -> dict | None:
+        """`review open`: the request, written. Returns the DOCUMENT, or None if it was not.
+
+        **The document and not the review**, from DEV-962: `action` is a sibling of `review` in
+        the answer, not a field inside it, and `created: false` no longer distinguishes a head
+        that moved from a head that did not. A caller that got only the review would be reading
+        the one fact this command now exists to report out of the one place it is not. Callers
+        that want the review say `review_of(...)` over what comes back, which they have to do
+        anyway — `review_of` is the type check that stops a strange build turning a `.get` into
+        an `AttributeError` in the middle of a poll tick.
+
+        `diff_unchanged` is the CALLER's assertion that the pull request's own diff against its
+        base has not changed — see `pr_diff_digest` for how that is established, and the contract
+        for what Review Desk does with it: no round, no head move, no sign-off withdrawn, and
+        `action: diff_unchanged`. **Passed only on a build that has the flag**, because an older
+        one reads it as an argument it has never heard of and refuses the whole call — and the
+        retry below is `--ledger`'s, which would then drop the wrong flag and refuse again.
+        """
         # Canonical here as well. This one the store normalises for itself, so it is the same
         # row either way — but two calls about one pull request spelling it two ways is the
         # inconsistency the bug above grew in, and the cost of consistency is nothing.
@@ -1999,6 +2665,11 @@ class Poller:
             # the flag, fail identically, and report a refusal — for every tick that pull
             # request stayed open. `--title=-fix the thing` is accepted and stored verbatim.
             facts.append(f"--title={title}")
+        if diff_unchanged:
+            # A flag with no value, so none of `--title`'s hyphen trouble applies to it. Appended
+            # after the title and before `--ledger` only so that `rd.open.argv` reads in a stable
+            # order for an assertion; clap does not care.
+            facts.append(REVIEW_DESK_DIFF_FLAG)
         state, payload, detail = review_desk_run(rd, *facts, "--ledger", key, "--json")
         retried = False
         if state == "refused" and review_desk_unknown(detail):
@@ -2055,8 +2726,7 @@ class Poller:
             # The retry answered, so the flag's claim is now evidenced rather than inferred: this
             # build has no `--ledger`, and therefore no move either — the two landed together.
             self.record_old = True
-        review = review_of(payload)
-        if review is None:
+        if review_of(payload) is None:
             # **Exit 0 with an answer this file cannot read is BROKEN, not nothing.**
             # `review_desk_work` calls the same shape "too old to use" and so does this, and the
             # reason it cannot be passed over quietly is what happens next: nothing is recorded,
@@ -2073,7 +2743,10 @@ class Poller:
             if self.due(f"review_desk|record_unreadable|{repo}", every):
                 emit("review_desk_unavailable", state="broken", mode=rd["mode"],
                      command=rd["command"], repo=repo, call="review open", detail=detail)
-        return review
+            # None rather than the document, so every caller's `isinstance` test still reads
+            # "nothing was learned" for this shape. The guard above has already said it.
+            return None
+        return payload if isinstance(payload, dict) else None
 
     def find_request(self, rd: dict, repo: str, number: int, every: int):
         """`review find`: the newest round Review Desk holds for a pull request.
@@ -2213,7 +2886,7 @@ class Poller:
                                 f"cannot be read and a dismissed review may be dispatched: "
                                 f"{detail[:120]}")
                 return None
-            if detail.startswith(REVIEW_DESK_MISSING_REFUSAL):
+            if review_desk_missing(detail):
                 self.state["recorded"].pop(key, None)
                 return None
             # Any other refusal is not a review that is gone — a locked database, a validation
@@ -2460,8 +3133,12 @@ class Poller:
         before = self.broken_since()
         found = self.find_request(rd, repo, pr["number"], every)
         if found is None and not self.record_stopped and not self.look_stopped:
-            review = self.open_request(rd, key, repo, pr["number"], head,
-                                       pr.get("title"), every)
+            # `review_of` over the DOCUMENT, because `open_request` hands back the whole answer
+            # since DEV-962 — `action` is a sibling of `review` in it. No `--diff-unchanged`:
+            # this path writes a FIRST review of a pull request the store has never held one of,
+            # where the flag is moot by the contract's own wording (`action: created`).
+            review = review_of(self.open_request(rd, key, repo, pr["number"], head,
+                                                 pr.get("title"), every))
         else:
             # A review exists, or the store could not be used. Either way nothing is written:
             # the first would be a round on a shipped pull request, the second a blind write.
@@ -2602,17 +3279,362 @@ class Poller:
 
     @staticmethod
     def why_cleared(cfg: dict, where: dict) -> str:
+        """Why a review request this poller was watching is no longer on GitHub's list.
+
+        **A live read, and the one thing out-of-play rests on.** `review_out_of_play` branches on
+        the string this returns, so a wrong answer here is a review taken out of play that is
+        still being asked for. That is why the `gh` failure answers with its own sentence rather
+        than falling through to "review request removed": DEV-962 reads that sentence as "the
+        request was withdrawn" and writes it down, and a failed call is not a withdrawal.
+
+        **`isDraft` is DEV-962's addition and it is read BEFORE the submitted-review branch.** A
+        pull request converted to draft is still `OPEN`, and with `github.skip_drafts` on — the
+        shipped default — the row simply stops arriving, so before this the clearance was
+        reported as "review request removed": a withdrawal that never happened, on a pull request
+        whose author had done something else entirely. One extra field on a call this function
+        already makes.
+        """
         try:
             info = gh("pr", "view", str(where["number"]), "-R", where["repo"],
-                      "--json", "state,latestReviews")
+                      "--json", "state,isDraft,latestReviews")
         except Exception:
             return "no longer requested (could not read PR)"
         if info["state"] != "OPEN":
             return f"PR {info['state'].lower()}"
+        if info.get("isDraft"):
+            # Before the submitted-review branch, because a draft with a review of the
+            # principal's on it is still a draft: the thing that took it off the list is the
+            # conversion, and the conversion is what comes back.
+            return "PR converted to draft"
         mine = [r for r in info.get("latestReviews") or [] if (r.get("author") or {}).get("login") == cfg["github"]["login"]]
         if mine:
             return f"you submitted a review ({mine[-1].get('state', '').lower()})"
         return "review request removed"
+
+    # The two clearance reasons that mean a pull request has left play REVERSIBLY, mapped to the
+    # reason `review out-of-play` takes. Every other reason is deliberately absent and the
+    # absences carry behaviour:
+    #
+    #   `PR merged` / `PR closed`     DEV-957's finished state, reached by the harvest. Not
+    #                                 reversible in the way these two are, and explicitly not
+    #                                 out of play by the contract's own wording.
+    #   `you submitted a review`      the request was answered, not withdrawn.
+    #   `no longer requested (could   a `gh pr view` that failed. Nothing is written on the
+    #    not read PR)`                strength of a call that did not answer.
+    OUT_OF_PLAY_WHY = {"PR converted to draft": "draft", "review request removed": "withdrawn"}
+
+    def out_of_play(self, rd: dict, key: str, where: dict, reason: str, entry: dict,
+                    every: int) -> str | None:
+        """Take a pull request out of play in Review Desk, and say which reason. (DEV-962 item 7)
+
+        Returns the reason written, or None when nothing was written — which the caller carries
+        on `review_cleared` so the Dispatcher can say the record moved without asking.
+
+        **Reversible, and that word is the whole of why this is not DEV-957's finished state.** A
+        draft goes ready again and a withdrawn request is made again, and when either happens the
+        review returns on the round it was on with its rounds, drafts and sign-offs intact. A
+        merge does not come back, which is why `OUT_OF_PLAY_WHY` leaves both closed states out.
+
+        **Written at most once per reason**, from the poller's own record of what the store holds
+        — not because repeating it would be wrong, but because it would be a subprocess per
+        out-of-play pull request per tick for ever. Review Desk's author measured the idempotence
+        on 13 October 2026: the same reason again succeeds and leaves `out_of_play_at` where it
+        was, so a poller that re-asserted on every tick could not corrupt the record, only the
+        tick budget. A DIFFERENT reason is written even when one is held, because the newer
+        assertion is the one that is true and it takes its own time — a pull request can go draft
+        and have its request withdrawn in either order.
+
+        **`not_found` is not a failure here.** It is Review Desk saying it holds no review of
+        this pull request, which is the ordinary answer for a repository the recording pass never
+        reached — an unedited `repo_project_map`, a build with no `review find`, a tick where the
+        store was broken. There is nothing to take out of play, and saying so would be a line
+        about a review that does not exist.
+        """
+        want = self.OUT_OF_PLAY_WHY.get(reason)
+        if want is None or self.out_of_play_stopped or self.record_stopped:
+            return None
+        held = self.state["recorded"].get(key) or {}
+        if held.get("out_of_play") == want:
+            return want
+        # Cleared so a return is reported again. Symmetric with `back_in_play`'s own clearing of
+        # the out-of-play marks; without the pair, the second of two draft-and-ready cycles is
+        # silent in one direction.
+        self.state["once"].pop(f"review_in_play|{key}", None)
+        repo, number = where["repo"], where["number"]
+        state, payload, detail = review_desk_run(
+            rd, "review", "out-of-play", "--repo", canonical_repo(repo), "--pr", str(number),
+            "--reason", want, "--json")
+        if state in ("absent", "broken"):
+            self.out_of_play_stopped = True
+            if state == "absent":
+                self.record_stopped = True
+                self.read_stopped = True
+            self.note_broken("review out-of-play", state, detail, repo)
+            return None
+        if state == "refused":
+            if review_desk_unknown(detail):
+                # **A build that has never heard of `review out-of-play`**, which is a fact about
+                # the install and not about this pull request — so it is asked once and then not
+                # again this tick, exactly as a build with no `review show` is. Loud, once per
+                # `reemit_after_secs`, and blocking nothing: what is lost is the record saying a
+                # draft pull request is out of play, not anything about reviewing it. The
+                # `review open --help` probe has almost certainly said this already in one line
+                # covering all three facts; this is the case where that probe answered yes and
+                # the subcommand is still missing, which is a build nobody expected and is worth
+                # its own sentence.
+                self.out_of_play_stopped = True
+                if self.due("review_desk|no_out_of_play", every):
+                    emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=number,
+                         call="review out-of-play",
+                         detail=f"{rd.get('command')} has no `review out-of-play`, so a draft or "
+                                f"withdrawn pull request stays on the Reviews list as though it "
+                                f"were still in play: {detail[:120]}")
+                return None
+            if review_desk_missing(detail):
+                # No review of this pull request to take out of play. Not said, and not
+                # remembered as out of play either — the next tick that records one will find it
+                # in play, which is what it is.
+                return None
+            # Any other refusal is about this pull request rather than the install, said once per
+            # repository exactly as a refused recording is.
+            if self.due(f"review_desk|out_of_play_refused|{repo}", every):
+                emit("review_desk_unavailable", state="refused", mode=rd["mode"],
+                     command=rd["command"], repo=repo, number=number,
+                     call="review out-of-play", detail=detail, example=True)
+            return None
+        review = review_of(payload)
+        if review is None:
+            # **The same guard as `back_in_play`'s, and it was missing here for the same reason.**
+            # Returning `want` on an answer this file cannot read tells the caller the record
+            # moved — so `review_out_of_play` is emitted claiming a pull request is out of play
+            # when nothing established that it is, and the record does not say so either, which
+            # means the prune drops it and the return is never detected. Found in the same review
+            # pass as the `review in-play` half; the two commands have one shape and now one
+            # guard.
+            self.out_of_play_stopped = True
+            self.note_broken("review out-of-play", "broken",
+                             f"{rd.get('command')} review out-of-play exited 0 with an answer "
+                             f"carrying no review — too old to use", repo)
+            return None
+        if key in self.state["recorded"]:
+            # Recorded from the ANSWER, not from what was asked for. The store is the fact, and
+            # on the one shape where the two could differ — a build that accepted the call and
+            # held a different reason — believing the request would send the next tick looking
+            # for a change that already happened.
+            self.state["recorded"][key]["out_of_play"] = review.get("out_of_play") or want
+        return want
+
+    def back_in_play(self, rd: dict, key: str, repo: str, pr: dict, every: int) -> None:
+        """A pull request that is being asked about again: bring its review back. (item 7)
+
+        **Only `review in-play` clears it, and a successful `review open` never does.** Review
+        Desk's author measured both on 13 October 2026: an open on an out-of-play pull request
+        succeeds, and a round it CREATES inherits the reason and the original time — so the one
+        thing this file must not do is read a clean recording as a return. `out_of_play` on the
+        review is the fact, and that field is on every review object the store emits, which is
+        what lets the look before the first write see it with no write of its own.
+
+        **Called from the request loop, so "the pull request is back" is GitHub's statement
+        rather than this file's inference.** A key reaches here only when the search showed it
+        this tick and `github.skip_drafts` did not filter it, which is exactly "ready again, or
+        requested again". Nothing is derived from a timer.
+
+        One call clears every round of the pull request, by the contract, and in-play on
+        something already in play is a success — so there is no read-before-write and no window
+        in which two ticks could disagree.
+        """
+        state, payload, detail = review_desk_run(
+            rd, "review", "in-play", "--repo", canonical_repo(repo), "--pr",
+            str(pr["number"]), "--json")
+        if state in ("absent", "broken"):
+            self.out_of_play_stopped = True
+            if state == "absent":
+                self.record_stopped = True
+                self.read_stopped = True
+            self.note_broken("review in-play", state, detail, repo)
+            # **The window is not spent on a call that did not happen**, which is exactly
+            # `record_request`'s rule about its dismissal read and arrives here through the
+            # `due` bound the caller grew a commit ago. `due` writes its marker when it is
+            # EVALUATED, so without this a Review Desk broken for one tick would put the return
+            # a whole `reemit_after_secs` away — a review coming back fifteen minutes late,
+            # which is a worse failure than the churn the bound was added to stop. Raised
+            # against my own change rather than found in it.
+            self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
+            return
+        if state == "refused":
+            if review_desk_unknown(detail):
+                self.out_of_play_stopped = True
+                if self.due("review_desk|no_out_of_play", every):
+                    emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=pr["number"],
+                         call="review in-play",
+                         detail=f"{rd.get('command')} has no `review in-play`, so a review taken "
+                                f"out of play cannot be brought back from here and stays off the "
+                                f"Reviews list until the dashboard does it: {detail[:120]}")
+            elif review_desk_missing(detail):
+                # **The store holds no review of this pull request, so nothing is out of play and
+                # the record saying otherwise is stale.** The only way to reach this is a review
+                # DELETED between the out-of-play write and now, which the developer may do while
+                # it never started. Forgotten rather than retried, which is the same DISPOSITION
+                # `read_request` takes towards this one refusal — and it is the field the gate
+                # reads, so forgetting it is also what stops the retry. Kept instead, as the
+                # first version of this did, it was one `review in-play` every
+                # `reemit_after_secs` for the life of the instance, on a review that does not
+                # exist.
+                #
+                # **Not the same WRITE, and the difference decides when the request comes back.**
+                # `read_request` pops the whole record; this clears one field, so the rest of it
+                # survives — `same_commit(held["head"], head)` then leaves `writing` False and no
+                # `review open` is made on the next tick. Recovery comes when `review show`'s own
+                # window comes round, `read_request` drops the record, and the tick AFTER that
+                # records the request again, in play and on round 1. So `reemit_after_secs` plus
+                # a tick, or at once on the next push. Measured by a review of this branch, which
+                # is also what corrected this paragraph's earlier claim of "the next tick".
+                #
+                # Raised against my own change: I had put this exit on the keep-the-window side
+                # with the build that has no subcommand, on the reasoning that both "answered".
+                # Both do — but one answered about the BUILD, which cannot change until somebody
+                # upgrades it, and this one answered about a row that the very next tick may
+                # recreate. Nothing said: a line about a review that does not exist is noise.
+                held = self.state["recorded"].get(key)
+                if isinstance(held, dict):
+                    held["out_of_play"] = None
+            else:
+                # `else`, not `elif not review_desk_unknown(detail)`: the first branch already
+                # excluded that, so the test was always true and read as a guard that was not
+                # one. Everything that reaches here is a refusal about neither the build nor a
+                # row that is gone.
+                if self.due(f"review_desk|in_play_refused|{repo}", every):
+                    emit("review_desk_unavailable", state="refused", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=pr["number"],
+                         call="review in-play", detail=detail, example=True)
+                # A locked database, a validation this file has not met: the next tick should try
+                # again rather than wait out the window, on the same argument as the broken path
+                # above. **Not on the build that has never heard of the subcommand**, which is
+                # the one refusal here that cannot change until the install does — asking it
+                # again every tick would learn the same thing for ever.
+                self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
+            return
+        review = review_of(payload)
+        if review is None:
+            # **Exit 0 with an answer this file cannot read is BROKEN, and this was the one write
+            # that never grew the guard.** `review_desk_run` has FOUR answer shapes and the
+            # five-way split above covered three of them: `ok` with a review, cleared or stuck.
+            # An `ok` whose body carries no review — empty output, `[]`, `{"review": null}` — fell
+            # to the `isinstance` arm below and was indistinguishable from the store saying "it is
+            # back in play". Measured by a review of this branch against a stand-in answering
+            # `[]`: the Dispatcher was told the review was back, the store still held it out of
+            # play, the record agreed with the announcement rather than with the store, the retry
+            # window was popped, and three further ticks made no attempt. A silent permanent
+            # divergence with a false `review_in_play` already on the principal's stream.
+            #
+            # **The fourth time this file has found the same asymmetry.** `review open` grew the
+            # guard, then `review find`, then `review show` — "the write path grew this guard a
+            # pass earlier and the read path did not" is `read_request`'s own sentence about it.
+            # Nothing is written and nothing is announced; the window is LEFT STANDING, so the
+            # retry is one per `reemit_after_secs` rather than never.
+            self.out_of_play_stopped = True
+            self.note_broken("review in-play", "broken",
+                             f"{rd.get('command')} review in-play exited 0 with an answer "
+                             f"carrying no review — too old to use", repo)
+            return
+        held = self.state["recorded"].get(key)
+        if isinstance(held, dict):
+            # **Read off the ANSWER, which is `out_of_play`'s own rule in the other direction:
+            # the store is the fact, and believing the request would send the next tick looking
+            # for a change that had not happened.** `review_of` is called once, where the first
+            # version of this line called it twice inside one expression — two type checks and
+            # two chances to read a different answer.
+            #
+            # **An earlier version of this comment said the opposite** — that the field is
+            # cleared to None whatever the answer holds — while the code read the answer, and a
+            # review of this branch measured the disagreement: with `review in-play` stubbed to
+            # succeed and still report `draft`, the record kept `draft`. The code is right and
+            # the comment was describing the harm as though it were the fix. What a store like
+            # that actually costs is below.
+            held["out_of_play"] = review.get("out_of_play") if isinstance(review, dict) else None
+            if held["out_of_play"]:
+                # **A store that accepted the call and did not clear it is broken, and broken is
+                # loud.** Believing the answer is right and leaves one problem: the gate that
+                # sent us here re-reads this field, so without a word being said this would be
+                # one `review in-play` per tick for as long as the key is present — the
+                # `last_activity_at` churn this whole path is arranged to avoid, arriving
+                # through the one branch that is supposed to end it. The caller's `due` bounds
+                # the retry to one call per `reemit_after_secs`; this is what makes the reason
+                # findable. Said once per key and reason, not once per attempt.
+                if self.once(f"review_in_play_stuck|{key}|{held['out_of_play']}"):
+                    emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=pr["number"],
+                         call="review in-play",
+                         detail=f"{rd.get('command')} review in-play exited 0 and the review is "
+                                f"still out of play for '{held['out_of_play']}'. The pull "
+                                f"request is being asked about again, so it should be back: it "
+                                f"will be retried every "
+                                f"reemit_after_secs rather than every tick, and until the store "
+                                f"clears it the review stays off the Reviews list. Nothing is "
+                                f"blocked — the request is dispatched either way.")
+                return
+        # Over `OUT_OF_PLAY_REASONS` rather than the two reasons written out, which is how
+        # `out_of_play` drops its own marks. Enumerated by hand, a third reason would be a mark
+        # nothing ever clears — so the next person to add one would have to find this line to
+        # know it existed. Raised against my own change.
+        for reason in OUT_OF_PLAY_REASONS:
+            self.state["once"].pop(f"review_in_play_stuck|{key}|{reason}", None)
+        # **The retry window is cleared on a success that CLEARED, and this is the exit that was
+        # missed.** The bound was reasoned about as four exits; there are seven, in three
+        # dispositions, and the enumeration is written out because getting it wrong twice is how
+        # this paragraph came to exist:
+        #
+        #   absent or broken                     CLEAR — the call did not happen
+        #   refused, no such subcommand          KEEP  — about the BUILD, which cannot change
+        #                                                until somebody upgrades it
+        #   refused, no such review              FORGET the field — nothing is out of play, and
+        #                                                the field is what the gate reads
+        #   refused, anything else               CLEAR — a locked database, a validation unmet
+        #   exit 0, still out of play ("sticky") KEEP  — the one case the bound exists FOR
+        #   exit 0, cleared                      CLEAR — here
+        #   the record is not a dict             CLEAR — unreachable: the gate only calls this
+        #                                                for a key whose record holds a reason,
+        #                                                and nothing between touches the state.
+        #                                                The `isinstance` is a type guard against
+        #                                                a hand-edited state file, not a path
+        #
+        # **"Cleared on success" was the first wording and it is wrong**, because success splits
+        # two ways and the sticky half deliberately keeps the marker. Said precisely here rather
+        # than left as a sentence a reader has to disbelieve.
+        # Keeping the marker here can never rate-limit a retry, because a successful clear makes
+        # the gate's own first condition false — there is nothing left to retry. All it can do is
+        # land on the NEXT genuine return and skip it.
+        #
+        # Measured by a review of this branch, against two commits and identical both times: out
+        # of play, back, out of play, back again inside one `reemit_after_secs` — a developer
+        # marking a pull request ready, putting it back to draft and marking it ready again
+        # within fifteen minutes — and the second return made no call, said nothing, and left the
+        # store out of play with the record agreeing, while the poller went on offering the key.
+        # That is the state the prune exemption was added to prevent, reached through the rate
+        # limit added to fix something else.
+        #
+        # It bounds the bucket on the happy path as well: `emitted` is persisted, and the prune
+        # in `review_requests` sweeps this prefix — but a mark popped the moment it stops meaning
+        # anything is one the prune never has to see.
+        self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
+        # Said once per return, which is what the `once` mark gives: the mark is cleared the
+        # moment the review is out of play again, so a pull request that goes draft twice is
+        # reported coming back twice. One line, and it asks for nothing — the `review_request`
+        # or `review_rerequested` this same tick is what carries the work.
+        # The out-of-play mark is dropped here, so a pull request that goes draft a second time
+        # is said a second time. `dismissed_request` clears its own mark the same way and for the
+        # same reason: it is a NEW decision about the same request, not a repeat of the old one.
+        for reason in OUT_OF_PLAY_REASONS:
+            self.state["once"].pop(f"review_out_of_play|{key}|{reason}", None)
+        mark = f"review_in_play|{key}"
+        if self.once(mark):
+            emit("review_in_play", key=key, repo=repo, number=pr["number"],
+                 title=pr.get("title"), url=pr.get("url"),
+                 review_desk_id=review_id((self.state["recorded"].get(key) or {}).get("review")),
+                 review=review_desk_link(rd, review_id(
+                     (self.state["recorded"].get(key) or {}).get("review"))))
 
     def liveness(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         live, archived = allele_state(cfg)
@@ -3086,6 +4108,93 @@ class Poller:
         self.pr_states[(repo, number)] = state
         return state
 
+    def pr_diff_digest(self, repo: str, number: int) -> str | None:
+        """A fingerprint of the pull request's OWN diff against its base, or None.
+
+        **This is how "the commits only brought the base branch in" is established without a
+        clone, and the endpoint is the whole trick.** `GET repos/O/R/pulls/N/files` serves the
+        pull request's diff against its MERGE BASE — the three-dot diff, the same one the Files
+        Changed tab draws — so merging `main` into the branch adds commits and leaves every entry
+        in it byte-identical. Nothing has to be checked out and no `git` runs.
+
+        One fingerprint per file, then a fingerprint of those sorted. Two reasons, and the second
+        is why it is not simply a hash of the response:
+
+          * **Order-independent.** GitHub's page order is not specified, and a diff whose files
+            came back in a different order is not a diff that changed.
+          * **Bounded memory.** A patch runs to tens of kilobytes and a diff may hold three
+            thousand files, so holding them all to sort them is tens of megabytes inside a poll
+            tick. Thirty-two bytes a file is not.
+
+        What goes into a file's own fingerprint: `filename`, `previous_filename` (a rename with
+        identical content is still a change to the diff), `status`, and the `patch`. A file with
+        no patch — binary, or over GitHub's per-file limit — falls back to the blob `sha`, which
+        is the content's identity and answers the same question. A file with NEITHER is one this
+        function cannot describe, and it refuses the whole walk rather than fingerprinting around
+        it.
+
+        **Every uncertainty answers None, and None omits the flag.** The caller's own docstring
+        has the argument: an omitted flag moves the head and wakes a session that need not have
+        woken, where a wrongly-asserted one hides a real change of Patrick's from him. So a
+        broken `gh`, a page that is not a list, a diff at GitHub's 3000-file cap and a file with
+        no content identity all answer the same way.
+
+        `diff_stopped` is per tick and install-wide, like `record_stopped`: one `gh` that is
+        failing or rate-limited answers for every request on the page, and asking once per
+        request would be thirty subprocesses per request at a 60-second timeout each.
+        """
+        if (repo, number) in self.pr_diffs:
+            return self.pr_diffs[(repo, number)]
+        digest = None if self.diff_stopped else self.walk_pr_files(repo, number)
+        self.pr_diffs[(repo, number)] = digest
+        return digest
+
+    def walk_pr_files(self, repo: str, number: int) -> str | None:
+        """The walk itself. See `pr_diff_digest`; this is kept apart only to keep the cache
+        and the refusals legible side by side."""
+        marks = []
+        for page in range(1, DIFF_MAX_PAGES + 1):
+            try:
+                files = gh("api", f"repos/{repo}/pulls/{number}/files"
+                                  f"?per_page={DIFF_PAGE}&page={page}")
+            except Exception:
+                # Not raised onward and not logged as a section error: this is an optimisation
+                # whose failure costs a wake, and `review_requests` must go on recording the
+                # page it is holding. One install-wide stop, exactly as a broken `review open`
+                # takes.
+                self.diff_stopped = True
+                return None
+            if files is None:
+                # An empty body, which `gh()` hands back as None. A pull request with no files
+                # at all answers `[]`, so this is a shape rather than an empty diff.
+                return None
+            if not isinstance(files, list):
+                return None
+            for entry in files:
+                if not isinstance(entry, dict):
+                    return None
+                body = entry.get("patch")
+                if not isinstance(body, str):
+                    # No patch: binary, or past GitHub's per-file limit. The blob sha is the
+                    # content's identity and answers the same question; a file with neither is
+                    # one this walk cannot describe at all.
+                    blob = entry.get("sha")
+                    if not isinstance(blob, str) or not blob:
+                        return None
+                    body = f"\x00blob\x00{blob}"
+                marks.append(hashlib.sha256("\x00".join([
+                    str(entry.get("filename") or ""),
+                    str(entry.get("previous_filename") or ""),
+                    str(entry.get("status") or ""),
+                    body,
+                ]).encode("utf-8", "surrogatepass")).hexdigest())
+            if len(files) < DIFF_PAGE:
+                # A short page is the end of the list, which is the only way this walk learns it
+                # saw the whole diff.
+                return hashlib.sha256("".join(sorted(marks)).encode("ascii")).hexdigest()
+        # Thirty full pages: at GitHub's 3000-file cap, with no way to know what is past it.
+        return None
+
     def mark_quiet(self, quiet: bool, cfg: dict) -> None:
         """Count consecutive ticks that said nothing, so "nothing is happening" can be read.
 
@@ -3298,6 +4407,12 @@ class Watcher:
         repo, n = where["repo"], where["number"]
         pr = gh("api", f"repos/{repo}/pulls/{n}")
         head, status = pr["head"]["sha"], ("merged" if pr.get("merged") else pr["state"])
+        # **Draft is not a state, and that is why it needed its own field.** GitHub's `state` is
+        # `open` for a draft, so DEV-962's "converted to draft takes it out of play" is invisible
+        # to `status` and to `PR_CLOSED` — a review worker went on waiting for a sign-off on a
+        # pull request nobody could merge. The REST answer carries `draft`; `gh pr view` does
+        # not, which is why this is read here and `pr_state` still asks for `state` alone.
+        draft = bool(pr.get("draft"))
         first = "pr_head" not in self.state
         since = self.state.get("pr_since") or now_z()
         seen = set(self.state.get("pr_seen", []))
@@ -3352,7 +4467,29 @@ class Watcher:
             # `_common.md` step 3 before it reads the ticket at step 4 — would report itself done
             # on a pull request somebody else closed, before it had read anything at all.
             emit("pr_state", key=self.key, pr=n, previous=None, current=status, first=True)
-        self.state.update(pr_head=head, pr_status=status, pr_since=now_z(), pr_seen=sorted(seen)[-500:])
+        # **Its own `if`, AFTER the chain above and not inside it.** Written between the two
+        # halves of that chain, this block took the `elif` that belonged to `pr_state` — so a
+        # first tick on a pull request that is BOTH closed and a draft emitted `pr_draft` and
+        # swallowed the one piece of history the branch above exists to deliver. That is exactly
+        # the case the paragraph above names: `D reap` prunes a finished key's cursor, a
+        # replacement arms a fresh one, and it gets one tick. Found in review of this branch.
+        # The two questions are independent — a draft can be open, closed or merged — so they
+        # are two chains.
+        if draft != bool(self.state.get("pr_draft")) and (not first or draft):
+            # **Both directions**, which is what makes the return half of DEV-962 item 7 work: a
+            # pull request marked ready again is the thing that brings the review back, and a
+            # worker that only heard the conversion would be a worker that stopped and never
+            # learned it could start.
+            #
+            # **A first tick is suppressed only when it is NOT a draft**, which is the same
+            # exception the branch above makes and for the same reason: a session arming over a
+            # conversion that has ALREADY happened cannot be made to wait for it to happen
+            # again. `watch_stop_reason` will usually stop such a watcher before this tick runs;
+            # this covers the case where the cursor was pruned and a fresh one armed.
+            emit("pr_draft", key=self.key, pr=n, previous=self.state.get("pr_draft"),
+                 current=draft, first=first or None)
+        self.state.update(pr_head=head, pr_status=status, pr_draft=draft, pr_since=now_z(),
+                          pr_seen=sorted(seen)[-500:])
 
 
     def review_desk(self, cfg: dict) -> None:
@@ -3498,8 +4635,8 @@ def full_pass_due(last_full: float, cfg: dict) -> bool:
     return time.time() - last_full >= int(cfg["limits"]["watch_interval_secs"])
 
 
-def watch_stop_reason(key: str, state: dict,
-                      exit_on_done: bool) -> tuple[str | None, str, bool, str] | None:
+def watch_stop_reason(key: str, state: dict, exit_on_done: bool,
+                      drafts_skipped: bool = False) -> tuple[str | None, str, bool, str] | None:
     """Why this watcher should stop, from local files only. `None` means carry on.
 
     Returns `(status, detail, ledger_decided, reason)`. The annotation used to say `tuple[str,
@@ -3593,6 +4730,31 @@ def watch_stop_reason(key: str, state: dict,
         # to do. A worker can now tell the two apart without parsing prose.
         return (status, f"a review whose pull request is {pr_status} — nothing is left to "
                         f"revise, approve or post", False, "pull_request")
+    if key_mode(key, entry) == "review" and drafts_skipped and state.get("pr_draft"):
+        # **DEV-962 item 7, and it is a different stop from the one above.** A draft is
+        # REVERSIBLE: the rounds, the draft and any sign-off are kept, the pull request is marked
+        # out of play in Review Desk, and the review returns on the round it was on when the
+        # author marks it ready. So the worker stops and is discarded, and the poller offers the
+        # key again — where a merge is the end of the work, this is a pause that frees a slot a
+        # draft could otherwise hold for a week.
+        #
+        # **Gated on `github.skip_drafts`**, which is the instance's own statement about whether
+        # a draft is work, read through `skip_drafts()` so that this half and the poller's cannot
+        # disagree about a config that does not carry the key. It is `true` in the shipped
+        # config; an instance that reviews drafts neither takes them out of play nor stops their
+        # workers.
+        #
+        # **The parameter defaults to False and every caller passes the config value**, which is
+        # the direction that cannot do harm: a reader who forgot to pass it keeps watching, where
+        # a default of True would have `cmd_reap` kill a watcher that would not have stopped
+        # itself. Found in review of this branch — `prunable_cursors` and `live_watchers` were
+        # exactly that reader.
+        #
+        # Cursor kept, like the branch above and for the same reason: `pr_draft` lives only here,
+        # so deleting it would make the next relaunch re-derive the conversion over a full
+        # tick's API calls.
+        return (status, "a review whose pull request is a draft — it is out of play until the "
+                        "author marks it ready again", False, "pull_request")
     if status == "done":
         if exit_on_done:
             return status, "ledger status 'done' and --exit-on-done was given", True, "ledger"
@@ -3656,7 +4818,7 @@ def cmd_watch(args) -> None:
         a stop reason on a run whose caller asked for exactly one pass would be a new emission
         on a path that reads as "tick and go".
         """
-        stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
+        stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done, skip_drafts(cfg))
         if not stop:
             return False
         status, why, from_ledger, reason = stop
@@ -3866,6 +5028,26 @@ def cmd_brief(args) -> None:
                          f"review show --review {rid}` BEFORE anything else, and continue from "
                          f"what is there rather than starting again. "
                          f"{review_desk_link(rd, rid) or ''}")
+            moved = entry.get("head_moved_from")
+            if moved:
+                # **DEV-962's fallback, and the line a replacement cannot work out for itself.**
+                # The Dispatcher writes `head_moved_from` on the claim when it is replacing a
+                # session that is gone on a review whose HEAD MOVED — the round did not change,
+                # so this is not a new round and the draft in the record is the draft to update.
+                # Without the line the replacement reads the resume line above, opens on the new
+                # head, and is told by Review Desk that it moved — by which point it has already
+                # decided it is starting a round. `review.md`'s step 1 is written to agree with
+                # this; both have to say it, because a worker reads whichever reached it.
+                extra.append(
+                    f"- **The head moved and the round did not.** This review was already open "
+                    f"on `{moved}` and the author has pushed since; it is still round "
+                    f"{entry.get('round', '(the round the record names)')}, not a new one. You "
+                    f"are **not** starting a round: read the delta from `{moved}` to "
+                    f"`{entry.get('head_sha', 'the current head')}`, update the findings and the "
+                    f"draft blocks that the change touches, and say what moved. Do not rewrite "
+                    f"what the delta does not reach, and do not open a round — `review open` on "
+                    f"the new head moves this one, which the session before you may already "
+                    f"have done.")
     print(f"""{head}
 
 ## Dispatch
@@ -4362,6 +5544,20 @@ def live_watchers() -> list[dict]:
     # leaves the process unattributed and therefore never signalled.
     installed = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
     sole = installed[0].resolve() if len(installed) == 1 else None
+    # Read once for the whole sweep, and an unreadable one reads as "drafts are work", which
+    # keeps every watcher — the safe direction for a function whose answer `cmd_reap` deletes on.
+    #
+    # **It does NOT make `doctor` survive a malformed config, and an earlier version of this
+    # comment claimed it did.** Measured in review of this branch: `cmd_doctor`'s own first line
+    # is an unguarded `load_config()`, so on an instance whose `config.json` will not parse
+    # `doctor` dies with a `JSONDecodeError` before any check runs, while `reap --dry-run` on the
+    # same instance exits 0 and prints cleanly. That is a pre-existing gap in `doctor` rather
+    # than anything this guard can reach, and it is named here so the next reader does not take
+    # this `try` for a protection it is not.
+    try:
+        drafts = skip_drafts(load_config())
+    except Exception:
+        drafts = False
     found = []
     for line in out.stdout.splitlines():
         parts = line.split(None, 2)
@@ -4380,7 +5576,12 @@ def live_watchers() -> list[dict]:
                "script": parsed["script"], "version": script_version(parsed["script"])}
         if mine:
             row["status"] = (ledger_get(parsed["key"]) or {}).get("status")
-            row["stop"] = watch_stop_reason(parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False)
+            # `skip_drafts(cfg)`, not the parameter's default: `cmd_watch` passes the config
+            # value, so reading it any other way here is the "second rule that could disagree
+            # with the first" `prunable_cursors` promises not to be.
+            row["stop"] = watch_stop_reason(
+                parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False,
+                drafts)
         found.append(row)
     return sorted(found, key=lambda r: -(etime_secs(r["etime"]) or 0))
 
@@ -4400,6 +5601,13 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
     """
     if not watch_dir().exists():
         return [], []
+    # Same read and the same fallback as `live_watchers`, and for the stronger reason: this
+    # function's answer is what `cmd_reap` DELETES on. A config it cannot read must not make it
+    # prune more than `cmd_watch` would stop.
+    try:
+        drafts = skip_drafts(load_config())
+    except Exception:
+        drafts = False
     entries = ledger_all()
     prunable, unknown = [], []
     for path in sorted(watch_dir().glob("*.json")):
@@ -4408,7 +5616,7 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
         if key is None:
             unknown.append(path)
             continue
-        stop = watch_stop_reason(key, read_json(path, {}), False)
+        stop = watch_stop_reason(key, read_json(path, {}), False, drafts)
         if stop:
             # `stop[0] or ...`, because the status can now be absent. Every branch that could
             # stop a watcher before DEV-959 was keyed on the status itself, so `stop[0]` was

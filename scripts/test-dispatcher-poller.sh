@@ -404,9 +404,16 @@ elif scenario == "pr_state_rows":
     # is the closed path's narrowed one (DEV-959 as Patrick amended it: a closed pull request
     # Review Desk has never held a review of is still recorded, once).
     asked, opened = [], []
-    m.Poller.record_request = lambda self, rd, key, *a, **k: asked.append(key)
+    # `(action, previous)` since DEV-962: a mock that hands back one value makes the
+    # caller's unpacking a TypeError and takes the whole GitHub section with it.
+    m.Poller.record_request = \
+        lambda self, rd, key, *a, **k: (asked.append(key), (None, None))[1]
     m.Poller.find_request = lambda self, rd, repo, number, every: None
-    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    # The DOCUMENT, not the review: `action` is a sibling of `review` in the answer
+    # since DEV-962, and `record_if_never_reviewed` reads the review out of it.
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (
+        opened.append(key) or {"review": {"id": 77}, "created": True,
+                               "action": "created", "head_moved_from": None})
     p = m.Poller()
     p.tick()
     # One array per line, keyed by name. Printed together, a grep for a key matches whichever
@@ -429,10 +436,14 @@ elif scenario == "closed_held":
     offline(review_nodes=[row(9631, "MERGED"), row(9632, "CLOSED")],
             live={9631: "MERGED", 9632: "CLOSED"})
     opened = []
-    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
     # A dict is `review find` saying "here is the newest round", which is a review that exists.
     m.Poller.find_request = lambda self, rd, repo, number, every: {"id": 5, "head_sha": "x"}
-    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    # The DOCUMENT, not the review: `action` is a sibling of `review` in the answer
+    # since DEV-962, and `record_if_never_reviewed` reads the review out of it.
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (
+        opened.append(key) or {"review": {"id": 77}, "created": True,
+                               "action": "created", "head_moved_from": None})
     p = m.Poller()
     p.tick()
     print(json.dumps({"phase": "opened", "keys": sorted(opened)}))
@@ -453,9 +464,13 @@ elif scenario == "closed_unlookable":
             return "refused"
         setattr(self, flag, True)      # record_stopped or look_stopped
         return None
-    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
     m.Poller.find_request = looked
-    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    # The DOCUMENT, not the review: `action` is a sibling of `review` in the answer
+    # since DEV-962, and `record_if_never_reviewed` reads the review out of it.
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (
+        opened.append(key) or {"review": {"id": 77}, "created": True,
+                               "action": "created", "head_moved_from": None})
     p = m.Poller()
     p.tick()
     print(json.dumps({"phase": "opened", "keys": sorted(opened)}))
@@ -469,9 +484,16 @@ elif scenario == "closed_unreadable":
                 "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
     offline(review_nodes=[row(9611, "MERGED")], live_raises=True)
     asked, opened = [], []
-    m.Poller.record_request = lambda self, rd, key, *a, **k: asked.append(key)
+    # `(action, previous)` since DEV-962: a mock that hands back one value makes the
+    # caller's unpacking a TypeError and takes the whole GitHub section with it.
+    m.Poller.record_request = \
+        lambda self, rd, key, *a, **k: (asked.append(key), (None, None))[1]
     m.Poller.find_request = lambda self, rd, repo, number, every: None
-    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    # The DOCUMENT, not the review: `action` is a sibling of `review` in the answer
+    # since DEV-962, and `record_if_never_reviewed` reads the review out of it.
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (
+        opened.append(key) or {"review": {"id": 77}, "created": True,
+                               "action": "created", "head_moved_from": None})
     p = m.Poller()
     p.tick()
     print(json.dumps({"phase": "recorded", "keys": sorted(asked)}))
@@ -497,7 +519,7 @@ elif scenario == "merged_rerequest":
             return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
         return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
     m.gh = gh_rr
-    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
     p = m.Poller()
     p.tick()
     print(json.dumps({"phase": "one", "keys": sorted(p.state["prs_present"])}))
@@ -527,7 +549,7 @@ elif scenario == "merged_clears":
             return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
         return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
     m.gh = gh_mc
-    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
     p = m.Poller()
     p.tick()
     print(json.dumps({"phase": "one", "keys": sorted(p.state["prs_present"])}))
