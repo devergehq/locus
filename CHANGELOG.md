@@ -48,8 +48,8 @@ refuses to build when they disagree.
   with Review Desk off, absent or older behaves exactly as it did.
 
 - **Every session the dispatcher starts says which allele group it belongs in.** On 12 October
-  2026 one live project held 56 sessions in one flat list, and finding "the review of one
-  pull request" meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,
+  2026 one live project held 56 sessions in one flat list, and finding the review of a given pull
+  request meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,
   built alongside this), and `allele.groups` in the instance config says which group each mode
   goes in: `linear` for the four modes a Linear label triggers, `review` for a review request.
   Defaulted in code, so no instance needs an edit; `init` adds the block on a re-run so a mode
@@ -138,8 +138,8 @@ refuses to build when they disagree.
   merged pull requests.** On 13 October 2026 the session for one real pull request was still
   running hours after that pull request merged, telling Patrick "the draft was never posted" —
   about a round opened after the author pushed that nothing was ever going to post. Four rounds
-  on another are the same shape. Three things were true at once. `watch_stop_reason` was merge-aware on the
-  `done` path only, so a review worker that was anything else — `active` mid-round,
+  on another are the same shape. Three things were true at once. `watch_stop_reason` was merge-aware
+  on the `done` path only, so a review worker that was anything else — `active` mid-round,
   `needs-input`, `stopped` — kept its watcher to the 120-hour ceiling; **a review key now stops
   on a merged or closed pull request whatever its status is**, in the same pass that read the
   merge and after the `pr_state` that tells the worker, and only a review key, because

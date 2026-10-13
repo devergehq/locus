@@ -445,9 +445,9 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
 # ----------------------------------------------------------------------------- session groups
 
 # Which named allele group each mode's sessions land in. On 12 October 2026 one live project
-# held 56 sessions in one flat list, and finding "the review of one pull request" meant reading
-# every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session under a named
-# section of its project instead.
+# held 56 sessions in one flat list, and finding the review of a given pull request meant
+# reading every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session
+# under a named section of its project instead.
 #
 # One group per mode, and nothing else decides it: not the ticket, not its Linear project, not
 # its labels. Four modes share `linear` because what a person is looking for is "the agents
@@ -765,13 +765,19 @@ def canonical_repo(repo: str) -> str:
 
     **`review find` does not normalise its `--repo` and every other call here does, which is
     how the look before the first write came to be dead on half the instances that have one.**
-    Measured against review-desk 82c0a09: `review open --repo Acme-Corp/acme-portal` stores
-    `acme-corp/acme-portal`, `work list --repo Acme-Corp/acme-portal` finds it, and
+    Measured against review-desk 82c0a09 (repository renamed; the fold is the real one):
+    `review open --repo Acme-Corp/acme-portal` stores `acme-corp/acme-portal`,
+    `work list --repo Acme-Corp/acme-portal` finds it, and
     `review find --repo Acme-Corp/acme-portal` answers `reviews: []` — echoing the query back,
     so the mismatch is invisible in the answer. GitHub hands this file `nameWithOwner` as the
-    repository is registered, and `Acme-Corp/acme-portal` is the live instance's own slug, so
-    the look answered "no review here" for every request on it and the blind write it exists to
-    prevent happened anyway.
+    repository is registered, and that spelling was the live instance's own slug, so the look
+    answered "no review here" for every request on it and the blind write it exists to prevent
+    happened anyway.
+
+    **The mixed case in the stand-in is load-bearing, so do not "normalise" it to the
+    `acme/portal` used elsewhere in the tests.** A lower-case single-segment name folds to
+    itself, which would leave this docstring measuring nothing, and `pr_key` would derive
+    `gh-portal-…` instead of the multi-hyphen key shape `reap`'s tests turn on.
 
     `review_desk_repos` has said this for its own callers since DEV-865 — "`DevergeHQ/Locus`
     from a config would answer with an empty list and read as nothing waiting" — and the lesson
@@ -3598,8 +3604,7 @@ def cmd_watch(args) -> None:
     #   * Not ticks. `watch_interval_secs` is 90 in the shipped config and 300 on one live
     #     instance, so a ceiling counted in ticks is a different amount of time on every
     #     instance — and the ticket rules out "cheaper ticks forever" for the same reason it
-    #     has to rule out
-    #     "a ceiling that shortens when you shorten the interval".
+    #     has to rule out "a ceiling that shortens when you shorten the interval".
     #   * Not persisted. Storing the deadline in the cursor would carry it across relaunches, so
     #     one expiry would make the key permanently unwatchable and no operator action short of
     #     deleting state would bring it back. A process ceiling is recoverable by restarting;
@@ -4157,8 +4162,9 @@ def cmd_status(args) -> None:
 
 # Flags of `watch` that consume the next token. Needed because the tokeniser below has to know
 # which bare word is the ledger key: `watch --pr Acme-Corp/acme-portal#9395 ACME-614` is a real
-# command line off this machine, and a walker that skipped only `--instance`'s value would read
-# the repo#number as the key, look it up, find no entry, and report the wrong thing.
+# command line off this machine (repository and key renamed), and a walker that skipped only
+# `--instance`'s value would read the repo#number as the key, look it up, find no entry, and
+# report the wrong thing.
 # `--max-ticks` and `--max-hours` are here because they were added by the same change as this set
 # and were missed: `watch --max-hours 2 ACME-563` parses `2` as the key, which spares a real orphan
 # forever and lists it under a key that does not exist. Any flag added to the `watch` parser that
