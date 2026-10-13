@@ -334,7 +334,7 @@ a long identifier or a URL as text. When a finding needs more than a line, write
 ```markdown
 | | Where | Finding |
 |---|---|---|
-| 🟠 Should | [`app/Http/Actions/Invoices/ProcessInvoiceUpdatesAction.php:212`](…) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw strands the invoice OPEN |
+| 🟠 Should | [`app/Actions/Invoices/ApplyInvoiceUpdatesAction.php:212`](…) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw strands the invoice OPEN |
 ```
 
 **After**:
@@ -345,7 +345,7 @@ a long identifier or a URL as text. When a finding needs more than a line, write
 **in diff** · `Open — needs a decision`
 
 The real correction still runs after the reopen, in
-[`ProcessInvoiceUpdatesAction.php:212`](…). If it throws for a reason the dry run missed, the
+[`ApplyInvoiceUpdatesAction.php:212`](…). If it throws for a reason the dry run missed, the
 invoice is left OPEN — the red path below.
 
 ```mermaid

@@ -509,7 +509,7 @@ text often will not settle it:
 - EX-527's Q4 — the one EX-529's `## Prerequisites` box depends on — reads as blocking the approach — *"stop: this is a live pricing change wearing a
   cleanup label"* — but the next clause is *"needs its own discussion **before it merges**"*,
   and the diff is byte-identical either way: the same three deletions in
-  `config/pricing.cfg`, `PricingPolicy` and `Scheduler`. The answer changes whether to
+  `config/pricing.ts`, `PricingPolicy` and `Scheduler`. The answer changes whether to
   land it, not what to build. The categories collapse whenever a gate changes only the risk of
   a fixed diff — which is most of removal work, and EX-525 is removal work throughout.
 
@@ -1163,9 +1163,9 @@ trusting this paragraph; it was true for v0.1.0.
 ### The gate: "CI green" means these checks, present by name
 
 `gh pr checks <n>` exiting 0 is not evidence of anything and you must never accept it as such.
-On PR #102 it exits **0** with nine passing contexts — `dismiss-stale-approvals`, `gate`,
-`Eject on push`, `AI Review`, `Advance the queue`, `update-linear-status`,
-`approval-freshness` — and not one of them ran a test. The suite was never created, so there
+On PR #102 it exits **0** with nine passing contexts — `stale-approval-sweep`, `merge-gate`,
+`Queue eject`, `AI Review`, `Queue advance`, `update-ticket-status`,
+`approval-age` — and not one of them ran a test. The suite was never created, so there
 was nothing to fail. A draft does the same thing for a different reason: its jobs report
 `skipped`, which satisfies required checks by design.
 
@@ -1304,7 +1304,7 @@ There is a line worth drawing precisely, because EX-527 has both kinds in one ti
   EX-525's decomposition comment records *"The three verification queries in the comments above
   were **not** run: production reads were blocked in this session."* That reads like a fact about
   the world and is a fact about **one session's permissions**. A read-only production MCP exists —
-  read-only enforced beneath the privilege system, with a 1,000-row default and a 30s statement
+  read-only enforced below the connection, with a 1,000-row default and a 30s statement
   timeout — and EX-527's Q2 was answered through it in about 600ms: `ledger_adjustments` 4,218 rows
   all `IMPORTED` and none `APPLIED`, 3,402 `CHARGE` and 816 `REFUND`, and **zero** invoices with a
   non-zero `reconciled_total`. What blocked five worker sessions was each session's permission
