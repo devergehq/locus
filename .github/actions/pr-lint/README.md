@@ -44,6 +44,29 @@ the action reads the description, the diff size and the comments through `gh api
 needs the code under review on the runner. Add a checkout only if you pass `template`, which
 is a path.
 
+### Not linting drafts, if that is what you want
+
+The snippet above lints every pull request, draft or not. This repository does not: it adds
+`ready_for_review` to the `types:` list and one more clause to the job's `if:`, so a draft
+push creates a run whose job reports `skipped` and the lint lands when the pull request is
+offered for review.
+
+```yaml
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+```
+```yaml
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+```
+
+Two things to know before copying it. `github.event.pull_request.draft == false` **alone** is
+silently true on an `issue_comment` or a `workflow_dispatch`, because a missing property and
+`false` both coerce to 0 — so write it as the negative guard above, joined to the rest of your
+`if:` with `&&`, rather than as a bare equality. And a comment on a draft is not gated by it,
+which is deliberate: the working-notes comment is what the description links at, and the
+issues-API payload an `issue_comment` arrives with carries no `draft` field to gate on anyway.
+
+See `.github/workflows/pr-lint.yml` in this repository for the whole thing, comments included.
+
 **Pin a commit SHA, not a branch and not a tag.** A composite action runs arbitrary steps with
 your workflow's token; a tag can be moved and `master` changes under you. A release tag
 (`v0.5.6` or later — the first release that carries this action) is acceptable if your
@@ -59,6 +82,7 @@ Never `@master`.
 | `template` | *(none)* | A markdown file, or a directory of them, that a description here is expected to match. Passed as `--template`. Supplying it is an **assertion**, so drift from it is an **error**; a template the linter discovers on a conventional path is an inference, and drift is a **warning**. It is a path, so the repository must be checked out first. |
 | `exempt-sections` | *(none)* | Headings whose content the budget does not charge for, one per line or comma-separated. Each becomes a `--exempt-section` flag, **adding** to the linter's defaults (`related`, `reference`, `link`, `security impact`, `security`, `deployment`, `rollback`). |
 | `github-token` | `${{ github.token }}` | The token `gh` reads the pull request with. Override it to read a pull request in another repository. |
+| `pr` | *(none)* | The number of the pull request to lint. Unnecessary on `pull_request` and `issue_comment`, which carry the number themselves. It exists for events that carry no pull request at all — `workflow_dispatch` — because the action hard-exits (2) on an event with no number. It takes precedence over the event when both are present. |
 
 ```yaml
       - uses: devergehq/locus/.github/actions/pr-lint@8b04f65fe6a38e07f3924f7c1a465b4123a1631a

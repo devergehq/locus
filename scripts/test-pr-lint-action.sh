@@ -148,6 +148,10 @@ stub 0 "  PASS" ""
 PRNUM="" ; export PRNUM
 ok "an event with no PR number cannot run"            "$(run)" 2
 ok "the missing PR number is named"                   "$(summary 'no pull request number')" yes
+# The only event that reaches this guard legitimately is `workflow_dispatch`, which carries no
+# pull request at all, and the way out of it is the action's `pr` input. A guard that is loud
+# without naming the fix sends the reader to the source, so the message has to say it.
+ok "the pr input is named as the way out"             "$(summary "pr input")" yes
 unset PRNUM
 
 TOKEN="" ; export TOKEN

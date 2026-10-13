@@ -47,12 +47,91 @@ name: CI
 # (the pin landed after the last release tag), so that is a latent failure on
 # the next `v*` tag rather than a known-good pattern to copy. See DEV-611.
 #
+# WHEN THIS RUNS, and it is not "every push". A draft pull request runs
+# NOTHING: every job below is gated on the pull request not being a draft, so a
+# draft push creates a run whose jobs all report `skipped` and are never
+# allocated a runner. Marking the pull request ready, and every push after
+# that, runs the lot.
+#
+# "Never allocated a runner" is the claim to make, and NOT "bills no minutes",
+# because the second one is not measurable from outside. The run timing
+# endpoint's `billable` reads `total_ms: 0` on this repository even for a run
+# that spent three and a half minutes on a macOS runner -- measured on runs
+# 38329480206 and 38329384224, which report the same 0 -- so a check built on
+# it would pass on a repository where this gate had been deleted. What does
+# separate them is the job's `conclusion`, plus `completed_at` landing at or
+# before `started_at` on a skipped job: the two timestamps are bookkeeping
+# rather than a measurement, because nothing ran between them. This
+# is DEV-961, and the number behind it is Review Desk's rather than this repo's:
+# about 146 pushes across 17 branches over 11 and 12 October 2026, about 13
+# billed minutes each, which took the organisation's 3,000 monthly minutes by
+# the 13th. Locus is public and its minutes are free, so the saving here is not
+# money -- it is one rule across all three repositories, and dozens of queued
+# runs nobody reads not being queued.
+#
+# `push: branches: [master]` is deliberately ABSENT. A merge to `master` is the
+# commit the ready pull request's own run already tested, so running it again
+# tests nothing new. Two consequences to know about, neither of them a surprise
+# at the time:
+#
+#   * There is no longer a run on `master` itself, so a check cannot be read off
+#     the default branch. Read it off the pull request that produced the commit.
+#   * NOTHING WRITES A `master`-SCOPED CACHE ANY MORE. Actions cache scoping
+#     lets a pull request restore from the default branch's caches but keeps its
+#     own scoped to its own ref, so `master`'s entries were the shared warm base
+#     and were refreshed by the run this trigger removal deletes. They are now
+#     frozen at the last one written before this change: every pull request
+#     still restores them, and then rebuilds whatever has moved since. That is
+#     slower, not more expensive -- this repository's minutes are free -- and
+#     the fix if it ever matters is a scheduled or hand-started warming run.
+#     Deliberately not added: a job whose only purpose is to keep a cache warm
+#     is a job that bills on a schedule to save time nobody is waiting for.
+#
+# `reopened` is in the `types:` list because naming ANY type replaces the
+# default set (`opened`, `synchronize`, `reopened`) rather than adding to it.
+# Dropping it would mean a pull request closed and reopened ran nothing.
+#
+# `converted_to_draft` is the one type here that exists to make a run STOP, and
+# it is the only way to stop one. Taking a ready pull request back to draft
+# fires no other event, so without this the run from the last push keeps going
+# on work somebody has just said is not ready -- the exact minutes this ticket
+# is about, spent after the decision not to spend them. With it, the conversion
+# fires a run of its own whose every job skips on the gate below, and the
+# concurrency group does the work: both runs key on the same `github.ref`
+# (`refs/pull/N/merge`), so starting the second cancels the first.
+#
+# It only stops a run. It cannot start one, because `draft == false` is false on
+# the event by definition -- which is why it is safe to add to a list whose
+# whole purpose is deciding what runs.
+#
+# `workflow_dispatch` is the escape hatch for a branch with no pull request,
+# and it works BEFORE this is on the default branch. That is measured, against
+# the expectation: GitHub's docs are read as requiring the configuration on the
+# default branch, and on the strength of that this was written off as
+# untestable until merge. `gh workflow run ci.yml --ref <branch>` was accepted
+# anyway and ran all four jobs (run 38329505003), from a branch whose `master`
+# had no `workflow_dispatch` at all. What was NOT checked is the Actions-tab
+# dropdown, which may well need the default branch; the API and the CLI do not.
+#
 # None of these block a merge until they are marked as required status checks
 # in the branch-protection rule for `master` -- a repo setting, not a file.
 # Per the doctrine above, do not mark a check required until it is green.
+# A skipped job satisfies a required check by design, so the draft gate is safe
+# to add before any such rule exists -- but that is true of `rustfmt` and
+# `clippy` and NOT of the two `test` contexts, and whoever fills in that rule
+# needs the difference. A skipped matrix job is never expanded, so on a draft
+# the only test context that exists is the literal `test (${{ matrix.os }})`
+# (measured on commit b78eaf6). A rule requiring `test (ubuntu-latest)` would
+# find it ABSENT on a draft, not skipped, and a required check that never
+# reports leaves the pull request waiting rather than passing. That is the
+# correct outcome for a draft -- it cannot merge either way -- but it looks like
+# a stuck check rather than a deliberate one. If it ever needs to look
+# deliberate, the gate moves off the job and onto its steps, at the cost of
+# allocating a runner to do nothing.
 #
-# The four contexts this workflow emits, for whoever fills in that rule. A
-# matrix job reports one check per combination, so there is NO context named
+# The four contexts this workflow emits WHEN IT RUNS, for whoever fills in that
+# rule -- a draft emits the three named in the paragraph above instead. A matrix
+# job that runs reports one check per combination, so there is NO context named
 # bare `test` and requiring one would never be satisfied:
 #
 #     rustfmt
@@ -62,22 +141,32 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches: [master]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded PR runs, but never a master run. Cancelling on
-  # `push: master` would leave that commit untested -- and once these are
-  # marked required, a cancelled run reports as failed rather than skipped.
+  # Cancel superseded PR runs, but never a hand-started one. A
+  # `workflow_dispatch` is somebody waiting on an answer about a specific ref;
+  # cancelling it because a pull request on the same ref pushed would answer a
+  # question nobody asked. The condition read `== 'pull_request'` when
+  # `push: master` was still a trigger, for the same reason in the other
+  # direction: a cancelled run reports as failed rather than skipped once these
+  # are marked required, and that would have left a merge commit looking broken.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   rustfmt:
     name: rustfmt
+    # Draft pull requests run nothing; see "WHEN THIS RUNS" above. Written as a
+    # negative guard because `github.event.pull_request.draft == false` ALONE is
+    # silently true on every non-pull-request event -- a missing property and
+    # `false` both coerce to 0 -- so it would pass by accident rather than by
+    # intent on a `workflow_dispatch`.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -94,6 +183,7 @@ jobs:
 
   clippy:
     name: clippy
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -115,6 +205,15 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    # One job-level gate covers both matrix legs, and a skipped matrix job does
+    # NOT report one check per combination the way a run one does. Measured on
+    # commit b78eaf6: a draft's check runs are `rustfmt`, `clippy` and one
+    # unexpanded `test (${{ matrix.os }})`. The matrix is never expanded,
+    # because expansion happens on the way to allocating runners and this job
+    # never gets there. So on a draft the contexts `test (ubuntu-latest)` and
+    # `test (macos-14)` are ABSENT rather than skipped -- see the required-check
+    # paragraph in the header, which is where that distinction bites.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

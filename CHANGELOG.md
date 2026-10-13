@@ -404,6 +404,68 @@ refuses to build when they disagree.
 
 ### Changed
 
+- **CI runs once a pull request is ready, not on every push to every draft.** Both check
+  workflows now trigger on `pull_request: [opened, reopened, synchronize, ready_for_review]`
+  plus `workflow_dispatch`, and every job is gated on
+  `if: github.event_name != 'pull_request' || github.event.pull_request.draft == false`. So a
+  draft push creates a run whose jobs all report `skipped` and bills no minutes; marking the
+  pull request ready, and every push after that, runs the lot. `push: branches: [master]` is
+  gone from `ci.yml`, because a merge is the commit the ready pull request's run already
+  tested. Two consequences follow. A check can no longer be read off `master` itself, only off
+  the pull request that produced the commit. And **nothing writes a `master`-scoped cache any
+  more**: Actions cache scoping lets a pull request restore the default branch's entries but
+  keeps its own scoped to its own ref, so `master`'s were the shared warm base and the removed
+  run was what refreshed them. They are now frozen at the last one written before this change —
+  every pull request still restores them and then rebuilds whatever has moved since, which is
+  slower rather than more expensive here, and no warming job has been added for it. DEV-961,
+  and the number behind
+  it is Review Desk's rather than this repository's: about 146 pushes across 17 branches over
+  11 and 12 October 2026, about 13 billed minutes each, which took the organisation's 3,000
+  monthly minutes by the 13th. Locus is public, so its minutes were free and nothing here was
+  costing anything; the change lands for one rule across all three repositories, and so that
+  dozens of runs nobody reads stop being queued. The gate is written as a negative guard
+  rather than as `draft == false` alone, which is silently TRUE on every non-pull-request
+  event — a missing property and `false` both coerce to 0 — and so would have passed a
+  `workflow_dispatch` by accident rather than by intent. `reopened` is named because listing
+  any type replaces the default set instead of adding to it. Concurrency groups are unchanged
+  and still cancel superseded runs. No branch on this repository has protection rules, so
+  nothing is blocked either way — and one wrinkle is recorded in `ci.yml` for whoever writes
+  such a rule later. A skipped job satisfies a required check by design, but a skipped MATRIX
+  job is never expanded: measured on commit `b78eaf6`, a draft's check runs are `rustfmt`,
+  `clippy` and one literal `test (${{ matrix.os }})`, so the contexts `test (ubuntu-latest)`
+  and `test (macos-14)` are **absent** on a draft rather than skipped. A rule requiring them
+  would leave a draft waiting rather than passing, which is the right outcome for something
+  that cannot merge and looks like a stuck check rather than a deliberate one.
+- **Converting a ready pull request back to draft now stops the run in flight.**
+  `converted_to_draft` is in both check workflows' `types:` and is the only type there that
+  exists to make a run STOP rather than start — taking a pull request back to draft fires no
+  other event, so without it the run from the last push kept going on work somebody had just
+  said was not ready, which is this ticket's own waste spent after the decision not to spend
+  it. With it the conversion fires a run whose every job skips on the gate, and the
+  concurrency group does the rest: both runs key on the same group, so starting the second
+  cancels the first. It can never start a run, because `draft == false` is false on that event
+  by definition. Measured on throwaway PR #93, both runs on head `d57cd1e`: run 38331308926
+  was created at 01:16:06Z and run 38331282602 went to `cancelled`, cutting `test (macos-14)`
+  at 1m30s against the 3m27s it takes to finish and `test (ubuntu-latest)` at 1m31s against
+  2m44s — about three minutes of runner time on one conversion. Raised by the session doing
+  this ticket on `devergehq/review-desk`, which owns the trigger the three repositories share.
+- **`pr-lint.yml` keeps `edited` and gains a manual trigger that takes a pull request
+  number.** `edited` is this repository's one addition to the four triggers the three
+  repositories settled on, and it is load-bearing: a description is edited in the web UI with
+  no commit, so without it the check reports on a description that no longer exists. The
+  `issue_comment` trigger is NOT draft-gated, deliberately — the working-notes comment is what
+  the description links at, and the issues-API payload that event arrives with carries no
+  `draft` field to gate on. The manual trigger needs the number because the action hard-exits
+  on an event carrying none, so `.github/actions/pr-lint` gains an optional **`pr` input**
+  that takes precedence over the event when set. Every existing caller is unaffected: it
+  defaults to empty and the event is read exactly as before.
+- **`implement.md` step 7 runs the suite locally instead of waiting on a draft's checks.** It
+  said `gh pr checks <n> --watch` at a point in the pass where the pull request is still a
+  draft, which under the rule above returns exit 0 on a run where every job was skipped — a
+  green that means "nothing ran". It now runs the full local set there and reads GitHub's
+  checks in step 8, after `gh pr ready` has fired `ready_for_review`. `stack.v2.md` needed no
+  change: its named-check gate already runs after the ready.
+
 - **`review-craft` fits GitHub's column.** A body renders about 760px wide, and a
   table that can't fit breaks its words between letters. `house-style.md` gains "Fit
   GitHub's column": cells hold short scannable things only, and a finding that needs

@@ -52,7 +52,16 @@ open PR. If a bump is needed, land it on its own, on an empty PR queue.
 
 ## CI
 
-Every pull request runs `.github/workflows/ci.yml`:
+**A draft pull request runs nothing — every job reports `skipped` and no runner is allocated.**
+**Marking it ready, and every push after that, runs every check; a merge to `master` runs
+nothing, because the ready pull request's own run already tested that commit.**
+
+Converting a ready pull request back to draft **stops the run in flight** — the conversion
+fires a run whose jobs all skip, and that cancels the one still going. Both check workflows
+can also be started by hand from the Actions tab: `CI` on any branch, `PR lint` against a
+pull request number, since it lints a description rather than a tree.
+
+A ready pull request runs `.github/workflows/ci.yml`:
 
 | Check | Runs on |
 | --- | --- |
@@ -63,6 +72,20 @@ Every pull request runs `.github/workflows/ci.yml`:
 All three must pass. `clippy` runs with `-D warnings`, so a new warning fails
 the build rather than scrolling past — the tree is at zero warnings and the
 point of the check is to keep it there.
+
+Open a pull request as a draft while you are still pushing to it and run the
+suite locally, which is the same set the runner executes:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+for f in scripts/test-*.sh; do sh "$f"; done
+```
+
+Mark it ready when you want GitHub's answer. A draft's skipped jobs are not a
+failure and not a pass; they are the check declining to run on work that is not
+being offered yet.
 
 "Must pass" is about the code, not about the merge button. A workflow cannot
 block a merge by itself; that takes marking the check as required in the
