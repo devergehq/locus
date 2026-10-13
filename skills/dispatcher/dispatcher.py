@@ -5547,13 +5547,14 @@ def live_watchers() -> list[dict]:
     # Read once for the whole sweep, and an unreadable one reads as "drafts are work", which
     # keeps every watcher — the safe direction for a function whose answer `cmd_reap` deletes on.
     #
-    # **It does NOT make `doctor` survive a malformed config, and an earlier version of this
-    # comment claimed it did.** Measured in review of this branch: `cmd_doctor`'s own first line
-    # is an unguarded `load_config()`, so on an instance whose `config.json` will not parse
-    # `doctor` dies with a `JSONDecodeError` before any check runs, while `reap --dry-run` on the
-    # same instance exits 0 and prints cleanly. That is a pre-existing gap in `doctor` rather
-    # than anything this guard can reach, and it is named here so the next reader does not take
-    # this `try` for a protection it is not.
+    # **It is not what makes `doctor` survive a malformed config, and an earlier version of this
+    # comment claimed it was.** `doctor` reads the config through `config_report` and reports a
+    # file it cannot parse as its first finding (DEV-979); until that landed, `cmd_doctor`'s own
+    # first line was an unguarded `load_config()` and it died with a `JSONDecodeError` before any
+    # check ran, while `reap --dry-run` on the same instance exited 0 and printed cleanly. Both
+    # guards are still needed and they answer different questions: this one decides what `reap`
+    # may DELETE and so fails safe by keeping every watcher, and `config_report` decides what
+    # `doctor` says and so names the fault instead of defaulting past it.
     try:
         drafts = skip_drafts(load_config())
     except Exception:
@@ -5719,16 +5720,106 @@ def review_desk_dashboard(rd: dict) -> str:
         return f"no dashboard at {url} ({type(exc).__name__}) — sign-off needs `review-desk serve`"
 
 
-def cmd_doctor(args) -> None:
-    cfg = load_config()
-    checks = []
+# Three states, because a check that did not run is neither a pass nor a failure. Collapsing
+# "not run" into either one is the whole of what this marker exists to prevent: `SKILL.md`'s
+# start-up step says "anything ✗: tell your principal and stop", so a skipped check printed as ✓
+# would read as an answer nobody gave.
+CHECK_MARK = {True: "✓", False: "✗", None: "–"}
 
-    def check(name, fn):
+
+def config_report(slug: str | None) -> tuple[Path | None, dict, tuple[str, str] | None]:
+    """The instance, its config, and one line naming the fault when either could not be read.
+
+    `doctor` reads the config through this and never through `load_config`, because `doctor` is
+    the command you run when an instance is broken (DEV-979). A `config.json` that is missing,
+    unreadable or unparseable is a FINDING carrying the path and the reason; before this it was a
+    traceback out of the first line of the one command meant to diagnose it, while
+    `reap --dry-run` on the same instance exited clean.
+
+    This is deliberately NOT shared with the guards in `live_watchers` and `prunable_cursors`.
+    Those exist so that a config `reap` cannot read makes it prune LESS, and their answer is
+    `drafts = False`; this one exists to report, and its answer is a sentence. One helper serving
+    both would tie a deleter's safe default to a diagnostician's output, and the next edit to
+    either would have to be right for both.
+
+    Returns the resolved instance, `None` when even that failed — a stronger fault than an
+    unreadable config, because it leaves `runtime()` and the ledger unaddressable as well — the
+    config, `{}` on any fault, and the fault as (short reason, full finding).
+
+    Two strings and not one, because they are read in two places and a path belongs in only one
+    of them. The full finding is printed once, at the top, and carries the path and the position.
+    The short reason goes on each of the eleven checks the fault disables, where the same absolute
+    path repeated eleven times is a wall an operator has to read past to find the checks that did
+    run.
+    """
+    try:
+        root = resolve_instance(slug)
+    except SystemExit as exc:
+        # Reported as `resolve_instance` wrote it rather than summarised: it already names which
+        # of the three ways it failed and, for a directory with no `config.json`, the `init` line
+        # that fixes it. That is the message this audience wants.
+        return None, {}, ("the instance did not resolve", str(exc))
+    path = root / "config.json"
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        # Permissions, a dangling symlink, a directory in its place. `strerror` and not `str(exc)`
+        # so the line reads as a sentence, with a fallback for the errors that carry neither.
+        return root, {}, ("config.json cannot be read", f"{path} cannot be read: {exc.strerror or exc}")
+    try:
+        cfg = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # The position, not only the message: `Expecting ',' delimiter` on its own sends an
+        # operator hunting through a file they have just been told they cannot parse.
+        return root, {}, ("config.json will not parse",
+                          f"{path} will not parse: {exc.msg} (line {exc.lineno} column {exc.colno})")
+    if not isinstance(cfg, dict):
+        # A fault, and for the same reason as the two above rather than out of tidiness: every
+        # check below is written against a mapping, so a list here would reach ten different
+        # `.get` calls and report ten crosses for one typo, with no line saying which file.
+        return root, {}, (f"config.json is a JSON {type(cfg).__name__}, not an object",
+                          f"{path} holds a JSON {type(cfg).__name__}, not an object")
+    return root, cfg, None
+
+
+def cmd_doctor(args) -> None:
+    global _instance
+    root, cfg, fault = config_report(getattr(args, "instance", None) or args.root_instance)
+    if root is not None:
+        # Set here and not in `main`, which resolves for every other command before dispatching:
+        # `doctor` is the one command that has to survive the resolution failing. Everything
+        # downstream — `runtime()`, `ledger_dir()`, `watch_dir()` — reads this global.
+        _instance = root
+    why, finding = fault if fault else ("", "")
+    checks: list[tuple[bool | None, str, str]] = []
+    if fault:
+        # First, ahead of every check it disables, because an operator reading a column of
+        # crosses should not have to work out which one caused the rest.
+        checks.append((False, "config", finding))
+
+    def check(name, fn, needs: str | None = "config"):
+        """Run one check, or say that it did not run, what it needed and what was wrong.
+
+        `needs` is gated here rather than inside each check for a reason that is not style:
+        `resolve_instance` raises `SystemExit`, which is a `BaseException` and so passes straight
+        through the `except Exception` below. An instance-dependent check run against an instance
+        that did not resolve would kill `doctor` exactly the way the unguarded `load_config` did.
+
+        `instance` is the weaker requirement of the two, and the checks that carry it mean it:
+        `watchers` and `cursors` read the runtime directory and already tolerate a config they
+        cannot parse, so a config fault must not silence them.
+        """
+        if (needs == "config" and fault) or (needs == "instance" and root is None):
+            checks.append((None, name, f"skipped — {why}"))
+            return
         try:
             checks.append((True, name, fn() or "ok"))
         except Exception as exc:
             checks.append((False, name, str(exc)[:200]))
 
+    # `needs` on every call, and spelled out even where it is the default: the three values are
+    # the difference between a check that was skipped and a check that silently passed, and a
+    # reader comparing this list against the output needs to see which is which.
     check("linear auth", lambda: linear(cfg, "{ viewer { name email } }")["viewer"]["email"])
 
     def labels():
@@ -5744,9 +5835,10 @@ def cmd_doctor(args) -> None:
         return f"{len(wanted)} labels in group"
 
     check("linear labels", labels)
-    check("gh auth", lambda: gh("api", "user")["login"])
+    check("gh auth", lambda: gh("api", "user")["login"], needs=None)
     check("allele state", lambda: f"{len(allele_state(cfg)[0])} sessions")
-    check("locus", lambda: subprocess.run(["locus", "--version"], capture_output=True, text=True).stdout.strip())
+    check("locus", lambda: subprocess.run(["locus", "--version"], capture_output=True, text=True).stdout.strip(),
+          needs=None)
 
     def runtime_writable():
         r = runtime()
@@ -5942,8 +6034,8 @@ def cmd_doctor(args) -> None:
             said.append(f"the draft interval is capped at watch_interval_secs {watch}s")
         return " · ".join(said)
 
-    check("watchers", watchers)
-    check("watch cursors", cursors)
+    check("watchers", watchers, needs="instance")
+    check("watch cursors", cursors, needs="instance")
     # Order matters only for the reader: `skills/dispatcher/SKILL.md` names these as the third
     # and the fourth check, so swapping them makes its prose wrong rather than its logic.
     check("review desk", review_desk_check)
@@ -5951,12 +6043,13 @@ def cmd_doctor(args) -> None:
     check("allele groups", groups_check)
     check("intervals", intervals_check)
     check("production mcp", production_mcp)
-    check("runtime writable", runtime_writable)
-    check("code root", lambda: str(CODE_DIR))
-    check("instance root", lambda: str(instance()))
-    check("worker briefs", lambda: f"{len(list((CODE_DIR / 'workers').glob('*.md')))} briefs in {CODE_DIR / 'workers'}")
+    check("runtime writable", runtime_writable, needs="instance")
+    check("code root", lambda: str(CODE_DIR), needs=None)
+    check("instance root", lambda: str(instance()), needs="instance")
+    check("worker briefs", lambda: f"{len(list((CODE_DIR / 'workers').glob('*.md')))} briefs in {CODE_DIR / 'workers'}",
+          needs=None)
     for ok, name, detail in checks:
-        print(f"{'✓' if ok else '✗'} {name}: {detail}")
+        print(f"{CHECK_MARK[ok]} {name}: {detail}")
     if rows:
         print(f"\n{'PID':<8} {'KEY':<22} {'AGE':>8} {'VER':<7} {'LEDGER':<12} WATCHER")
         for w in rows:
@@ -5967,7 +6060,11 @@ def cmd_doctor(args) -> None:
             reader = f" --as {w['as']}" if w["as"] else ""
             print(f"{w['pid']:<8} {w['key'] + reader:<22} {w['age']:>8} {w['version'] or '?':<7} "
                   f"{(w['status'] or '?') if w['mine'] else '?':<12} {note}")
-    sys.exit(0 if all(ok for ok, *_ in checks) else 1)
+    # `is not False`, so a check that did not run does not fail the run by itself. It cannot be
+    # the only reason a run fails anyway — a skip exists only when the fault above it is already a
+    # cross — and writing it this way keeps the two states apart instead of collapsing "not run"
+    # into "failed". 1 and never 2: loud, never blocking, and nothing in a hook path may block.
+    sys.exit(0 if all(ok is not False for ok, *_ in checks) else 1)
 
 
 # --------------------------------------------------------------------------- init
@@ -6319,19 +6416,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.cmd == "ledger" and args.action in ("get", "put", "children") and not args.key:
         parser.error("ledger get/put/children need a KEY")
-    # `doctor` resolves lazily: it is the command you run to find out why an instance will not
-    # resolve, so exiting here would make it useless in exactly that case.
+    # `doctor` resolves its own instance, through `config_report`, and reports what went wrong as
+    # its first finding: it is the command you run to find out why an instance will not resolve,
+    # so exiting here would make it useless in exactly that case. It used to be handled with a
+    # `try` around this line that printed two checks and stopped; `doctor` now carries on with
+    # every check that needs neither the instance nor the config (DEV-979).
     if args.cmd not in ("init", "doctor"):
         global _instance
         _instance = resolve_instance(getattr(args, "instance", None) or args.root_instance)
-    elif args.cmd == "doctor":
-        try:
-            globals()["_instance"] = resolve_instance(getattr(args, "instance", None) or args.root_instance)
-        except SystemExit as exc:
-            print(f"✗ instance: {exc}")
-            print(f"✓ code root: {CODE_DIR}")
-            print(f"  worker briefs: {len(list((CODE_DIR / 'workers').glob('*.md')))} in {CODE_DIR / 'workers'}")
-            raise SystemExit(1) from None
     args.fn(args)
 
 

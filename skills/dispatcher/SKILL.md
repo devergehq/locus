@@ -99,8 +99,15 @@ does not subdivide per mode, per ticket or per dispatch — and a brief whose li
 
 ## Start-up
 
-1. `D doctor`. Anything ✗: tell your principal and stop. Two of its checks are about processes
-   rather than config: **`watchers`** lists every `watch` process on the machine with its key, age
+1. `D doctor`. Anything ✗: tell your principal and stop, and treat a **`–`** the same way: it
+   is a third answer, and it means the check never ran. `doctor` reads the config inside a
+   guard, so a `config.json` that is missing, unreadable or will not parse is its own first ✗ —
+   carrying the path and the parse error — and every check needing the config is marked `–` with
+   that reason rather than crossed or passed. The checks needing neither it nor the instance
+   still run, so the report is about your instance even when the file cannot be read, and the
+   fault above them is the one thing to fix.
+   Two of its checks are about processes rather than config:
+   **`watchers`** lists every `watch` process on the machine with its key, age
    and ledger status **and the plugin version each one is running** — an orphan keeps executing the
    install it was launched from, so two versions at once is normal after an upgrade and worth
    seeing — and fails on any whose key is finished with it. **`watch cursors`** reports stale
