@@ -584,6 +584,13 @@ def find_review(argv):
     if mode == "notobject":
         print("[]")
         raise SystemExit(0)
+    if mode == "badround":
+        # A non-empty `reviews` whose newest entry is not an object. Modelled because DEV-959's
+        # recording carve-out reads a clean `None` from this command as "the store holds no
+        # review of this pull request" and WRITES one -- so a malformed round falling through to
+        # `None` would be a `review open` against a pull request that already has a review.
+        print(json.dumps({"pr": 0, "repo": "x", "reviews": ["not an object"]}))
+        raise SystemExit(0)
     repo, pr = opt(argv, "--repo"), opt(argv, "--pr")
     held = opened().get("%s#%s" % (repo, pr))
     rounds = []
@@ -676,6 +683,20 @@ case "$*" in
     # otherwise. Empty is the default on purpose: every assertion in this file that predates
     # DEV-945 was written against a dispatcher whose GitHub source said nothing, and a page of
     # rows appearing under them would change what they are testing.
+    #
+    # **The query must ask for each row's state (DEV-959), and this refuses one that does not.**
+    # Every stand-in for this search in this repo returns rows with NO `state` key, and the
+    # poller reads a missing one as open -- so dropping the field from `REVIEWS_Q` in a bad merge
+    # would revert DEV-959 with the whole suite still green. Taught to refuse rather than
+    # asserted elsewhere, because that is what the `pr view` arm below had to learn the hard way:
+    # "the stand-in `gh` answered the shape I had assumed; the real run is what caught it".
+    case "$*" in
+      *"query=\$q: String!"*|*PullRequest*)
+        case "$*" in
+          *"isDraft state headRefOid"*) : ;;
+          *) echo 'stand-in gh: REVIEWS_Q does not ask for state (DEV-959)' >&2; exit 1 ;;
+        esac ;;
+    esac
     cat "$RDWORK/gh.search" 2>/dev/null || echo '{"data":{"search":{"issueCount":0,"nodes":[]}}}'
     exit 0 ;;
   "pr view "*)
@@ -1765,6 +1786,67 @@ rc=$(run "$disp" poll 1)
 ok "a cursor that is not an object raises nothing"     "$(count '"event": "error"')" 0
 ok "  and is read as a watcher nobody is using"        "$(count '"event": "review_desk_resume"')" 1
 ok "  and the tick exits clean"                        "$rc" 0
+printf '\n  DEV-959: a watcher shut by the merge under a MID-ROUND worker\n'
+# The hole DEV-959's own fix opens, and it is DEV-934's bug reached through the fix's door.
+# `watch_stop_reason` now ends a review watcher on a merge at ANY status, so an `active` worker
+# mid-round has shut eyes too -- and `cannot_be_told`'s guard tested for `done`, which was the
+# only status the old stop rule could produce. The cursor saying closed is unambiguous evidence:
+# only `watch_stop_reason` can have left it, and nothing will write that file again.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "an active key whose PR merged is not listening" "$(count '"event": "review_desk_resume"')" 1
+ok "  and the event still names the session"        "$(says '"session_id": "live-9"')" yes
+ok "  with the status it actually holds"            "$(says '"ledger_status": "active"')" yes
+ok "  and the tick exits clean"                     "$rc" 0
+no_sessions
+# `needs-input` too -- a worker parked on a question has armed, and a merge shuts its eyes the
+# same way. The statuses that may be in this position are exactly ALIVE minus `claimed`.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=needs-input repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "needs-input with a merged PR is not listening"  "$(count '"event": "review_desk_resume"')" 1
+no_sessions
+# An ABSENT cursor stays scoped to `done`, and widening it was a blocker this harness caught.
+# `_common.md` step 2 writes `active` and step 3 arms the watcher, so for those few seconds an
+# absent cursor is a watcher that has YET TO START -- and reading it as gone dispatches a
+# replacement beside a session about to listen. `done` has no such gap: a worker reports it only
+# after a full pass.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "an active key with NO cursor keeps the item"    "$(count review_desk)" 0
+no_sessions
+# And a `claimed` key is never read as deaf whatever its cursor says: the Dispatcher writes that
+# status before `allele_sessions_create`, so there is no session and nothing has armed.
+instance '{"mode":"auto"}'
+work_doc nits_to_ticket 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=claimed repo=acme/portal number=418 session_id=live-9 --by test
+no_sessions
+session live-9
+echo '{"pr_status":"merged","pr":{"repo":"acme/portal","number":418}}' \
+  > "$inst/runtime/watch/gh-portal-418.json"
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a claimed key is never read as deaf"            "$(count review_desk)" 0
+no_sessions
+
 # **And no other kind gets the bypass — on an OPEN pull request, which is the whole point of
 # this fixture.** The first version of this pair said MERGED, where a `draft_approved` that took
 # the bypass is dropped a few lines later by the merge exemption anyway: the assertion read 0
@@ -1847,6 +1929,532 @@ ok "  and the nits row names its own"                "$(grep -c 'exactly as \*\*
 ok "  and a null ticket blocks the filing, not the session" "$(grep -c 'file nothing until they answer' "$worker_md")" 1
 ok "  a merged pull request does not cancel the ticket"  "$(grep -c 'merged pull request does not cancel' "$worker_md")" 1
 ok "SKILL.md names the fifth kind"                     "$(grep -c 'fifth kind is .nits_to_ticket' "$skill_md")" 1
+
+printf '\n  DEV-959: what the briefs tell a worker whose pull request has gone\n'
+# Prose, and asserted here for the reason every other prose check in this file is: a behaviour
+# the code gets right and the brief contradicts is a behaviour no worker performs. The reader is
+# an agent, and the brief is the interface.
+common_md="$root/skills/dispatcher/workers/_common.md"
+ok "review.md has a section for the merge"             "$(grep -c '^## When the pull request merges or closes$' "$worker_md")" 1
+ok "  and the pr_state row sends the worker to it"     "$(grep -c 'your work is over. Say one line and end' "$worker_md")" 1
+ok "  it names the round in the line it asks for"       "$(grep -c 'the round you were on' "$worker_md")" 1
+ok "  and whether the draft was posted"                "$(grep -c 'whether your draft was posted' "$worker_md")" 1
+ok "  it gives a worked example of that line"          "$(grep -c 'PR merged — round 2 draft was waiting' "$worker_md")" 1
+ok "  it forbids advancing the review, not writing"    "$(grep -c 'Write nothing more to Review Desk that would advance' "$worker_md")" 1
+ok "  and still requires the posting to be recorded"   "$(grep -c 'draft posted --github-review <id>' "$worker_md")" 1
+ok "  merged writes the terminal ledger status"        "$(grep -c 'status=merged --by worker' "$worker_md")" 1
+ok "  a close does NOT, being reversible"              "$(grep -c 'the reason is that a close is reversible' "$worker_md")" 1
+ok "  end means stop working, not self-discard"        "$(grep -c 'which means stop working, not remove yourself' "$worker_md")" 1
+ok "  and the nits ticket still wins over ending"      "$(grep -c '\*\*The ticket$' "$worker_md")" 1
+# And wins over step 2 specifically. `merged` is what makes the poller offer the request to a
+# replacement, so writing it before filing is two sessions on one ticket.
+ok "  and is filed before the terminal status"         "$(grep -c 'before you write .merged.' "$worker_md")" 1
+ok "the posting step refuses a merged pull request"    "$(grep -c 'an approved draft on a merged or closed pull request is not posted' "$worker_md")" 1
+ok "  and says which of the two orderings it was"      "$(grep -c 'approved after the merge, not posted' "$worker_md")" 1
+ok "_common.md routes the pull_request stop reason"    "$(grep -c '\*\*.pull_request. means the pull request merged or closed\*\*' "$common_md")" 1
+ok "  and no longer calls a merge nothing to do"       "$(grep -c 'expected after .discarded., .failed. or a merged PR' "$common_md")" 0
+ok "  its pr_state row separates review from the rest" "$(grep -c 'On a review, your work is over' "$common_md")" 1
+ok "  and the arming step says a review stops early"   "$(grep -c 'On a review it stops as soon as the PR merges or closes' "$common_md")" 1
+ok "  in the same pass that read the merge"            "$(grep -c 'it stops in the .same. pass that read the merge' "$common_md")" 1
+ok "  and no stale claim that it waits a pass"         "$(grep -c 'on the pass .after. the one that read' "$common_md")" 0
+ok "SKILL.md handles the worker's merge report"        "$(grep -c 'A review worker saying its pull request merged or closed' "$skill_md")" 1
+ok "  and has a row for the poller's own drop"         "$(grep -c '| .review_request_closed. |' "$skill_md")" 1
+ok "  saying the state was read live from GitHub"      "$(grep -c 'read live from GitHub, not from the' "$skill_md")" 1
+ok "  and that no review_request reaches it for one"   "$(grep -c 'never reaches you as a .review_request.' "$skill_md")" 1
+ok "  and names the one thing still written"           "$(grep -c 'never held a review of \*\*at all\*\*' "$skill_md")" 1
+ok "  saying a reviewed one is left alone"             "$(grep -c 'never written to again' "$skill_md")" 1
+ok "  and that neither case is dispatched"             "$(grep -c 'Nothing is dispatched$' "$skill_md")" 1
+ok "  and that the recorded row stays out of dispatch" "$(grep -c 'held out of dispatch for good' "$skill_md")" 1
+ok "  the event row reads review_desk_id both ways"    "$(grep -c 'says whether the request made it onto' "$skill_md")" 1
+ok "CHANGELOG records the narrowed criterion"          "$(grep -c 'never held a review of at all' "$root/CHANGELOG.md")" 1
+
+printf '\n  DEV-959: a closed pull request Review Desk has never reviewed is still recorded\n'
+# Patrick amended the criterion after the review of the first commit objected to it: "record no
+# request for a merged pull request" deletes the one row DEV-945 exists to produce -- a request
+# nobody got to, on a pull request that then merged unreviewed, which IS the review that did not
+# happen. So the narrowed rule: record only where the store holds no review of that pull request
+# at all, never open a round, never dispatch. Driven through the real argv path and the stand-in's
+# own store, so "a round was not spent" is an assertion about `review open`'s answer and not about
+# a mock of it.
+
+# merged_doc <repo> <pr> <head> <state>: a search page of one row, carrying a PullRequest state.
+merged_doc () {
+  search_doc "$1" "$2" "$3"
+  python3 - "$work/gh.search" "$4" <<'PYSTATE'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = sys.argv[2]
+d.write_text(json.dumps(doc))
+PYSTATE
+}
+
+for state in MERGED CLOSED; do
+  instance '{"mode":"auto"}'
+  merged_doc acme/portal 414 sha414 "$state"
+  echo '{"state":"'"$state"'"}' > "$work/pr.414.json"
+  no_sessions
+  rc=$(run "$disp" poll 1)
+  ok "a $state pull request with no review is looked up" "$(finds)" 1
+  ok "  and recorded, once"                              "$(opens)" 1
+  # Round 1, read off the stand-in's own store rather than off the call: "no round was spent" is
+  # a statement about what `review open` DID, and the stand-in models the round rule measured at
+  # review-desk 2180224. A first review cannot be a second round, which is the whole carve-out.
+  ok "  as a FIRST review, so no round is spent"         "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#414']['round'])")" 1
+  ok "  and the drop is said, with the review it wrote"  "$(count '"event": "review_request_closed"')" 1
+  ok "  carrying a review id rather than null"           "$(grep -c '"review_request_closed".*"review_desk_id": [0-9]' "$work/out" || true)" 1
+  ok "  and its dashboard page"                          "$(says '/reviews/')" yes
+  ok "  while nothing is dispatched for it"              "$(count '"event": "review_request"')" 0
+  ok "  and no replacement either"                       "$(count '"event": "review_desk_resume"')" 0
+  ok "  nor anything said about the install"             "$(count review_desk_unavailable)" 0
+  ok "  and the tick exits clean"                        "$rc" 0
+  # A second tick inside `reemit_after_secs`: the look and the write are both behind the same
+  # gate, so neither repeats. Without the gate this is one `review find` per tick for ever.
+  rc=$(run "$disp" poll 1)
+  ok "  a second tick looks no further"                  "$(finds)" 1
+  ok "  and writes nothing more"                         "$(opens)" 1
+done
+
+printf '\n  but a pull request it HAS reviewed is never written to again\n'
+# The harm the whole ticket is about: `review open` on a moved head, against a review a session
+# is linked to, is the NEXT ROUND -- measured at review-desk 2180224 and modelled by the
+# stand-in. Opened at sha414 and then merged at a different head, which is the real shape: the
+# author pushes, the round opens, the pull request merges.
+# Seeded rather than recorded by a first tick, and the reason is the rate limit above: the look
+# and the write sit behind one `due` mark, so a second tick inside `reemit_after_secs` does
+# nothing at all -- which the two assertions above prove and which makes it the wrong vehicle for
+# this case. The store is handed a review of 417 at sha417 directly, and the search then shows
+# the row merged at a head the author pushed since, which is the real shape: a review exists, the
+# author pushes, the pull request merges. `review open` on that is the NEXT ROUND, measured at
+# review-desk 2180224, and it is the harm the whole ticket is about.
+instance '{"mode":"auto"}'
+python3 - "$work/rd.opens.json" <<'PYSEED'
+import json, pathlib, sys
+pathlib.Path(sys.argv[1]).write_text(json.dumps(
+    {"acme/portal#417": {"id": 3, "head": "sha417", "ledger": None, "round": 1}}))
+PYSEED
+merged_doc acme/portal 417 sha999 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.417.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a reviewed pull request is looked up"              "$(finds)" 1
+ok "  and never written to"                            "$(opens)" 0
+ok "  so the store still holds round 1"                "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#417']['round'])")" 1
+ok "  and still holds the head it was opened at"       "$(python3 -c "
+import json
+print(json.load(open('$work/rd.opens.json'))['acme/portal#417']['head'])")" sha417
+ok "  the drop is still said"                          "$(count '"event": "review_request_closed"')" 1
+ok "  with no review id, because none was written"     "$(says '"review_desk_id": null')" yes
+ok "  and nothing is dispatched"                       "$(count '"event": "review_request"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+
+printf '\n  and an install that cannot be asked is never written to blindly\n'
+# `review find` answers None for an empty store and for an install it could not use, and writing
+# on the second is the blind write the look exists to prevent. Each refusal mode in turn.
+for mode in broken refused oldfind notobject; do
+  instance '{"mode":"auto"}'
+  merged_doc acme/portal 415 sha415 MERGED
+  echo '{"state":"MERGED"}' > "$work/pr.415.json"
+  echo "$mode" > "$work/rd.find.mode"
+  no_sessions
+  rc=$(run "$disp" poll 1)
+  ok "find '$mode': nothing is written"                "$(opens)" 0
+  ok "  and nothing is dispatched"                     "$(count '"event": "review_request"')" 0
+  ok "  and the tick exits clean"                      "$rc" 0
+done
+
+printf '\n  and Review Desk off records nothing and asks nothing\n'
+instance '{"mode":"off"}'
+merged_doc acme/portal 416 sha416 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.416.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "off: the store is not even looked at"              "$(finds)" 0
+ok "  and nothing is written"                          "$(opens)" 0
+ok "  but the drop is still said"                      "$(count '"event": "review_request_closed"')" 1
+ok "  with no review id"                               "$(says '"review_desk_id": null')" yes
+ok "  and the tick exits clean"                        "$rc" 0
+
+printf '\n  DEV-959: what the independent review of the carve-out found\n'
+# Six findings from one `/code-review` pass over 8b3d373, every one of them about a premise rather
+# than a typo. Each gets its own assertion here, because each was invisible to the suite as it
+# stood -- which is the whole reason the pass was run by something other than its author.
+
+# 1 (medium). The `due` mark was taken BEFORE the write was attempted, so one broken tick lost the
+# row for good: the mark blocked a retry for `reemit_after_secs`, and under the shipped `is:open`
+# query the row leaves the search long before that. Cleared now when the install was there and
+# failing -- and NOT when it is absent, which has answered.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 418 sha418 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+echo broken > "$work/rd.find.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a broken install writes nothing"                   "$(opens)" 0
+rm -f "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "  and the very next tick records it"               "$(opens)" 1
+ok "  so the never-happened review is not lost"        "$(says '"review_desk_id": 1')" yes
+# An ABSENT install has answered, and clearing the mark there would turn one line into one a
+# tick for ever on every instance that has no Review Desk.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 418 sha418 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+no_sessions
+hide
+rc=$(run "$disp" poll 1)
+ok "an absent install says the drop once"              "$(count '"event": "review_request_closed"')" 1
+rc=$(run "$disp" poll 1)
+ok "  and not again on the next tick"                  "$(count '"event": "review_request_closed"')" 0
+show
+
+# 2 (low). The live-session gate skipped the recording on "that session opened the review on its
+# way in" -- false for `claimed`, which the Dispatcher writes BEFORE the session exists. The
+# status is not consulted at all now; Review Desk's own answer decides.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 419 sha419 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.419.json"
+put gh-portal-419 mode=review status=claimed repo=acme/portal number=419 session_id=dead-1 --by test
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a claimed key whose session never ran is recorded" "$(opens)" 1
+ok "  and still nothing is dispatched for it"          "$(count '"event": "review_request"')" 0
+
+# 5 (low). A non-empty `reviews` whose newest round is not an object used to answer a clean
+# `None`, which the carve-out reads as "no review at all" -- so it would have written to a pull
+# request the store DOES hold a review of.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 420 sha420 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.420.json"
+echo badround > "$work/rd.find.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "an unreadable round is broken, not 'none'"         "$(opens)" 0
+ok "  and is said as a broken install"                 "$(says 'review find exited 0 with a round')" yes
+ok "  and the tick exits clean"                        "$rc" 0
+
+# 6 (low). The recorded row lives on the work list for ever, so `review_desk_item` re-rolls its
+# `pr_state` check every interval -- and `pr_state` answers None on any `gh pr view` failure,
+# which this file does not read as closed. One flaky call would eventually dispatch a worker onto
+# a merged pull request: DEV-959's harm through the row DEV-959 adds. The `closed` flag on the
+# record is `request_spoken_for`'s fourth shape.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 421 sha421 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.421.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "the closed recording is made"                      "$(opens)" 1
+# Now GitHub stops showing the request AND `gh pr view` fails, which is the state that used to
+# dispatch. Review Desk still has the row, and offers it as `review_requested`.
+rm -f "$work/gh.search"
+work_doc review_requested 1 acme/portal 421 1791520400
+printf 'not json at all' > "$work/pr.421.json"
+rc=$(run "$disp" poll 1)
+ok "  and the row is never offered for dispatch"       "$(count '"event": "review_desk_requested"')" 0
+ok "  nor as a resume"                                 "$(count '"event": "review_desk_resume"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+# The control: without the flag, that same state dispatches.
+python3 - "$disp" "$work/noclosedflag.py" <<'PYFLAG'
+import sys
+src = open(sys.argv[1]).read()
+old = """        if self.recorded_closed(key):
+            return True"""
+new = """        if False:  # CLOSED SHAPE REVERSED
+            return True"""
+assert old in src, "fourth shape anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYFLAG
+ok "the fourth-shape reversal changed one line"        "$(grep -c 'CLOSED SHAPE REVERSED' "$work/noclosedflag.py")" 1
+rc=$(run "$work/noclosedflag.py" poll 1)
+ok "no fourth shape: it IS offered for dispatch"       "$(count '"event": "review_desk_requested"')" 1
+
+printf '\n  DEV-959: what the SECOND independent review found in the first six fixes\n'
+# One `/code-review` pass over 4a46530, three behavioural findings and one paragraph that had
+# started lying. Each assertion below is the shape that pass reproduced.
+
+# 1 (medium). `record_broken` is reset per TICK, not per key, so the retry clear fired on another
+# row's failure: a `review show` that broke while recording an OPEN pull request cleared the
+# window of a merged one three rows later, whose own look had answered cleanly -- and re-said its
+# merge every tick afterwards. Only the two calls this attempt makes can speak for it now.
+instance '{"mode":"auto"}'
+search_pair acme/portal 422 sha422 423 sha423
+python3 - "$work/gh.search" <<'PYONEMERGED'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+# 422 open, 423 merged: one row takes the open path, the other the carve-out.
+doc["data"]["search"]["nodes"][1]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYONEMERGED
+echo '{"state":"OPEN"}' > "$work/pr.422.json"
+echo '{"state":"MERGED"}' > "$work/pr.423.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "the merged row of a mixed page is recorded"        "$(count '"event": "review_request_closed"')" 1
+# Now break `review show`, which is the OPEN row's dismissal read and nothing to do with 423.
+echo broken > "$work/rd.show.mode"
+rc=$(run "$disp" poll 1)
+ok "another row's broken read does not re-say it"      "$(count '"event": "review_request_closed"')" 0
+rc=$(run "$disp" poll 1)
+ok "  nor on the tick after that"                      "$(count '"event": "review_request_closed"')" 0
+rm -f "$work/rd.show.mode"
+
+# 2 (medium). One mark did both jobs, so every retry re-said the merge: a `review find` broken on
+# four consecutive ticks emitted four lines, which is the "one line per tick for ever" the absent
+# case was narrowed out to avoid, arriving through the broken case instead. Two marks now.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 424 sha424 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.424.json"
+echo broken > "$work/rd.find.mode"
+no_sessions
+said=0
+for tick in 1 2 3 4; do
+  rc=$(run "$disp" poll 1)
+  said=$((said + $(count '"event": "review_request_closed"')))
+done
+ok "four broken ticks say the merge once"              "$said" 1
+ok "  and nothing was written"                         "$(opens)" 0
+# And the retry still works: the recording lands on the tick the install comes back, and THAT is
+# said -- one more line, because "the row reached the list" is news the first line could not carry.
+rm -f "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "the fixed install records on the next tick"        "$(opens)" 1
+ok "  and says so once, with the review id"            "$(count '"event": "review_request_closed"')" 1
+ok "  carrying a number rather than null"              "$(grep -c '"review_request_closed".*"review_desk_id": [0-9]' "$work/out" || true)" 1
+rc=$(run "$disp" poll 1)
+ok "  and never again after that"                      "$(count '"event": "review_request_closed"')" 0
+
+# 3 (medium). The fourth shape looked `recorded` up by a differently-cased key: `recorded` is
+# keyed from GitHub's `nameWithOwner`, and the work-list row with no `ledger_id` is keyed by
+# `review_desk_item`'s lower-cased fallback. A build too old for `--ledger` is what produces a
+# row with no `ledger_id` -- so on exactly that install, a recorded merged pull request went back
+# to being offered for dispatch. Capitalised repository, `oldledger`, then GitHub goes quiet and
+# `gh pr view` returns junk, which is the state that used to dispatch.
+instance '{"mode":"auto"}'
+merged_doc Acme/Portal 425 sha425 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.425.json"
+echo oldledger > "$work/rd.open.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+# TWO `review open` calls for one recording, not one: `oldledger` is a build that refuses
+# `--ledger`, and `open_request` retries without the flag. That retry is what makes a row carry
+# no `ledger_id`, which is what makes `review_desk_item` fall back to a lower-cased key -- so the
+# count is not incidental to this case, it IS the case.
+ok "a capitalised repo's merged row is recorded"       "$(opens)" 2
+rm -f "$work/gh.search" "$work/rd.open.mode"
+work_doc review_requested 1 acme/portal 425 1791520400
+printf 'not json at all' > "$work/pr.425.json"
+rc=$(run "$disp" poll 1)
+ok "  and is never offered despite the casing"         "$(count '"event": "review_desk_requested"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+# The control: the direct `.get` the first version used, which misses the capital.
+python3 - "$disp" "$work/nocasefold.py" <<'PYCASE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        return any(v.get("closed") for k, v in self.state["recorded"].items()
+                   if isinstance(v, dict) and requested_key(k) == want)"""
+new = """        return bool((self.state["recorded"].get(key) or {}).get("closed"))  # CASE FOLD REVERSED"""
+assert old in src, "case fold anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYCASE
+ok "the case-fold reversal changed one line"           "$(grep -c 'CASE FOLD REVERSED' "$work/nocasefold.py")" 1
+rc=$(run "$work/nocasefold.py" poll 1)
+ok "no case fold: the capitalised row IS offered"      "$(count '"event": "review_desk_requested"')" 1
+
+# 4 (low). The paragraph that had started lying, and the reason it is worth an assertion: the
+# kept `recorded` entry is what shape 4 reads, so a future editor trusting the old sentence would
+# restore the prune and re-open finding 3's harm for every closed row.
+ok "the docstring says the entry is KEPT"              "$(grep -c 'The .recorded. entry this leaves is KEPT' "$disp")" 1
+ok "  and names the sentence it replaced"              "$(grep -c 'an earlier version of this paragraph' "$disp")" 1
+ok "  while the prune still keeps it"                  "$(grep -c 'v.get("dismissed") or v.get("closed")}' "$disp")" 1
+
+printf '\n  DEV-959: two closed rows on one broken tick, and neither is lost\n'
+# The review of `bb9f886` read `broken_since` (then `broken_calls`, a SET of names) and argued
+# that a second closed row whose own attempt broke the SAME call would see no change, hold its
+# window, and be lost when the row left the search. **Measured, that does not happen**, and the
+# numbers below are why: `finds` is 1 on the broken tick, not 2 -- every path that marks these
+# two calls broken also sets `record_stopped`, and the guard on it precedes the window, so the
+# second row never takes a window to hold. Both rows record on the tick the install comes back.
+#
+# The count replaced the set anyway. The set was correct only because of an invariant two
+# functions away, which is the shape of premise this branch has been caught by four times; a
+# count is right whether or not it holds. This test is what says which it is.
+instance '{"mode":"auto"}'
+search_pair acme/portal 426 sha426 427 sha427
+python3 - "$work/gh.search" <<'PYBOTHMERGED'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+for node in doc["data"]["search"]["nodes"]:
+    node["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYBOTHMERGED
+echo '{"state":"MERGED"}' > "$work/pr.426.json"
+echo '{"state":"MERGED"}' > "$work/pr.427.json"
+echo broken > "$work/rd.find.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a broken tick writes neither row"                  "$(opens)" 0
+ok "  asking once for the page, not once per row"      "$(finds)" 1
+ok "  and says each merge once"                        "$(count '"event": "review_request_closed"')" 2
+# The window marks are the finding's own subject: NEITHER is held after the broken tick. The
+# first row's was taken and cleared; the second row's was never taken.
+ok "  and holds no recording window for either"        "$(python3 -c "
+import json
+s = json.load(open('$inst/runtime/poll-state.json'))
+print(sum(1 for k in s.get('emitted', {}) if k.endswith('|review_request_record')))")" 0
+rm -f "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "the fixed install records BOTH rows next tick"     "$(opens)" 2
+ok "  and the store holds both reviews"                "$(python3 -c "
+import json
+print(len(json.load(open('$work/rd.opens.json'))))")" 2
+ok "  neither row was lost"                            "$(python3 -c "
+import json
+held = json.load(open('$work/rd.opens.json'))
+print(sorted(k.rsplit('#', 1)[1] for k in held))")" "['426', '427']"
+ok "  and the tick exits clean"                        "$rc" 0
+
+# The counter itself, directly: two broken answers from one call must read as two, where the set
+# it replaced read as one. This is the assertion that would fail on the set version.
+instance '{"mode":"auto"}'
+ok "a repeated broken call counts twice"               "$(python3 -c "
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('d', '$disp')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.Poller.__new__(m.Poller)
+p.record_broken, p.broken_seq = {}, {}
+first = p.broken_since()
+p.note_broken('review find', 'broken', 'd', 'r')
+one = p.broken_since()
+p.note_broken('review find', 'broken', 'd', 'r')
+print(first, one, p.broken_since())")" "(0, 0) (1, 0) (2, 0)"
+ok "  and an absent answer counts none"                "$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('d', '$disp')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.Poller.__new__(m.Poller)
+p.record_broken, p.broken_seq = {}, {}
+p.note_broken('review find', 'absent', 'd', 'r')
+print(p.broken_since(), p.record_broken['review find'][0])")" "(0, 0) absent"
+
+printf '\n  DEV-959: the merged row still speaks for itself through the other source\n'
+# The ordering the GitHub pass depends on, and it is not obvious from either side. A merged row
+# is dropped before it is recorded or offered -- but `self.requested.add` happens BEFORE that
+# drop, because `review_desk_item` reads `pr_state` LIVE and that call can fail: `pr_state`
+# returns None, this file refuses to read None as closed, and `review_desk_requested` would be
+# emitted for the very pull request the GitHub pass had just silenced. `request_spoken_for`'s
+# first shape -- "GitHub showed the Dispatcher this request" -- is then the only guard, and it is
+# fed from that line. Driven with a `gh pr view` that returns unparseable output, which is what
+# `gh()` turns into the exception `pr_state` swallows.
+instance '{"mode":"auto"}'
+search_doc acme/portal 418 abc123
+python3 - "$work/gh.search" <<'PYMERGE'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYMERGE
+work_doc review_requested 9 acme/portal 418 1791520400
+printf 'not json at all' > "$work/pr.418.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+# The property is ONE offer, not none. `pr_state` returning None is GitHub not answering, and
+# this file refuses to read that as closed -- "an item the dispatcher cannot place is better
+# dispatched and discarded by a human who can read the pull request than dropped silently" -- so
+# the GitHub pass offers the row, which is the right half of the pair to keep. What must NOT
+# happen is the Review Desk source offering it as well, which is two sessions on one review, and
+# shape 1 of `request_spoken_for` is the only thing stopping it in this exact state.
+ok "an unreadable pr_state still offers the row once"  "$(count '"event": "review_request"')" 1
+ok "  and the Review Desk source stays quiet"          "$(count '"event": "review_desk_requested"')" 0
+ok "  so one request reaches the Dispatcher, not two"  "$(count '"event": "review_desk_resume"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+# The control that makes the quiet half mean something: delete the merged row's membership of
+# `self.requested` and the Review Desk source speaks for the same pull request.
+python3 - "$disp" "$work/noshape1.py" <<'PYSHAPE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        if requested_key(key) in self.requested and entry.get("status") in REDISPATCHABLE:
+            return True"""
+new = """        if False:  # SHAPE 1 REVERSED
+            return True"""
+assert old in src, "shape 1 anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYSHAPE
+ok "the shape 1 reversal changed one line"             "$(grep -c 'SHAPE 1 REVERSED' "$work/noshape1.py")" 1
+instance '{"mode":"auto"}'
+search_doc acme/portal 418 abc123
+python3 - "$work/gh.search" <<'PYMERGE2'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+doc["data"]["search"]["nodes"][0]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYMERGE2
+work_doc review_requested 9 acme/portal 418 1791520400
+printf 'not json at all' > "$work/pr.418.json"
+no_sessions
+rc=$(run "$work/noshape1.py" poll 1)
+ok "no shape 1: the merged PR is offered twice"        "$(count '"event": "review_desk_requested"')" 1
+
+printf '\n  DEV-959: the one discard the Dispatcher makes without asking\n'
+# Patrick decided this on the ticket ("yes, let it discard merged sessions itself"), as a narrow
+# exception to `## Never`'s standing rule. It is the Dispatcher's act, through the allele MCP
+# tool, so there is no Locus code path to drive -- which is itself the thing worth pinning, and
+# the stand-in below is how. A `allele` on PATH that records every call, and zero calls after a
+# full poll tick and a watch tick: nothing in this repo can discard a session, so every discard
+# that ever happens is one a Dispatcher session chose, from prose a human can read and audit.
+cat > "$work/bin/allele" <<'ALLELESTANDIN'
+#!/bin/sh
+printf '%s\n' "$*" >> "$RDWORK/allele.calls"
+exit 0
+ALLELESTANDIN
+chmod +x "$work/bin/allele"
+rm -f "$work/allele.calls"
+instance '{"mode":"auto"}'
+work_doc draft_approved 9 acme/portal 418 1791520400 gh-portal-418
+put gh-portal-418 mode=review status=active repo=acme/portal number=418 session_id=live-9 --by test
+echo '{"state":"MERGED"}' > "$work/pr.418.json"
+rc=$(run "$disp" poll 1)
+ok "a poll tick over a merged PR discards nothing"     "$([ -f "$work/allele.calls" ] && echo some || echo none)" none
+rc=$(run "$disp" watch gh-portal-418 --once)
+ok "  and neither does a watch tick"                   "$([ -f "$work/allele.calls" ] && echo some || echo none)" none
+ok "  no code in the skill calls a discard at all"     "$(grep -c 'sessions_discard(' "$disp")" 0
+# What a Dispatcher writes AFTER its own discard, which is code and is driven for real.
+put gh-portal-418 status=discarded --by dispatcher --note "PR merged"
+ok "the ledger records the discard and who made it"    "$(python3 -c "
+import json, sys
+e = json.load(open('$inst/runtime/ledger/gh-portal-418.json'))
+print(e['status'], e['history'][-1]['by'], e['history'][-1].get('note'))")" "discarded dispatcher PR merged"
+
+printf '\n  and what ## Never says about it, in place beside the rule\n'
+# AC 4 is literally about where this is written: the rule and its exception have to be read
+# together, or the next reader of `## Never` learns a rule that is no longer true.
+never () { sed -n '/^## Never$/,$p' "$skill_md"; }
+ok "the standing rule is still stated"                 "$(never | grep -c 'Discard without your principal.s explicit yes')" 1
+ok "  and the exception is stated beside it"           "$(never | grep -c 'these three$')" 1
+ok "  condition 1: only a review worker"               "$(never | grep -c 'a \*\*review\*\* worker, no other mode')" 1
+ok "  condition 2: GitHub says merged or closed"       "$(never | grep -c 'GitHub reports .merged. or .closed.')" 1
+ok "  and not Review Desk saying so"                   "$(never | grep -c 'Not Review Desk$')" 1
+ok "  condition 3: only once it has stopped"           "$(never | grep -c 'A worker mid-turn is not$')" 1
+ok "  checked with allele_sessions_status"             "$(never | grep -c 'allele_sessions_status(session_id). first')" 1
+ok "  it reports after the fact, not before"           "$(never | grep -c 'say so once, after the fact')" 1
+ok "  and never silently"                              "$(never | grep -c 'indistinguishable from one that crashed')" 1
+ok "  everything else still needs the yes"             "$(never | grep -c 'Everything else still needs the yes')" 1
+ok "  naming an open PR as still needing it"           "$(never | grep -c 'whose pull request is still$')" 1
+ok "the review_cleared row carries the exception too"  "$(grep -c 'where you discard without asking' "$skill_md")" 1
+ok "  and still asks on every other reason"            "$(grep -c 'Every other reason still asks' "$skill_md")" 1
+ok "the worker-report row discards without asking"     "$(grep -c 'discard it yourself, without asking' "$skill_md")" 1
+ok "start-up reconciles a merged key the same way"     "$(grep -c 'whose entry says .merged.: that worker finished' "$skill_md")" 1
+# The worker's side has to agree with it. Written before Patrick's decision, review.md said
+# "The Dispatcher reports your line and offers the discard; only your principal answers that" --
+# which the decision made flatly false, and a worker reading it would have expected a session
+# that no longer exists. The two files are each other's only check here.
+ok "review.md says the discard is not asked about"     "$(grep -c 'this is the one discard nobody is asked about' "$worker_md")" 1
+ok "  and that its line is the last it will say"       "$(grep -c 'the last thing you will ever' "$worker_md")" 1
+ok "  while still forbidding a self-discard"           "$(grep -c 'It is still not yours to do' "$worker_md")" 1
+ok "  and no stale promise that the session persists"  "$(grep -c 'offers the$' "$worker_md")" 0
+ok "_common.md names the exception beside its Never"   "$(grep -c 'the only discard not put to' "$common_md")" 1
 ok "  and the unknown-kind event, in prose and as a row" "$(grep -c 'review_desk_unknown_kind' "$skill_md")" 2
 
 printf '\n  a kind this file cannot place is named, once per interval\n'
@@ -4209,7 +4817,7 @@ echo '{"state":"MERGED"}' > "$work/pr.418.json"
 rc=$(run "$work/nomerged.py" poll 1)
 ok "no exemption: a merged pull request loses the ticket" "$(count review_desk)" 0
 
-sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if True:  # DEAF SESSION REVERSED/' \
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") not in WORKER_ARMED:$/        if True:  # DEAF SESSION REVERSED/' \
     "$disp" > "$work/nodeaf.py"
 ok "the deaf-session reversal changed one line"        "$(grep -c 'DEAF SESSION REVERSED' "$work/nodeaf.py")" 1
 instance '{"mode":"auto"}'
@@ -4268,7 +4876,7 @@ no_sessions
 
 # The KIND half on its own, which the reversal above cannot isolate: it turns the whole
 # condition off, where this deletes only the test that keeps the bypass to one kind.
-sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") != "done":$/        if entry.get("status") != "done":  # KIND HALF REMOVED/' \
+sed 's/^        if kind != "nits_to_ticket" or entry\.get("status") not in WORKER_ARMED:$/        if entry.get("status") not in WORKER_ARMED:  # KIND HALF REMOVED/' \
     "$disp" > "$work/nokindhalf.py"
 ok "the kind-half reversal changed one line"           "$(grep -c 'KIND HALF REMOVED' "$work/nokindhalf.py")" 1
 instance '{"mode":"auto"}'
@@ -4348,7 +4956,7 @@ no_sessions
 
 sed 's/^            self\.record_stopped = True$/            pass  # STOP REVERSED/' \
     "$disp" > "$work/nostop.py"
-ok "the stop-once reversal changed every line of it"  "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 4
+ok "the stop-once reversal changed every line of it"  "$(grep -c 'STOP REVERSED' "$work/nostop.py")" 5
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 echo broken > "$work/rd.open.mode"
@@ -4565,7 +5173,7 @@ dismiss acme/portal 412 "closed unmerged"
 rc=$(run "$work/nowindow.py" poll 1)
 ok "  without it the dismissal waits out the interval" "$(remembered gh-portal-412 dismissed)" False
 
-sed 's/^                                  if k in present or v\.get("dismissed")}$/                                  if k in present}  # DISMISSAL PRUNED/' \
+sed 's/^                                  if k in present or v\.get("dismissed") or v\.get("closed")}$/                                  if k in present}  # DISMISSAL PRUNED/' \
     "$disp" > "$work/noprunekeep.py"
 ok "the keep-a-dismissal reversal changed one line"    "$(grep -c 'DISMISSAL PRUNED' "$work/noprunekeep.py")" 1
 instance '{"mode":"auto"}'
@@ -4684,7 +5292,7 @@ ok "  without it such a review is never read"          "$(shows)" 0
 
 sed 's/^            self\.record_stopped = True$/            pass  # UNREADABLE NOT STOPPED/' \
     "$disp" > "$work/nounreadablestop.py"
-ok "the unreadable-answer reversal changed its lines"  "$(grep -c 'UNREADABLE NOT STOPPED' "$work/nounreadablestop.py")" 4
+ok "the unreadable-answer reversal changed its lines"  "$(grep -c 'UNREADABLE NOT STOPPED' "$work/nounreadablestop.py")" 5
 instance '{"mode":"auto"}'
 search_pair acme/portal 412 sha412 413 sha413
 echo notobject > "$work/rd.open.mode"

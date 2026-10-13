@@ -25,10 +25,14 @@ wrong ledger or none at all.
 3. Start your eyes on the ticket — a persistent Monitor, before you do anything else:
    `Monitor(command: "<D> watch <KEY>", persistent: true,
    description: "<KEY> ticket + PR events")`. For a PR review, add `--pr OWNER/REPO#N`.
-   The watcher is **mortal**: it stops when your key's ledger status says nothing more will arrive
-   on it, and in any case after `limits.watch_max_hours`. It says so on the way out — see
-   `watch_stopped` below. It does **not** stop merely because you reported `done`; it keeps
-   watching until the PR closes, which is what lets you answer a review that lands afterwards.
+   The watcher is **mortal**: it stops when nothing more will arrive on your key, and in any
+   case after `limits.watch_max_hours`. It says so on the way out — see `watch_stopped`
+   below. It does **not** stop merely because you reported `done`; outside a review it keeps
+   watching until the PR closes, which is what lets you answer a review that lands
+   afterwards. **On a review it stops as soon as the PR merges or closes, whatever your
+   status is**, because reviewing is the one mode where a closed PR means the work itself is
+   over — and it stops in the *same* pass that read the merge, after emitting the `pr_state`
+   that tells you. So the event you act on is never the one lost to the stop.
 4. Read the ticket in full with the Linear MCP — the workspace is named in your dispatch block:
    `linear_get_issue` with `include: ["comments", "attachments"]`, plus its parent, sub-issues
    and relations.
@@ -43,9 +47,9 @@ wrong ledger or none at all.
 | `stop` | **Stop.** Commit work in progress (do not push half-done work to an open PR), `D ledger put <KEY> status=stopped`, message the Dispatcher, then wait. |
 | `pr_review` / `pr_comment` | A human reviewed or commented on the PR. See your mode's brief. |
 | `pr_pushed` | Someone else pushed. Pull before you push again. |
-| `pr_state` | Merged or closed — report to the Dispatcher. |
+| `pr_state` | Merged or closed. **On a review, your work is over**: `review.md`'s **When the pull request merges or closes** says what to say and has you end. On any other mode, report it to the Dispatcher and carry on — a merged pull request still collects comments its author should answer. |
 | `watch_error` | One-off: ignore. Repeating: tell the Dispatcher. |
-| `watch_stopped` | Your eyes have closed, and the `reason` says why. `ledger` means your key's status says nothing more will arrive on it — expected after `discarded`, `failed` or a merged PR, and nothing to do. `ceiling` or `max_ticks` means the process hit its time limit while the work is still open: **re-arm the Monitor with the same command** and tell the Dispatcher it happened. |
+| `watch_stopped` | Your eyes have closed, and the `reason` says which of three things closed them. `ledger` means your key's status says nothing more will arrive on it — expected after `discarded` or `failed`, and nothing to do. **`pull_request` means the pull request merged or closed**, which is never nothing to do: on a review it is your cue to say your line and end, per `review.md`'s **When the pull request merges or closes**; on any other mode, report it. `ceiling` or `max_ticks` means the process hit its time limit while the work is still open: **re-arm the Monitor with the same command** and tell the Dispatcher it happened. **Re-arming after a `pull_request` stop is futile** — it reads the same cursor and exits in zero ticks. |
 | `watch_unknown_key` | Your key has no ledger entry. Almost always a mistyped key in the watch command — check it against your dispatch block before you rely on anything the watcher reports. |
 
 ## Talking on Linear
@@ -115,7 +119,10 @@ subagents.
 
 ## Never
 
-- Discard your own session. Only your principal does that, through the Dispatcher.
+- Discard your own session. Your principal does that, through the Dispatcher — who also discards
+  a review worker on its own, without asking, once that worker's pull request has merged or
+  closed and it has stopped. That is their standing decision and the only discard not put to
+  them; it is still never yours to make.
 - Merge a PR, request reviewers, or approve anyone's PR.
 - Touch a ticket or PR other than your own, except sub-issues your brief tells you to create.
 - Paste personal data (names, addresses, dates of birth, government identifiers, bank details)

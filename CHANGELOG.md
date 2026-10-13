@@ -134,6 +134,68 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **A review session kept running after its pull request merged, and the poller opened rounds on
+  merged pull requests.** On 13 October 2026 the session for `tc-portal#9585` was still running
+  hours after that pull request merged, telling Patrick "the draft was never posted" — about a
+  round opened after the author pushed that nothing was ever going to post. Four rounds of #9568
+  are the same shape. Three things were true at once. `watch_stop_reason` was merge-aware on the
+  `done` path only, so a review worker that was anything else — `active` mid-round,
+  `needs-input`, `stopped` — kept its watcher to the 120-hour ceiling; **a review key now stops
+  on a merged or closed pull request whatever its status is**, in the same pass that read the
+  merge and after the `pr_state` that tells the worker, and only a review key, because
+  `implement.md` writes `status=done --note "merged"` only once it has seen the merge and a
+  merged pull request still collects comments its author should answer. `Watcher.pull_request`
+  suppressed every emission on a first tick, so a session dispatched after the merge heard
+  nothing about the one fact deciding its brief; it now emits `pr_state` on a first tick over a
+  closed pull request, for review keys only. And the poller's GitHub pass trusted `is:open` in
+  the instance's own `review_query` — config, and GitHub's search index lags a merge — so it
+  **asks for each row's `state` in the query it already makes and confirms a closed-looking row
+  with a live `gh pr view`** before dropping it: nothing establishes whether `search` resolves
+  `state` from the live record or from the same snapshot that produced the row, and a stale
+  `CLOSED` would drop a live review request. A dropped row leaves `prs_present`, as a row that
+  goes draft already does, so the clearance sweep reports the merge on the tick it is seen with
+  `why_cleared`'s own live reason rather than when the index catches up — which under a
+  `review_query` without `is:open` is never. Where that sweep will not speak — a first tick, a
+  key GitHub had not shown before, and a request no session ever held — **`review_request_closed`
+  says it instead**, once per key per `reemit_after_secs`, because it was the only silent refusal
+  in a poller whose every other refusal names itself. **One request is still recorded, and only
+  one: a pull request Review Desk has never held a review of at all**, written as a first review
+  so that no round can be spent on it. The first cut of this recorded none, on the ticket's
+  original wording; the review of that commit objected that this deletes the single row DEV-945
+  exists to produce — a request nobody got to, on a pull request that then merged unreviewed,
+  which is the review that did not happen — and Patrick narrowed the criterion to match. A pull
+  request it HAS reviewed is never written to again, because `review open` on a head the author
+  has pushed since is the next round. Nothing is dispatched from either case, and the event's
+  `review_desk_id` says which one it was. A recorded-closed row is marked as such and held out of
+  dispatch permanently by a fourth shape in `request_spoken_for`: it lives on the work list for
+  ever, so `review_desk_item`'s `pr_state` check is re-rolled every interval and `pr_state`
+  answers `None` on any `gh pr view` failure — one flaky call would otherwise have dispatched a
+  review worker onto a merged pull request, which is DEV-959's own harm arriving through the row
+  DEV-959 adds. Found by an independent `/code-review` pass over the recording commit, along with
+  a `due` mark spent on a write that a broken Review Desk never performed, a live-session gate
+  resting on the premise `WORKER_ARMED` exists to retire, a dropped `old` flag, a `look_stopped`
+  guard that was not checked, and a malformed `review find` round that read as "no review at all"
+  and would have been written to.
+- **`workers/review.md` tells a review worker what to do when its pull request goes.** One line
+  to the Dispatcher naming the round and whether its draft was posted, its own terminal ledger
+  status (`merged` on a merge, `done` on a close, because a close is reversible), and then it
+  ends. **An approved draft on a merged pull request is never posted**, whatever Review Desk
+  still reports, and the worker says which of the two orderings it was. Writes that would
+  *advance* the review stop; writes that *record an outward act already performed* — `draft
+  posted`, `finding link`, `review nit-ticket` — do not, because leaving one unsaid makes the
+  record lie about what is on GitHub. `nits_to_ticket` still outlives the merge and is filed
+  before the worker says its line.
+- **The Dispatcher discards a merged review worker itself**, by Patrick's decision on DEV-959: a
+  narrow exception to `## Never`'s standing rule, written beside it, and covering only a review
+  worker whose pull request GitHub reports merged or closed and which has stopped. Every other
+  discard still needs the yes. Nothing in this repo calls `allele_sessions_discard`, which a
+  stand-in `allele` recording zero calls across a poll tick and a watch tick is what establishes
+  — so every discard is one a Dispatcher session chose from prose a human can read.
+- **`Poller.cannot_be_told` read a `nits_to_ticket` as deliverable to a session whose watcher the
+  merge had shut.** Its guard tested for `done` because `done` was the only status the old stop
+  rule could produce; `WORKER_ARMED` (`ALIVE` minus `claimed`) names the premise instead. The
+  absent-cursor branch stays scoped to `done`: `_common.md` step 2 writes `active` and step 3
+  arms the watcher, so for those seconds an absent cursor is a watcher that has yet to start.
 - **"File as one ticket for an agent" reached nobody.** Review Desk answers `work list` with five
   kinds of work and `REVIEW_DESK_KINDS` named four, so `nits_to_ticket` — the developer asking, on
   the draft page, for the findings they held back to be filed as one ticket — was dropped by the

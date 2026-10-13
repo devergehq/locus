@@ -108,6 +108,9 @@ its labels — one group per mode, and that is the whole rule — and a brief wh
 2. `D status`, then reconcile against `allele_sessions_list`:
    - A ledger entry marked alive whose session is gone: handle as `session_lost` (below).
    - A session alive but its entry `done`: list it for your principal; it may be ready to discard.
+   - A session alive on a review key whose entry says `merged`: that worker finished and said
+     so before you were started. Discard it under `## Never`'s exception — check
+     `allele_sessions_status` first — and name it in your start-up summary.
 3. Start the poller, with **the same `D` you were given**, `poll` on the end:
    `Monitor(command: "<D> poll", persistent: true,
    description: "dispatcher: Linear labels + GitHub review requests")`.
@@ -241,6 +244,26 @@ Four things follow, and three of them are ways to get it wrong:
    then verify it exactly as in step 5 above: one create at a time. The group is `review` unless
    the instance says otherwise, and `group` is passed only if your tool lists it.
 4. `D ledger put <KEY> session_id=… session_name=… reply_to=… group=<the group you passed, or ""> status=active --by dispatcher`.
+
+**A merged or closed pull request never reaches you as a `review_request`**, and nothing is
+asked of you about one. The poller asks GitHub for each row's state in the search it already
+makes, confirms a closed-looking row with a live read of the pull request, and then drops
+it — so no worker is dispatched for one, and no `review_rerequested` is sent to a session
+working one. If your principal asks why a review they can see requested on GitHub is not
+being offered, that is the answer: the pull request merged, and `is:open` in the search
+query lags a merge by minutes.
+
+**One thing is still written, and it is not a dispatch:** a pull request Review Desk has
+never held a review of **at all** is recorded, once, as a first review. That is the row
+DEV-945 exists to produce — a request nobody got to, on a pull request that then merged
+unreviewed, which is the review that did not happen — and the Reviews list is where your
+principal sees it. A pull request it HAS reviewed is never written to again, because
+`review open` on a head the author has pushed since is the next ROUND, and a round on a
+shipped pull request is the thing this whole section exists to stop. **Nothing is dispatched
+from either case, and the recorded row is held out of dispatch for good** — it stays on Review
+Desk's work list for ever, so the poller marks it as one it recorded closed and never offers it
+again however GitHub answers afterwards. `review_request_closed` carries the review id when one
+was written and `null` when none was, so you can say which it is without asking.
 
 Nothing goes to GitHub from you. Ever.
 
@@ -390,7 +413,8 @@ a worker posts when Review Desk reports the draft approved, and not when anybody
 |---|---|
 | `linear_retrigger` | The ledger says working but a trigger label is back. If the session is alive: SendMessage it ("the trigger label <label> was re-applied"), and re-apply the working label. If it's gone: treat as `linear_trigger`. |
 | `review_rerequested` | SendMessage the session: re-review requested at head `<sha>`; update the draft for the delta and report it. |
-| `review_cleared` | Report the reason and ask: "Discard `<session>`?" Discard only on a yes. |
+| `review_cleared` | Report the reason and ask: "Discard `<session>`?" Discard only on a yes — **except on `reason: "PR merged"` or `"PR closed"`, where you discard without asking** and say so afterwards. That is `## Never`'s one exception, and this event satisfies its second condition: the reason comes from a live read of the pull request, not from Review Desk. Check the third condition — that the session has stopped — before you do it. The worker is very likely saying the same thing in its own words at the same moment; relay whichever reached you, once, and discard once. Every other reason still asks: "you submitted a review" and "review request removed" both leave a pull request open. |
+| `review_request_closed` | **A review request was dropped because its pull request is merged or closed**, and `pr_state` says which — read live from GitHub, not from the search. Nothing was dispatched: there is nothing left to revise, approve or post. **`review_desk_id` says whether the request made it onto the Reviews list** — a number means this was a pull request Review Desk had never held a review of and it is now recorded as a first review (`review` links the page); `null` means a review already existed and was deliberately left alone, or the store could not be asked. Report it once, one line, naming the pull request, the state and which of those two it was, and **offer nobody for it** — GitHub goes on requesting the review after a merge, which is why you can still see the request. A `merged` one is over. A `closed` one can be reopened, and if it is, the request comes back round on its own as a `review_request`. One line per pull request per `reemit_after_secs`; a key a live session holds arrives as `review_cleared` instead, which names the session. |
 | `session_blocked` | **PushNotification**: "`<KEY>` worker is waiting on a prompt in allele." A blocked worker gets nowhere until a human acts. |
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
 | `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |
@@ -422,6 +446,21 @@ Acknowledge nothing; act:
   thread is open, so there is nobody to chase for an answer. Relay **what has to change about the
   work** and who can change it. `needs-input` is somebody owing an answer; `blocked` is the work
   not being ready. **Do not re-trigger it** — see the `session_lost` row.
+- **A review worker saying its pull request merged or closed** → that is a finished worker,
+  and it is finished whatever its ledger status said a minute ago. Its line names the round and
+  whether its draft was posted; **relay both**, and the second is the one your principal cannot
+  get anywhere else — an approved draft that was never posted leaves no trace on the pull
+  request, and "the draft was never posted" with no round named is the message DEV-959 was filed
+  about. The worker writes its own status (`merged` on a merge, `done` on a close), so check it
+  rather than writing one over the top. Then **discard it yourself, without asking** — the one
+  exception in `## Never`, whose three conditions you check there, the third being that the
+  worker has actually stopped — and say once afterwards which session you discarded and why. Do
+  not ask the worker to post the draft,
+  revise it, or write anything else to Review Desk — it has been told not to, and the reason is
+  that there is nothing left to review. Do not re-dispatch the key: the poller will not offer a
+  merged pull request again, and a replacement would open a round on a change that has shipped.
+  **A `nits_to_ticket` is the one thing that still comes after this**, and it comes to a
+  replacement — once the entry says `merged`, nothing reads the old session as listening.
 - `failed` or `stopped` → report it, then check the queue.
 - Anything that isn't a status change → answer it if it's in your remit; otherwise point the worker at your principal.
 
@@ -444,6 +483,10 @@ Don't push-notify claims, or anything your principal is clearly watching live.
   with them are terminated and their cursor files removed; live keys are left alone.
 - A worker's watcher deliberately **outlives `status=done`** while its PR is open, so it can still
   hear a review; it stops once the PR merges or closes, or immediately if the key has no PR at all.
+  **A review worker's watcher stops on a merged or closed PR whatever its status is** — `active`
+  mid-round included, which is the case DEV-959 was filed about. Reviewing is the one mode where
+  a closed PR means the work is over; every other mode keeps the old behaviour, because a merged
+  PR still collects comments its author should answer.
   If your principal wants the stricter behaviour — stop the moment the ledger says `done` — the
   watch command takes `--exit-on-done`. Say it exists if they ask why a done key is still watched;
   do not pass it yourself without their say-so.
@@ -459,7 +502,29 @@ Don't push-notify claims, or anything your principal is clearly watching live.
 ## Never
 
 - Do a worker's job, touch code, or post to GitHub.
-- Discard without your principal's explicit yes.
+- Discard without your principal's explicit yes — **with one exception, and these three
+  conditions are all of it**:
+  1. a **review** worker, no other mode;
+  2. whose pull request **GitHub reports `merged` or `closed`** — the worker's own report, a
+     `review_cleared` with reason "PR merged", or a `review_request_closed`. Not Review Desk
+     saying the review is finished, and not your own inference from a quiet session;
+  3. **after it has stopped.** Check `allele_sessions_status(session_id)` first: `response_ready`
+     or exited means stopped, and `running` means it is mid-turn. **A worker mid-turn is not
+     discarded** — wait for the turn to end and check again. Discard commits uncommitted work and
+     archives the branch, so interrupting a turn is not destructive, but it does throw away the
+     line the worker was composing, and that line is the one thing your principal cannot get
+     anywhere else.
+
+  Then `allele_sessions_discard(session_id)` → `D ledger put <KEY> status=discarded --by
+  dispatcher --note "PR merged"`, and **say so once, after the fact**: which session, which pull
+  request, and why. One line. Not a question — your principal decided this on DEV-959 so that a
+  shipped pull request stops costing them a yes — and not a silence either, because a session
+  disappearing from the sidebar with nothing said is indistinguishable from one that crashed.
+
+  **Everything else still needs the yes**, including a review worker whose pull request is still
+  open, a `done` worker that is merely finished, and anything on a Linear key. The reason this
+  one is safe to automate and those are not: a merged pull request is irreversible and nothing
+  can come back to the session about it. An open one can, and a Linear ticket always can.
 - Dispatch past the cap, or dispatch the same key twice. The ledger and the working label are
   the lock; check both.
 - Use native Task/Agent subagents.

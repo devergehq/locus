@@ -182,6 +182,15 @@ def error_log() -> Path:
 WORKING = {"claimed", "active", "needs-input", "blocked"}
 ALIVE = WORKING | {"done", "stopped"}
 REDISPATCHABLE = {None, "queued", "lost", "failed", "discarded"}
+# ALIVE minus `claimed`: the statuses a WORKER wrote about itself, so `_common.md`'s first five
+# minutes have run and its watcher has armed. `claimed` is the Dispatcher's word, written before
+# `allele_sessions_create` and therefore before any session exists to arm anything.
+#
+# Read by `cannot_be_told` and nothing else. That function's correctness rests on "an absent
+# cursor means the watcher has been and gone, not that it has yet to start", which is true of
+# every status here and false of `claimed` alone — so the set is the premise written down rather
+# than left in a `!= "done"` that happened to imply it.
+WORKER_ARMED = ALIVE - {"claimed"}
 # Statuses deliberately in NO set above, and the absence is the behaviour rather than an
 # oversight: `merged` and `deferred` mean no session should exist (so not ALIVE) and the item
 # must never be dispatched again (so not REDISPATCHABLE). They therefore stop appearing as live
@@ -226,6 +235,35 @@ WATCH_DEAD = {"discarded", "failed", "lost", "merged", "skipped", "deferred"}
 # A PR state that means the review is over. `Watcher.pull_request` already computes and persists
 # `pr_status`, so this is read from the cursor file rather than from GitHub.
 PR_CLOSED = {"merged", "closed"}
+
+
+def search_says_closed(pr: dict) -> bool:
+    """Does this row from `REVIEWS_Q` *look* like a pull request whose review is over?
+
+    **A pre-filter and never the answer.** The caller confirms every hit with a live
+    `Poller.pr_state` before it drops anything, and the division of labour is the whole design:
+    this decides which rows are worth one GitHub call, and that call decides.
+
+    `is:open` in `github.review_query` cannot do this job. It is the instance's own config — an
+    edited one need not carry the filter at all — and GitHub's search index lags a merge, so the
+    search goes on matching a pull request that merged while the last tick was running. DEV-959's
+    report is that window: a round opened on #9585 after the author pushed, and the merge landed
+    before anything was posted.
+
+    **And `state` cannot do the job either, which is why it only narrows.** `PullRequestState` is
+    non-null in GitHub's schema and is one of `OPEN`, `CLOSED`, `MERGED`, so the value is sound —
+    but nothing establishes whether `search` resolves it from the live record or from the same
+    snapshot that produced the row, and this file has a captured measurement pointing the other
+    way about the adjacent field: `trust_empty` says "`issueCount` and `nodes` are computed from
+    the same query against the same eventually-consistent index". Both staleness directions would
+    be silent, and one of them is a live review request dropped. So a stale `OPEN` costs this
+    filter nothing it was ever trusted for, and a stale `CLOSED` is overruled by the live read.
+
+    A missing or unrecognised value narrows nothing, which costs one call it would have saved and
+    no correctness at all.
+    """
+    state = pr.get("state")
+    return isinstance(state, str) and state.lower() in PR_CLOSED
 
 # Hours a `watch` process may run before it stops regardless of what the ledger says.
 # `limits.watch_max_hours` overrides it; the code default covers every config.json written
@@ -887,6 +925,22 @@ def ledger_get(key: str) -> dict | None:
     return read_json(ledger_path(key), None)
 
 
+def key_mode(key: str, entry: dict | None) -> str:
+    """What kind of work this key is, from its entry and its name.
+
+    Written once because two callers must agree about it: `Watcher.__init__` picks the brief's
+    vocabulary from it, and `watch_stop_reason` decides from it whether a closed pull request
+    ends the watch. A key whose mode those two read differently is a watcher that stops for one
+    and not the other, which is the kind of disagreement that shows up as a worker nobody can
+    explain rather than as an error.
+
+    The ledger's own `mode` is the answer whenever it has one. The `gh-` fallback is for a
+    watcher armed before its dispatch wrote an entry — `cmd_watch` says such a key is a typo or
+    a race, and `pr_key` is the only thing that mints that prefix.
+    """
+    return (entry or {}).get("mode") or ("review" if key.startswith("gh-") else "implement")
+
+
 def ledger_all() -> dict[str, dict]:
     """Every ledger entry, skipping any file that will not parse.
 
@@ -997,7 +1051,7 @@ query($q: String!) {
   search(query: $q, type: ISSUE, first: %d) {
     issueCount
     nodes { ... on PullRequest {
-      number title url isDraft headRefOid createdAt author { login } repository { nameWithOwner }
+      number title url isDraft state headRefOid createdAt author { login } repository { nameWithOwner }
     } }
   }
 }""" % REVIEW_PAGE
@@ -1105,6 +1159,7 @@ class Poller:
         # a single slot kept whichever came last — silently dropping the other, which was
         # usually the read, which is the dismissal guard.
         self.record_broken: dict = {}
+        self.broken_seq: dict = {}
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1275,6 +1330,7 @@ class Poller:
         self.look_stopped = False
         self.record_old = False
         self.record_broken = {}
+        self.broken_seq = {}
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
         # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
@@ -1419,11 +1475,62 @@ class Poller:
                 continue
             repo = pr["repository"]["nameWithOwner"]
             key = pr_key(repo, pr["number"])
-            present[key] = {"repo": repo, "number": pr["number"]}
             # Whatever its status, and before anything below can decide not to speak about it.
             # `request_spoken_for` reads this set, and what it is answering is "did GitHub
             # already show the Dispatcher this request", not "was an event emitted for it".
+            #
+            # **Before the merge check below, and that order is load-bearing.** On a tick where
+            # one `gh pr view` fails, `review_desk_item` reads `pr_state` as None and — by its
+            # own documented disposition — offers the item anyway. Shape 1 of
+            # `request_spoken_for` is then the only thing standing between a merged pull request
+            # and a `review_desk_requested`, and it is fed from here. A merged row removed from
+            # this set would route around this pass's own guard through the other source.
             self.requested.add(requested_key(key))
+            # **A merged or closed pull request is never dispatched and never gains a round**
+            # — no `review_request`, no `review_rerequested`, and nothing written to a review
+            # that already exists. There is nothing left to revise, approve or post, so a round
+            # opened here is a round spent on a pull request that has already shipped, which is
+            # DEV-959's own harm.
+            #
+            # **One request IS still recorded, and only one: the pull request Review Desk has
+            # never held a review of at all.** The first version of this dropped every recording,
+            # on the ticket's wording, and the review of that commit was right to object: a
+            # review request nobody got to, on a pull request that then merged unreviewed, is the
+            # single most informative row the Reviews list can carry, because it is the review
+            # that did not happen — and it is exactly the row DEV-945 was built to produce.
+            # Patrick narrowed the criterion to match (`request_closed` has the full argument).
+            # Recording it creates a first review and cannot spend a round, because there is no
+            # review for a round to be added to.
+            #
+            # **Two reads, and the second is the one that decides.** The search's `state`
+            # narrows; `pr_state` confirms, live, cached per tick, and only for the rows the
+            # first one flagged — so an instance whose query carries `is:open` makes no extra
+            # GitHub call at all, and one whose query does not makes at most one per apparently
+            # closed row. A `None` from `pr_state` is GitHub not answering and is NOT read as
+            # closed, exactly as that function documents: an item the dispatcher cannot place is
+            # better dispatched and discarded by a human who can read the pull request than
+            # dropped silently.
+            #
+            # **The key LEAVES `present`, like a row that went draft four lines up**, and the
+            # first version of this guard kept it. Keeping it reads better and is wrong: it
+            # makes the merge reportable only when the search index drops the row, which is two
+            # ticks under the shipped query and NEVER under a query without `is:open` — the very
+            # configuration this guard exists for. Leaving `present` makes the sweep below emit
+            # one `review_cleared` on the tick the merge is seen, with `why_cleared`'s own live
+            # read naming it "PR merged", and the Dispatcher offers the discard from there. Next
+            # tick the key is in neither `previous` nor `present`, so nothing reads as returned
+            # and nothing repeats. It also leaves a reopened pull request able to arrive as
+            # `returned` again, which `closed` needs and `merged` never will.
+            #
+            # **A `nits_to_ticket` is untouched by this** and must stay so. It does not come
+            # from this pass at all — `review_desk_item` carries it, exempts it by name from the
+            # same merge check, and its request only becomes an item once the draft is reported
+            # posted, which a merge usually follows within the hour.
+            if search_says_closed(pr) and (live := self.pr_state(repo, pr["number"])) in PR_CLOSED:
+                self.request_closed(rd, recording, key, repo, pr, live,
+                                    ledger.get(key) or {}, every)
+                continue
+            present[key] = {"repo": repo, "number": pr["number"]}
             entry = ledger.get(key) or {}
             status = entry.get("status")
             # **Before the dismissal check below, which `continue`s.** Backlog-ness is a fact
@@ -1568,8 +1675,13 @@ class Poller:
         # this file keeps arranging itself to avoid. The cost is one dict entry per dismissed
         # request, for as long as the instance lives, and that is the right side to err on: the
         # entry is small and the write is on a row somebody said to leave alone.
+        #
+        # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
+        # the fact it holds is "this row is on the work list and must never be dispatched from";
+        # `request_spoken_for`'s fourth shape is its only reader, and losing it is a review
+        # worker eventually sent to a pull request that shipped.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
-                                  if k in present or v.get("dismissed")}
+                                  if k in present or v.get("dismissed") or v.get("closed")}
 
     def record_unreachable(self, rd: dict, every: int) -> None:
         """Say that Review Desk could not be reached while recording a request.
@@ -1898,7 +2010,7 @@ class Poller:
             # Kept, not said: `record_unreachable` says it at the end of `review_requests`, and
             # carries the repository this was met on because SKILL.md tells the Dispatcher to
             # name it.
-            self.record_broken["review open"] = (state, detail, repo)
+            self.note_broken("review open", state, detail, repo)
             return None
         if state != "ok":
             # A refusal about THIS request rather than about the install, so the rest of the page
@@ -1971,7 +2083,7 @@ class Poller:
             if state == "absent":
                 # Nothing on this install can be asked anything, reads included.
                 self.read_stopped = True
-            self.record_broken["review find"] = (state, detail, repo)
+            self.note_broken("review find", state, detail, repo)
             return None
         if state == "refused" and review_desk_unknown(detail):
             # **A build that has never heard of `review find`, which must not take the feature
@@ -2007,10 +2119,23 @@ class Poller:
             self.record_stopped = True
             detail = (f"{rd.get('command')} review find exited 0 with an answer carrying no "
                       f"rounds — too old to use")
-            self.record_broken["review find"] = ("broken", detail, repo)
+            self.note_broken("review find", "broken", detail, repo)
             return None
         newest = rounds[0] if rounds else None
-        return newest if isinstance(newest, dict) else None
+        if rounds and not isinstance(newest, dict):
+            # **A non-empty list whose newest round is not an object is BROKEN, not "none"**, and
+            # the difference became load-bearing with DEV-959's recording carve-out: that reads a
+            # clean `None` as "the store holds no review of this pull request" and writes one, so
+            # falling through to `None` here is a `review open` against a pull request the store
+            # DOES hold a review of — the round-on-a-shipped-pull-request write the look exists
+            # to prevent. `open_request` already takes this line about its own unreadable exit-0
+            # answer: "exit 0 with an answer this file cannot read is BROKEN, not nothing."
+            self.record_stopped = True
+            detail = (f"{rd.get('command')} review find exited 0 with a round this file cannot "
+                      f"read — too old to use")
+            self.note_broken("review find", "broken", detail, repo)
+            return None
+        return newest
 
     def read_request(self, rd: dict, key: str, rid, every: int, repo: str) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
@@ -2042,7 +2167,7 @@ class Poller:
             self.read_stopped = True
             if state == "absent":
                 self.record_stopped = True
-            self.record_broken["review show"] = (state, detail, repo)
+            self.note_broken("review show", state, detail, repo)
             return None
         if state == "refused":
             if review_desk_unknown(detail):
@@ -2128,6 +2253,224 @@ class Poller:
                  title=pr.get("title"), url=pr.get("url"))
         return True
 
+    def request_closed(self, rd: dict, recording: bool, key: str, repo: str, pr: dict,
+                       state: str, entry: dict, every: int) -> None:
+        """Record a never-reviewed request, and say once that its pull request is over.
+
+        **The drop must not be the only silent one in this poller, and it was.** Every other
+        refusal to act here is said once with a reason: `source_empty` for a disbelieved
+        emptiness and for a truncation, `review_dismissed` for the developer's own decision,
+        `review_desk_unavailable` for a refused recording, `review_desk_unknown_kind` for a kind
+        this file cannot place. The argument is written out at `unknown_kind`: a dropped item is
+        only ever findable where something says its name, and DEV-934's whole lesson is that
+        `nits_to_ticket` "reached nobody and said nothing about itself" because there was no line
+        anywhere to grep for. A request the Dispatcher can SEE on GitHub, dropped in silence, is
+        that failure with a merge in front of it.
+
+        **And record the one request that is worth recording, which is a narrowing of the
+        ticket rather than a reading of it.** DEV-959 first said to record no request at all for
+        a merged or closed pull request. The review of that commit objected that this deletes
+        precisely the row DEV-945 exists to produce — the review that never happened — and that
+        the two halves of the criterion are separable: "dispatches no worker" is the fix, and
+        "records no request" buys nothing, because recording is a write to Review Desk and
+        cannot start a session. Patrick agreed and narrowed it, so:
+
+          | What Review Desk holds for this pull request | What happens here |
+          |---|---|
+          | no review at all | `review open` — a FIRST review, which no round can be spent on |
+          | a review, any state | nothing is written. A round on a shipped pull request is the harm |
+          | it could not be asked | nothing is written, and the install is already being reported |
+
+        **`find_request` answering `None` cleanly is what "no review at all" means**, and the
+        distinction is load-bearing: that function returns `None` both for an empty `reviews`
+        list and for an install it could not use, and writing on the second would be a blind
+        write — the thing the look exists to prevent. The flags it sets on the broken paths
+        (`record_stopped`, `look_stopped`) and the `"refused"` it returns for a per-pull-request
+        refusal are the three other answers, so a clean `None` with neither flag set is the only
+        one that means the store looked and held nothing.
+
+        **No dismissal read, unlike `record_request`.** Nothing is dispatched from this row
+        whatever the developer decided about it, so `review show` would cost one subprocess per
+        tick to answer a question with no consequence.
+
+        **The `recorded` entry this leaves is KEPT, and an earlier version of this paragraph said
+        the opposite.** It said the prune at the end of `review_requests` drops it — the key is
+        not in `present` — "and that is correct: the row is on the Reviews list now, which is
+        where it is wanted". That was true for about an hour, and then the `closed` flag made the
+        entry load-bearing: `request_spoken_for`'s fourth shape is its only reader, and it is
+        what holds the recorded row out of dispatch for ever. **Restoring the prune re-opens
+        that**, which is why this is written out rather than left to the prune's own comment —
+        the review that caught it made exactly the point this file keeps making about itself, that
+        a paragraph which used to be true is how a bug comes back.
+
+        **The race, named rather than implied:** between the look and the write, a worker could
+        open the same review. `review open` then finds it, and spends a round only if a session
+        is linked to it — which would mean the pull request is being reviewed, which would mean
+        this was not the never-reviewed case. Bounded, and it needs a dispatch inside one tick.
+
+        **Said only where the clearance sweep will not say it.** A key held by a live session and
+        carried over from a previous tick leaves `prs_present` and produces a `review_cleared`
+        with `why_cleared`'s own live reason, which is the better event: it names the session and
+        the Dispatcher offers the discard. This covers the three cases that sweep skips — a first
+        tick, which has no `previous` to compare against; a key GitHub had not shown before; and
+        a request no session ever held, which is the one the developer most wants to see.
+
+        One line per key per `reemit_after_secs`, not per tick. Under the shipped query the row
+        leaves the search within a tick or two and this fires once in total; under a query with
+        no `is:open` the row is returned for ever, and the rate limit is what keeps that from
+        being one line every five minutes until somebody edits the config.
+
+        **Two marks, not one, and the first version used one for both jobs.** They answer
+        different questions — "has the merge been said" and "is the recording due to be tried
+        again" — and sharing a mark made the second cancel the first: a `broken` Review Desk
+        cleared the window so the write could be retried, and the retry re-said the merge, every
+        tick, for as long as the install stayed broken. That is the "one line per tick for ever"
+        the `absent` case was narrowed out to avoid, arriving through the `broken` case instead,
+        and unbounded under the very query the rate limit exists for. `record_if_never_reviewed`
+        owns its own window now; this function owns only the line.
+        """
+        # **The mark is taken whichever way this goes, and that is what makes "once per key"
+        # true across the two paths rather than only within each.** The tick the sweep speaks
+        # on, `previous` still holds the key; the tick after, it does not — so without this the
+        # blunter line followed the good one by one interval, every time, saying the same merge
+        # again with less in it. `due` is both the question and the mark, which is why taking it
+        # is a statement and not a side effect.
+        said = f"{key}|review_request_closed"
+        # **The recording is attempted whatever the ledger says, and the gate below is only
+        # about the EVENT.** The first version skipped it for a live session, on the premise that
+        # "that session opened the review on its way in" — which is the same shape of premise
+        # `WORKER_ARMED` was added to this file to retire, and false for the same reason. No
+        # ledger status establishes that `review open` has run: the Dispatcher writes `claimed`
+        # before `allele_sessions_create`, `_common.md` step 2 writes `active` before the mode's
+        # brief has done anything, and a session can die between either and its first command.
+        # The only thing that knows is Review Desk, and asking it is what `find_request` does —
+        # so the status is not consulted at all, and a review that exists is left alone on its
+        # own evidence rather than on an inference about a session.
+        rid = self.record_if_never_reviewed(rd, recording, key, repo, pr, every)
+        # **The merge is said once, and a recording that lands late is said once more.** The
+        # second clause is the whole reason this is not a bare `due`: a tick that could not reach
+        # Review Desk emits `review_desk_id: null`, and when the retry finally writes the row
+        # nobody would otherwise ever be told it reached the list. `rid` is non-None on exactly
+        # the tick that wrote it and never again — `record_if_never_reviewed` returns early once
+        # the record carries a review — so this is at most two lines per pull request, ever.
+        if not self.due(said, every) and rid is None:
+            return
+        if entry.get("status") in ALIVE and key in (self.state["prs_present"] or {}):
+            # The clearance sweep speaks for this one, and it speaks better: it names the
+            # session so the Dispatcher can offer the discard. The recording above still ran.
+            return
+        emit("review_request_closed", key=key, repo=repo, number=pr["number"],
+             title=pr.get("title"), url=pr.get("url"), pr_state=state,
+             author=(pr.get("author") or {}).get("login"), review_desk_id=rid,
+             review=review_desk_link(rd, rid),
+             ledger_status=entry.get("status"), session_id=entry.get("session_id"))
+
+    def note_broken(self, call: str, state: str, detail: str, repo: str) -> None:
+        """Record that `call` could not be used, and COUNT it.
+
+        One place, so the count cannot drift from the dict. `record_broken` is what
+        `record_unreachable` reports from; the count beside it is what `broken_since` compares,
+        and it exists because the dict alone cannot answer "did THIS attempt break".
+        """
+        self.record_broken[call] = (state, detail, repo)
+        if state == "broken":
+            self.broken_seq[call] = self.broken_seq.get(call, 0) + 1
+
+    def broken_since(self) -> tuple:
+        """How many BROKEN answers the two calls `record_if_never_reviewed` makes have given.
+
+        Compared before and after that attempt, so the retry window is cleared for a failure the
+        attempt itself caused and not for one another row on the page left in `record_broken` —
+        which is reset per tick, not per key, and holds `review show` and every other call too.
+
+        **A count rather than the set of names, and the difference is a premise this file should
+        not have to hold.** A set answers "is this call broken", so a second row whose own attempt
+        broke the SAME call saw no change and did not clear its window. That turned out to be
+        unreachable — every path that marks these two calls broken also sets `record_stopped`,
+        and the guard on it precedes the window, so a later row never takes a window to hold; a
+        two-row tick against a broken install records both rows on the tick after, measured. But
+        the correctness of the set version rested on an invariant two functions away, which is
+        exactly the shape of premise this branch has now been caught by four times. A count is
+        right whether or not that invariant holds, and costs one dict.
+
+        `absent` is deliberately not counted. It is an answer, not a failure: under `auto` it is
+        an instance without Review Desk, and retrying it would say the same thing every tick for
+        ever on every such instance.
+        """
+        return tuple(self.broken_seq.get(call, 0)
+                     for call in ("review find", "review open"))
+
+    def record_if_never_reviewed(self, rd: dict, recording: bool, key: str, repo: str,
+                                 pr: dict, every: int):
+        """`review open` for a closed pull request Review Desk has never held a review of.
+
+        Returns the review's id when one was written, and None every other time — which the
+        event carries, so the Dispatcher can say whether the row reached the list or not.
+
+        The four guards before the look are the cheap ones: Review Desk off or absent is not
+        asked; a build with no `review find` is not asked either, because the first refused call
+        of the tick established that for every row on the page and `find_request` says so in as
+        many words; a row with no head commit cannot be opened at all (`review open` requires
+        one); and a key this poller already has a review id for has been answered on an earlier
+        tick.
+
+        **Its own window, and it is cleared only when THIS attempt broke.** The first version
+        shared `request_closed`'s mark and tested `record_broken` whole — a dict reset per TICK,
+        not per key, holding every call every row on the page has failed. So a `review show` that
+        broke while recording an open pull request cleared the window of a merged one three rows
+        later, whose own look had answered cleanly, and re-said its merge every tick afterwards.
+        The two calls this function makes are the only ones that can say anything about this
+        attempt, so the before-and-after of just those two is what decides the retry.
+
+        An install that is `absent` is not retried, and a build with no `review find` is not
+        either: both have answered, which is the distinction `record_request` draws when it
+        declines to clear its own window on `read_stopped`. `broken` is the one somebody can fix,
+        and after they do the next tick records.
+        """
+        head = pr.get("headRefOid")
+        if not recording or self.record_stopped or self.look_stopped or not head:
+            return None
+        window = f"{key}|review_request_record"
+        if not self.due(window, every):
+            return None
+        held = self.state["recorded"].get(key) or {}
+        if review_id(held.get("review")) is not None:
+            return None
+        # Per key, exactly as `record_request` resets it and for the same reason: `open_request`
+        # sets it when a build refuses `--ledger`, and as a tick-wide flag it would leak onto
+        # every key recorded after the one that set it.
+        self.record_old = False
+        before = self.broken_since()
+        found = self.find_request(rd, repo, pr["number"], every)
+        if found is None and not self.record_stopped and not self.look_stopped:
+            review = self.open_request(rd, key, repo, pr["number"], head,
+                                       pr.get("title"), every)
+        else:
+            # A review exists, or the store could not be used. Either way nothing is written:
+            # the first would be a round on a shipped pull request, the second a blind write.
+            review = None
+        if self.broken_since() != before:
+            # THIS attempt broke the install, so the window is not spent on it.
+            self.state["emitted"].pop(window, None)
+        if not isinstance(review, dict):
+            return None
+        # `old` carried, not dropped. It means "this build has no `--ledger`, so never follow
+        # this head again", and a record written here that claimed `old: False` would let a
+        # reopened pull request's push reach `review open` on such a build — which answers
+        # `created: true, round 2`, the two-unstarted-reviews-for-one-request harm the flag
+        # exists to prevent. Narrow, and free to get right.
+        self.remember(key, review, head, old=self.record_old)
+        # **And remember that it was recorded CLOSED**, which is what keeps "nothing is
+        # dispatched for this row" true rather than nearly true. The row now sits on Review
+        # Desk's work list as `review_requested` for ever, so `review_desk_item` re-rolls its
+        # `pr_state` check every `reemit_after_secs` — and `pr_state` answers None on any
+        # `gh pr view` failure, which this file deliberately does not read as closed. One flaky
+        # call would eventually emit `review_desk_requested` for a merged pull request: DEV-959's
+        # own harm, arriving through the row this carve-out adds. `request_spoken_for` reads this
+        # flag as a fourth shape; see it for why that is the right place.
+        self.state["recorded"][key]["closed"] = True
+        return review_id(review.get("id"))
+
     def request_spoken_for(self, key: str, entry: dict, item: dict) -> bool:
         """Is there nothing for the Review Desk pass to say about this `review_requested`?
 
@@ -2161,6 +2504,30 @@ class Poller:
              would object. `skipped` alone was tested here and `deferred` was not, until a
              review of this branch found that the status the file itself defines as "never
              dispatched again" was being offered for dispatch on any tick GitHub stayed quiet.
+          4. **This poller recorded it while its pull request was already closed** (DEV-959's
+             carve-out, which writes a first review for a pull request that merged before anybody
+             reviewed it). Shapes 1 and 3 both lapse on such a row and shape 2 never applies, so
+             without this it is the one recorded request that creeps back towards dispatch:
+             shape 1 holds only while GitHub's search still returns the row, shape 3 needs the
+             ledger entry to be absent — which it is not for a review that was dispatched and
+             then `lost` before its worker ran `review open` — and the only remaining guard is
+             `review_desk_item`'s own `pr_state` check, which answers None on any `gh pr view`
+             failure and does not read None as closed. The row lives on the work list for ever,
+             so that check is re-rolled every `reemit_after_secs`, and one flaky call eventually
+             dispatches a review worker onto a merged pull request. That is DEV-959's own harm
+             arriving through the row DEV-959 added, which is why the flag is set where the row
+             is written and read here rather than inferred from anything.
+
+             **Kept through the prune for the same reason a dismissal is**, and the paragraph
+             there carries the argument: the fact is held nowhere else, losing it sends the next
+             tick back towards a dispatch, and the cost is one dict entry per such pull request
+             for as long as the instance lives.
+
+             **Read through `requested_key`, like shape 1 and for the same reason.** The first
+             version used a direct `.get` on `recorded` and therefore answered False for any
+             repository GitHub spells with a capital, because the key asking the question is
+             `review_desk_item`'s lower-cased fallback. `recorded_closed` carries the argument,
+             and the build that takes that fallback is the one this shape most needs to hold on.
           3. **It names a ledger entry that does not exist.** Only this poller links a review to
              a ledger entry nobody created; a worker writes its entry before it opens anything.
              So this is a request recorded on sight that was never claimed, and GitHub is no
@@ -2188,7 +2555,33 @@ class Poller:
             return True
         if entry.get("status") in DECIDED:
             return True
+        if self.recorded_closed(key):
+            return True
         return bool(item.get("ledger_id")) and not entry
+
+    def recorded_closed(self, key: str) -> bool:
+        """Did this poller record `key` while its pull request was already closed?
+
+        **Compared through `requested_key`, because the two sides spell the repository
+        differently** — the same mismatch that function exists for, reached through a third door.
+        `recorded` is keyed from GitHub's `nameWithOwner` as the repository is registered
+        (`gh-Portal-421`), and the Review Desk item asking this is keyed by `review_desk_item`'s
+        fallback, which is lower-cased (`gh-portal-421`). A direct `.get` therefore answered
+        False for exactly the row it was written to protect.
+
+        **That fallback is taken when the work-list row carries no `ledger_id`**, which is a
+        build too old for `review open --ledger` — the same build this commit's `old` flag is
+        about. So the miss was not hypothetical: on such an install a merged pull request this
+        poller had recorded went back to being offered for dispatch the moment GitHub stopped
+        showing the request and one `gh pr view` failed.
+
+        A scan rather than a second dict. This one is the poller's own and is bounded by the open
+        requests plus the closed rows it has recorded, and a second index keyed another way is
+        one more place for these two spellings to disagree.
+        """
+        want = requested_key(key)
+        return any(v.get("closed") for k, v in self.state["recorded"].items()
+                   if isinstance(v, dict) and requested_key(k) == want)
 
     @staticmethod
     def why_cleared(cfg: dict, where: dict) -> str:
@@ -2399,13 +2792,13 @@ class Poller:
           1. The worker reports `done` and stays up with its watcher, which is what lets it hear
              an approval at all. `review_desk_live` says so and depends on it.
           2. The draft is approved, it posts, the pull request merges. `watch_stop_reason` ends
-             the watcher on `done` plus a closed pull request — correctly, because nothing else
-             would ever stop it, and `_common.md` tells the worker that is expected and nothing
-             to do.
+             the watcher on a review key with a closed pull request — correctly, because nothing
+             else would ever stop it, and `review.md` has the worker say one line about the
+             merge and end rather than sit there.
           3. Nothing writes a terminal ledger status at a merge; the comment on `WATCH_DEAD`
              says the status to reason about after one is `done`. So the entry stays `done`,
-             `done` is in `ALIVE`, and allele still lists the session because nobody discarded
-             it.
+             `done` is in `ALIVE`, and allele still lists the session until the principal
+             answers the Dispatcher's offer to discard it.
           4. The developer clicks "File as one ticket for an agent", and `review_desk_live`
              answers True about a session whose eyes are shut.
 
@@ -2424,8 +2817,27 @@ class Poller:
           | How the watcher stopped | Cursor afterwards | Read as |
           |---|---|---|
           | `WATCH_DEAD` status, `--exit-on-done`, or no pull request | deleted | cannot be told |
-          | `done` with a merged or closed pull request | kept, `pr_status` closed | cannot be told |
+          | a review key with a merged or closed pull request | kept, `pr_status` closed | cannot be told |
           | `ceiling` or `max_ticks` | kept, `pr_status` as it was | still listening |
+
+        **The status test is `WORKER_ARMED`, not `done`, and DEV-959 is why it had to widen —
+        but only for a cursor that EXISTS.** The absent-cursor branch below stays scoped to
+        `done`, with its own paragraph; what widened is which statuses may have had a live
+        watcher shut under them by a merge.
+        `watch_stop_reason` used to end a watcher over a merge only on a `done` key, so `done`
+        was the only status this question could arise about and testing for it was the same
+        thing as testing the premise. A review key now stops on a merge whatever its status is —
+        an `active` worker mid-round is the case the ticket was filed about — so a `nits_to_ticket`
+        arriving after that merge would have found an `active` entry, read "the session can be
+        told", and reached a session whose eyes had closed and which `review.md` has since told
+        to end. That is DEV-934's bug restored by the fix for a different one, which is the
+        third time this exact shape has been shipped from this function; the premise is now
+        named in `WORKER_ARMED` rather than implied by a status.
+
+        `claimed` is the status left out, and it is the one case where an absent cursor really
+        does mean "not yet": the Dispatcher writes it before `allele_sessions_create`, so there
+        is no session and nothing has armed. Read as "can be told", the item is suppressed for
+        that one interval and re-offered on the next, by which time the worker has armed.
 
         The last row is the one that must stay as it is: `_common.md` tells a worker to re-arm
         the Monitor after a ceiling, so a cursor with an open `pr_status` is a watcher that is
@@ -2444,7 +2856,7 @@ class Poller:
         The event still carries `session_id` and `ledger_status`, so the Dispatcher can try the
         session that is sitting there before it dispatches a replacement. SKILL.md says so.
         """
-        if kind != "nits_to_ticket" or entry.get("status") != "done":
+        if kind != "nits_to_ticket" or entry.get("status") not in WORKER_ARMED:
             return False
         # A cursor that is not a populated object is a cursor no watcher is using — deleted,
         # empty, or half-written by a process that died over it. `isinstance` rather than trust
@@ -2452,7 +2864,16 @@ class Poller:
         # a list is an AttributeError in the middle of a poll tick.
         cursor = read_json(watch_dir() / f"{key}.json", {})
         if not isinstance(cursor, dict) or not cursor:
-            return True
+            # **The absent-cursor reading stays scoped to `done`, and widening it was a blocker
+            # found by the harness.** On `done` the argument is airtight: a worker reports it
+            # only after a full pass, so it has certainly armed, and `cmd_watch` deletes the
+            # cursor on three stop paths. On `active` the gap between `_common.md` step 2, which
+            # writes the status, and step 3, which arms the watcher, is a real few seconds — and
+            # reading it as deaf there dispatches a replacement alongside a session that is
+            # about to start listening. The case this function had to grow for is not that one:
+            # it is a cursor that EXISTS and says the pull request closed, which only
+            # `watch_stop_reason` can have produced and which is unambiguous.
+            return entry.get("status") == "done"
         return cursor.get("pr_status") in PR_CLOSED
 
     def unknown_kind(self, kind, rid, repo: str, every: int) -> None:
@@ -2745,7 +3166,7 @@ class Watcher:
         self.state = read_json(self.path, {})
         self.fresh = not self.state
         entry = ledger_get(key) or {}
-        self.mode = entry.get("mode") or ("review" if key.startswith("gh-") else "implement")
+        self.mode = key_mode(key, entry)
         self.own = f"agent:{key}/"
         if pr:
             repo, number = pr.rsplit("#", 1)
@@ -2892,6 +3313,28 @@ class Watcher:
             emit("pr_pushed", key=self.key, pr=n, previous=self.state.get("pr_head"), current=head)
         if not first and status != self.state.get("pr_status"):
             emit("pr_state", key=self.key, pr=n, previous=self.state.get("pr_status"), current=status)
+        elif first and status in PR_CLOSED and self.mode == "review":
+            # **The one piece of history a first tick does not suppress**, and the exception is
+            # the same one `review_desk()` makes a paragraph below for the same reason: a worker
+            # arming over a state that has ALREADY happened cannot be made to wait for it to
+            # happen again. A review session dispatched after the merge would otherwise hear
+            # nothing about the thing that decides its whole brief.
+            #
+            # **Belt and braces rather than the mechanism, and the distinction is worth having
+            # straight.** On a key whose cursor survived the merge, `watch_stop_reason` stops the
+            # watcher before this tick ever runs, so what the worker actually receives is
+            # `watch_stopped` with a `reason` of `pull_request` — which `_common.md` routes. This
+            # line covers the case where the cursor is gone: `D reap` prunes a finished key's
+            # cursor, and a replacement then arms a fresh one and gets exactly one tick.
+            #
+            # Narrow twice over. Only a merged or closed pull request: an OPEN one on a first
+            # tick is the case the suppression was written for, and announcing it to every worker
+            # on arming would be noise. And only a REVIEW: `implement.md` turns a `pr_state`
+            # merged into `D ledger put <KEY> status=done --note "merged"`, so a replacement
+            # implement worker — re-queued because the work was NOT finished, and arming at
+            # `_common.md` step 3 before it reads the ticket at step 4 — would report itself done
+            # on a pull request somebody else closed, before it had read anything at all.
+            emit("pr_state", key=self.key, pr=n, previous=None, current=status, first=True)
         self.state.update(pr_head=head, pr_status=status, pr_since=now_z(), pr_seen=sorted(seen)[-500:])
 
 
@@ -3038,8 +3481,15 @@ def full_pass_due(last_full: float, cfg: dict) -> bool:
     return time.time() - last_full >= int(cfg["limits"]["watch_interval_secs"])
 
 
-def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, str] | None:
+def watch_stop_reason(key: str, state: dict,
+                      exit_on_done: bool) -> tuple[str | None, str, bool, str] | None:
     """Why this watcher should stop, from local files only. `None` means carry on.
+
+    Returns `(status, detail, ledger_decided, reason)`. The annotation used to say `tuple[str,
+    str]` while the body returned three elements; it is corrected here rather than left, because
+    the fourth is being added in the same breath and a signature that was already wrong is how
+    the next caller gets the arity wrong too. `prunable_cursors` reads `[0]` and `cmd_reap` reads
+    `[1]`, so both are unaffected by the addition.
 
     One `open()` of a JSON file per tick, and no API call at all, which is what lets this run
     *before* the first tick as well as between them. That ordering is the difference between a
@@ -3078,23 +3528,64 @@ def watch_stop_reason(key: str, state: dict, exit_on_done: bool) -> tuple[str, s
     behaviour the principal asked for and the choice is his. It is not the default, and the
     reason is in the PR.
 
+    **A REVIEW key stops on a closed pull request whatever its status is, and that is DEV-959.**
+    The `done` branch below was the only merge-aware path, so a review worker that was anything
+    else — `active` mid-round, `needs-input`, `stopped` — kept its watcher to the ceiling. On 13
+    October 2026 the session for `tc-portal#9585` was one of them: a second round opened after
+    the author pushed, the pull request merged, and the session was still there hours later
+    telling its principal "the draft was never posted". Four rounds of #9568 are the same shape.
+
+    Reviewing is the one mode where a closed pull request means the work itself is over.
+    Nothing is left to revise, approve or post, so there is nothing a later event could ask the
+    worker for. Every other mode is left exactly as it was, deliberately and narrowly:
+    `implement.md` writes `status=done --note "merged"` only once it has seen the merge, and a
+    merged pull request still collects review comments its author should answer. Scoping this to
+    `review` buys DEV-959's fix without making any other worker deaf, and `key_mode` is where
+    the two readers of that word agree.
+
+    **The worker always hears the merge before its eyes close, and in the same pass.**
+    `Watcher.tick` runs `pull_request` — which emits `pr_state` and writes `pr_status` to the
+    cursor — and `cmd_watch` asks this question again immediately afterwards, so the stop and the
+    event the worker acts on come out of one pass rather than two. That ordering is what lets
+    `review.md` tell the worker to act on `pr_state`: the event is never the one lost to the
+    stop. See `cmd_watch`'s `stopped` for why the question is asked twice a pass.
+
     The third element of the return is **whether the ledger alone decided it**, which is what tells
     `cmd_watch` it may delete the cursor. Terminality read from the ledger is reconstructible on the
     next process; terminality read from a file you are about to delete is not.
     """
-    status = (ledger_get(key) or {}).get("status")
+    entry = ledger_get(key) or {}
+    status = entry.get("status")
     if status in WATCH_DEAD:
-        return status, f"ledger status '{status}' — nothing will speak on this key again", True
+        return (status, f"ledger status '{status}' — nothing will speak on this key again",
+                True, "ledger")
+    pr_status = state.get("pr_status")
+    if key_mode(key, entry) == "review" and pr_status in PR_CLOSED:
+        # Cursor kept, for the reason the `done` path below keeps it and one more: `pr_status`
+        # lives only here, so deleting it would make the next relaunch re-derive the merge over
+        # a full tick's API calls — and `Poller.cannot_be_told` reads this very field to decide
+        # whether a `nits_to_ticket` can still reach the session. A deleted cursor answers that
+        # question the same way, so nothing is lost either way; an answer that costs no GitHub
+        # call is the better one.
+        # **`reason` is `pull_request`, and that word is the whole of why the fourth element
+        # exists.** `cmd_watch` used to hard-code `reason="ledger"` on every stop, which was
+        # true while the ledger was the only thing that could decide — and `_common.md` reads
+        # `ledger` as "your key's status says nothing more will arrive on it … nothing to do".
+        # Said to an `active` worker mid-round, that is a lie in the one direction that matters:
+        # the brief's own table would tell it to do nothing at the moment it has one thing left
+        # to do. A worker can now tell the two apart without parsing prose.
+        return (status, f"a review whose pull request is {pr_status} — nothing is left to "
+                        f"revise, approve or post", False, "pull_request")
     if status == "done":
         if exit_on_done:
-            return status, "ledger status 'done' and --exit-on-done was given", True
+            return status, "ledger status 'done' and --exit-on-done was given", True, "ledger"
         if not state.get("pr"):
-            return status, "ledger status 'done' and no pull request to watch", True
+            return status, "ledger status 'done' and no pull request to watch", True, "ledger"
         pr = state.get("pr_status")
         if pr in PR_CLOSED:
             # Cursor kept: `pr_status` lives only in it, so deleting it would make the next
             # relaunch re-derive the merge over a full tick's API calls, forever.
-            return status, f"ledger status 'done' and its PR is {pr}", False
+            return status, f"ledger status 'done' and its PR is {pr}", False, "pull_request"
     return None
 
 
@@ -3127,12 +3618,37 @@ def cmd_watch(args) -> None:
     # first pass skipped them would have nothing to suppress and would report a ticket's whole
     # backlog the first time it did run them.
     last_full = 0.0
-    while True:
+
+    def stopped() -> bool:
+        """Emit and report, if this watcher is finished with its key. Read the cursor it holds.
+
+        **Called twice a pass, before the tick and after it, and the two answer different
+        questions.** The one before is about a key that was ALREADY finished when this process
+        started — `_common.md` arms the watcher inside a persistent Monitor, so an exiting
+        watcher may be relaunched at once, and a relaunch onto a dead key has to cost one file
+        read rather than the six GitHub calls a tick makes.
+
+        The one after is about a key this pass has just finished, and DEV-959 is why it is here:
+        the ticket asks that a worker whose pull request merges end "within one watch interval",
+        and with the check only at the top of the loop the stop waited out a whole sleep as well
+        — up to `watch_interval_secs` twice over, which on `tc-portal`'s 300 is ten minutes of a
+        watcher polling a pull request that has shipped. The tick that reads the merge has
+        already written `pr_status` to the cursor, so the answer costs one more `open()`.
+
+        After `--once`, deliberately. That flag means one pass and exit, and it already exits;
+        a stop reason on a run whose caller asked for exactly one pass would be a new emission
+        on a path that reads as "tick and go".
+        """
         stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done)
-        if stop:
-            status, why, from_ledger = stop
-            emit("watch_stopped", key=args.key, reason="ledger", status=status, ticks=ticks,
-                 cursor_removed=from_ledger and watcher.forget(), detail=why)
+        if not stop:
+            return False
+        status, why, from_ledger, reason = stop
+        emit("watch_stopped", key=args.key, reason=reason, status=status, ticks=ticks,
+             cursor_removed=from_ledger and watcher.forget(), detail=why)
+        return True
+
+    while True:
+        if stopped():
             return
         full = full_pass_due(last_full, load_config())
         if full:
@@ -3140,6 +3656,8 @@ def cmd_watch(args) -> None:
         watcher.tick(full=full)
         ticks += 1
         if args.once:
+            return
+        if stopped():
             return
         if args.max_ticks and ticks >= args.max_ticks:
             emit("watch_stopped", key=args.key, reason="max_ticks", ticks=ticks, cursor_removed=False,
@@ -3874,7 +4392,11 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
             continue
         stop = watch_stop_reason(key, read_json(path, {}), False)
         if stop:
-            prunable.append((path, key, stop[0]))
+            # `stop[0] or ...`, because the status can now be absent. Every branch that could
+            # stop a watcher before DEV-959 was keyed on the status itself, so `stop[0]` was
+            # always a word; the review branch is keyed on the CURSOR, so an entry with no
+            # `status` field reaches `cmd_reap`'s dry-run line and prints "(gh-x is None)".
+            prunable.append((path, key, stop[0] or "no status"))
     return prunable, unknown
 
 

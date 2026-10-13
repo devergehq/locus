@@ -114,11 +114,23 @@ PRS = [{"number": n, "title": f"PR {n}", "url": f"https://github.com/o/r/pull/{n
         "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
        for n in (9481, 9464, 9435, 9432, 9431, 9430, 9429, 9428, 9426, 9394)]
 
-def offline(review_nodes=PRS, gh_raises=None):
-    """No network: `linear` and `gh` are module globals, so replacing them is enough."""
+def offline(review_nodes=PRS, gh_raises=None, live=None, live_raises=False):
+    """No network: `linear` and `gh` are module globals, so replacing them is enough.
+
+    `live` is the live `gh pr view --json state` answer per PR number, which is what DEV-959's
+    guard CONFIRMS a closed-looking search row against. Defaulting it to OPEN rather than
+    answering every call with the search document is not tidiness: the old fake returned the
+    search dict for `pr view` too, so `pr_state` read `None` off it and every row looked open
+    whatever the test meant. `live_raises` is GitHub not answering, which `pr_state` turns into
+    `None` and which must NOT be read as closed.
+    """
     m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
     m.allele_state = lambda cfg: ({}, set())
     def fake_gh(*args):
+        if args[:2] == ("pr", "view"):
+            if live_raises:
+                raise RuntimeError("gh pr view: boom")
+            return {"state": (live or {}).get(int(args[2]), "OPEN"), "latestReviews": []}
         if gh_raises:
             raise gh_raises
         return {"data": {"search": {"nodes": review_nodes}}}
@@ -370,6 +382,164 @@ elif scenario == "hostile_state":
     m.cmd_status(A())
     print(json.dumps({"status_survived": True}))
 
+elif scenario == "pr_state_rows":
+    # DEV-959. One page carrying every state a row can come back with, including a row with NO
+    # `state` key at all -- which is what every fixture above this line is, and which must keep
+    # reading as open or this scenario silently rewrites the rest of the file.
+    def row(n, state):
+        r = {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/r/pull/{n}",
+             "isDraft": False, "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z",
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        if state is not None:
+            r["state"] = state
+        return r
+    # 9607 is the one that matters most: the search says MERGED and the LIVE read says OPEN.
+    # The search's `state` only narrows, so this row must be dispatched like any other.
+    offline(review_nodes=[row(9601, "OPEN"), row(9602, "MERGED"), row(9603, "CLOSED"),
+                          row(9604, None), row(9605, "merged"), row(9607, "MERGED")],
+            live={9602: "MERGED", 9603: "CLOSED", 9605: "MERGED", 9607: "OPEN"})
+    # Both write paths are replaced rather than let through to the stand-in: what is under test
+    # is which call is made for which row, and either one reaching a `review-desk` on PATH would
+    # be a write. `record_request` is the OPEN path; `open_request` behind a clean `find_request`
+    # is the closed path's narrowed one (DEV-959 as Patrick amended it: a closed pull request
+    # Review Desk has never held a review of is still recorded, once).
+    asked, opened = [], []
+    m.Poller.record_request = lambda self, rd, key, *a, **k: asked.append(key)
+    m.Poller.find_request = lambda self, rd, repo, number, every: None
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    p = m.Poller()
+    p.tick()
+    # One array per line, keyed by name. Printed together, a grep for a key matches whichever
+    # array happens to carry it -- the trap `empty_guard` has a comment about, and the trap the
+    # first version of this scenario walked into: all three "records no request" assertions read
+    # their key off the `present` list and failed for that reason alone.
+    print(json.dumps({"phase": "recorded", "keys": sorted(asked)}))
+    print(json.dumps({"phase": "opened", "keys": sorted(opened)}))
+    print(json.dumps({"phase": "present", "keys": sorted(p.state["prs_present"])}))
+
+elif scenario == "closed_held":
+    # The same page, but Review Desk already HOLDS a review of every pull request on it. The
+    # never-reviewed carve-out must not fire: a round on a shipped pull request is the harm the
+    # whole ticket is about.
+    def row(n, state):
+        r = {"number": n, "title": f"PR {n}", "url": f"u{n}", "isDraft": False,
+             "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z", "state": state,
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        return r
+    offline(review_nodes=[row(9631, "MERGED"), row(9632, "CLOSED")],
+            live={9631: "MERGED", 9632: "CLOSED"})
+    opened = []
+    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    # A dict is `review find` saying "here is the newest round", which is a review that exists.
+    m.Poller.find_request = lambda self, rd, repo, number, every: {"id": 5, "head_sha": "x"}
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "opened", "keys": sorted(opened)}))
+
+elif scenario == "closed_unlookable":
+    # `find_request` returns None for an install it could not USE as well as for a store that
+    # held nothing, and writing on the first would be the blind write the look exists to stop.
+    # The flags it sets are the discriminator; this scenario sets each of them in turn.
+    def row(n):
+        return {"number": n, "title": f"PR {n}", "url": f"u{n}", "isDraft": False,
+                "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z", "state": "MERGED",
+                "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+    flag = sys.argv[2]
+    offline(review_nodes=[row(9641)], live={9641: "MERGED"})
+    opened = []
+    def looked(self, rd, repo, number, every):
+        if flag == "refused":
+            return "refused"
+        setattr(self, flag, True)      # record_stopped or look_stopped
+        return None
+    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    m.Poller.find_request = looked
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "opened", "keys": sorted(opened)}))
+
+elif scenario == "closed_unreadable":
+    # GitHub not answering `pr pr view`. `pr_state` returns None, which this file's own
+    # disposition refuses to read as closed -- so the row is dispatched and a human sorts it out.
+    def row(n, state):
+        return {"number": n, "title": f"PR {n}", "url": f"u{n}", "isDraft": False,
+                "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z", "state": state,
+                "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+    offline(review_nodes=[row(9611, "MERGED")], live_raises=True)
+    asked, opened = [], []
+    m.Poller.record_request = lambda self, rd, key, *a, **k: asked.append(key)
+    m.Poller.find_request = lambda self, rd, repo, number, every: None
+    m.Poller.open_request = lambda self, rd, key, *a, **k: (opened.append(key) or {"id": 77})
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "recorded", "keys": sorted(asked)}))
+    print(json.dumps({"phase": "present", "keys": sorted(p.state["prs_present"])}))
+
+elif scenario == "merged_rerequest":
+    # The other emission a merged row must not produce. `review_rerequested` needs `returned` to
+    # be true, which needs a COMMITTED `prs_present` without the key -- so two ticks, and the
+    # ledger entry has to be ALIVE for that branch to be the one reached at all.
+    def row(n, state):
+        r = {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/r/pull/{n}",
+             "isDraft": False, "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z",
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        if state is not None:
+            r["state"] = state
+        return r
+    page = {"nodes": [row(9601, "OPEN")]}
+    live = {9602: "MERGED"}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({"s9": {"last_known_status": "Idle"}}, set())
+    def gh_rr(*args):
+        if args[:2] == ("pr", "view"):
+            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
+        return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
+    m.gh = gh_rr
+    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "one", "keys": sorted(p.state["prs_present"])}))
+    # 9602 arrives merged against a session that is mid-round, and 9606 arrives open against one
+    # too -- the control, so "nothing was emitted" cannot pass because the branch was unreachable.
+    page["nodes"] = [row(9601, "OPEN"), row(9602, "MERGED"), row(9606, "OPEN")]
+    p.tick()
+    print(json.dumps({"phase": "two", "keys": sorted(p.state["prs_present"])}))
+
+elif scenario == "merged_clears":
+    # A key a live session holds, carried over from a previous tick, LEAVES prs_present on the
+    # tick the merge is seen -- so the clearance sweep names it with `why_cleared`'s own live
+    # read, which is the event that gets the Dispatcher to offer the discard.
+    def row(n, state):
+        r = {"number": n, "title": f"PR {n}", "url": f"u{n}", "isDraft": False,
+             "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z",
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        if state is not None:
+            r["state"] = state
+        return r
+    page = {"nodes": [row(9621, None), row(9622, None)]}
+    live = {}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({"s1": {"last_known_status": "Idle"}}, set())
+    def gh_mc(*args):
+        if args[:2] == ("pr", "view"):
+            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
+        return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
+    m.gh = gh_mc
+    m.Poller.record_request = lambda self, rd, key, *a, **k: None
+    p = m.Poller()
+    p.tick()
+    print(json.dumps({"phase": "one", "keys": sorted(p.state["prs_present"])}))
+    page["nodes"] = [row(9621, "MERGED"), row(9622, None)]
+    live[9621] = "MERGED"
+    p.tick()
+    print(json.dumps({"phase": "two", "keys": sorted(p.state["prs_present"])}))
+    # A third tick: the row is still returned by a search with no `is:open`, and must not
+    # produce a second word about the same merge.
+    p.tick()
+    print(json.dumps({"phase": "three", "keys": sorted(p.state["prs_present"])}))
+
 elif scenario == "status_sources":
     m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
     m.allele_state = lambda cfg: ({}, set())
@@ -546,6 +716,122 @@ ok "a foreign bucket reads as unknown, not 3"        "$(says 'github ? items nev
 ok "an unparseable stamp reads unreadable"           "$(says 'unreadable')"                "yes"
 ok "and exits clean"                                 "$rc"                                 "0"
 
+# ---- DEV-959: a merged or closed pull request gets nothing from the GitHub pass --------------
+#
+# `is:open` in `github.review_query` is not the guard it looks like. It is instance config, and
+# GitHub's search index lags a merge, so the search goes on matching a pull request that merged
+# while the last tick was running. The row's own `state` narrows; a LIVE `gh pr view` decides.
+
+printf '\nDEV-959 -- a merged pull request is not a review request\n'
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" pr_state_rows)
+# `record_request` is the OPEN path. A closed row must never take it: it re-asks on a moved head,
+# which on a review that exists is the next ROUND -- a round spent on a shipped pull request.
+ok "a MERGED row never takes the open path"          "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "0"
+ok "a CLOSED row never takes it either"              "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9603' || true)" "0"
+ok "a lower-case \`merged\` is read the same way"     "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9605' || true)" "0"
+ok "an OPEN row still takes it"                      "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9601' || true)" "1"
+# But a closed pull request Review Desk has never held a review of IS recorded, exactly once, by
+# the narrow path. Patrick amended the criterion for this: a request nobody got to, on a pull
+# request that then merged unreviewed, is the row DEV-945 exists to produce.
+ok "a never-reviewed MERGED row is still recorded"   "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "1"
+ok "  and a never-reviewed CLOSED one too"           "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9603' || true)" "1"
+ok "  while an OPEN row does not take that path"     "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9601' || true)" "0"
+ok "  and the event carries the review it wrote"     "$(grep -c '"event": "review_request_closed".*9602.*"review_desk_id": 77' "$work/out" || true)" "1"
+# The row with no `state` at all. Every other fixture in this file is that shape, so reading it
+# as closed would silently empty the rest of the harness -- which is the failure this pins.
+ok "a row with no state reads as open"               "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9604' || true)" "1"
+# The search's `state` only NARROWS. Nothing establishes that GitHub resolves it from the live
+# record rather than from the same index snapshot that produced the row, and `trust_empty` has a
+# captured measurement saying the adjacent field is index-derived -- so a stale MERGED must not
+# drop a live request.
+ok "a stale MERGED is overruled by the live read"    "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9607' || true)" "1"
+ok "a MERGED row offers no review_request"           "$(grep -c '"event": "review_request",.*9602' "$work/out" || true)" "0"
+ok "a CLOSED row offers no review_request"           "$(grep -c '"event": "review_request",.*9603' "$work/out" || true)" "0"
+ok "an OPEN row still offers one"                    "$(grep -c '"event": "review_request",.*9601' "$work/out" || true)" "1"
+ok "the stale-MERGED row is offered too"             "$(grep -c '"event": "review_request",.*9607' "$work/out" || true)" "1"
+# It LEAVES prs_present, like a row that went draft. Keeping it would make the merge reportable
+# only when the search index drops the row -- two ticks under the shipped query and never under
+# one without `is:open`, which is the configuration this guard exists for.
+ok "a merged row leaves prs_present"                 "$(sed -n '/"phase": "present"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "0"
+ok "an open row stays in it"                         "$(sed -n '/"phase": "present"/p' "$work/out" | grep -c 'gh-r-9601' || true)" "1"
+# And the drop is not silent. Every other refusal to act in this poller says itself once with a
+# reason; a request the Dispatcher can SEE on GitHub, dropped in silence, is DEV-934's lesson
+# with a merge in front of it.
+ok "the drop says itself once, with the state"       "$(grep -c '"event": "review_request_closed".*9602' "$work/out" || true)" "1"
+ok "  naming the live state, not the search's"       "$(grep -c '"event": "review_request_closed".*9602.*"pr_state": "merged"' "$work/out" || true)" "1"
+ok "  and a CLOSED one says closed"                  "$(grep -c '"event": "review_request_closed".*9603.*"pr_state": "closed"' "$work/out" || true)" "1"
+ok "nothing was said about the open rows"            "$(grep -c '"event": "review_request_closed".*9601' "$work/out" || true)" "0"
+ok "the tick exits clean"                            "$rc"                                 "0"
+
+# `pr_state` answers None when GitHub cannot be asked, and this file refuses to read that as
+# closed: an item the dispatcher cannot place is better dispatched and discarded by a human who
+# can read the pull request than dropped silently.
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" closed_unreadable)
+ok "an unreadable PR is not read as closed"          "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9611' || true)" "1"
+ok "  and takes the open path, not the narrow one"   "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9611' || true)" "0"
+ok "  and stays in prs_present"                      "$(sed -n '/"phase": "present"/p' "$work/out" | grep -c 'gh-r-9611' || true)" "1"
+ok "  and is offered for dispatch"                   "$(grep -c '"event": "review_request",.*9611' "$work/out" || true)" "1"
+ok "  and says nothing about being closed"           "$(grep -c '"event": "review_request_closed"' "$work/out" || true)" "0"
+ok "  and exits clean"                               "$rc"                                 "0"
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9602 active s9
+entry gh-r-9606 active s9
+rc=$(run "$disp" merged_rerequest)
+ok "a merged row sends no review_rerequested"        "$(grep -c '"event": "review_rerequested".*9602' "$work/out" || true)" "0"
+# The control, in the same run: an open PR arriving against a mid-round session DOES re-request,
+# so "nothing was emitted" cannot pass because the branch was never reached.
+ok "an open row arriving does re-request"            "$(grep -c '"event": "review_rerequested".*9606' "$work/out" || true)" "1"
+ok "and it exits clean"                              "$rc"                                 "0"
+
+printf '\n  a review that already exists is never written to\n'
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$disp" closed_held)
+ok "a held review blocks the recording"              "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9631' || true)" "0"
+ok "  on a closed pull request as well"              "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9632' || true)" "0"
+ok "  and the drop is still said"                    "$(grep -c '"event": "review_request_closed".*9631' "$work/out" || true)" "1"
+ok "  with no review id, because none was written"   "$(grep -c '"event": "review_request_closed".*9631.*"review_desk_id": null' "$work/out" || true)" "1"
+ok "  and it exits clean"                            "$rc" "0"
+
+printf '\n  and an install that could not be asked is never written to blindly\n'
+# `find_request` answers None for an empty store AND for an install it could not use. Writing on
+# the second is the blind write the look exists to prevent, so the flags it sets are what tells
+# the two apart -- each driven here in turn.
+for flag in record_stopped look_stopped refused; do
+  instance "2026-09-11T13:18:11+00:00"
+  rc=$(run "$disp" closed_unlookable "$flag")
+  ok "'$flag': nothing is written"                   "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9641' || true)" "0"
+  ok "  and the tick exits clean"                    "$rc" "0"
+done
+
+printf '\n  the merge reaches the Dispatcher on the tick it is seen\n'
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9621 active s1
+entry gh-r-9622 active s1
+rc=$(run "$disp" merged_clears)
+ok "tick 1 holds both keys"                          "$(sed -n '/"phase": "one"/p' "$work/out" | grep -c 'gh-r-9621' || true)" "1"
+ok "the merged key leaves on tick 2"                 "$(sed -n '/"phase": "two"/p' "$work/out" | grep -c 'gh-r-9621' || true)" "0"
+ok "  and the sweep names it for the session"        "$(grep -c '"event": "review_cleared".*gh-r-9621' "$work/out" || true)" "1"
+ok "  with the live reason, not a guess"             "$(grep -c '"reason": "PR merged"' "$work/out" || true)" "1"
+ok "  and names the session to discard"              "$(grep -c '"event": "review_cleared".*"session_id": "s1"' "$work/out" || true)" "1"
+# The sweep is the better event for a live session -- it names the session -- so the blunter
+# `review_request_closed` must stay out of its way rather than double up.
+ok "  and does not also say request_closed"          "$(grep -c '"event": "review_request_closed".*9621' "$work/out" || true)" "0"
+ok "a third tick repeats neither"                    "$(grep -c '"event": "review_cleared".*gh-r-9621' "$work/out" || true)" "1"
+ok "the open key is untouched"                       "$(sed -n '/"phase": "three"/p' "$work/out" | grep -c 'gh-r-9622' || true)" "1"
+ok "and it exits clean"                              "$rc"                                 "0"
+
+printf '\n  the query itself must ask for the state\n'
+# S6's guard, and the reason it is an assertion rather than a comment: every `gh` stand-in for
+# the search in this repo returns rows with no `state`, and the fallback reads those as open --
+# so dropping the field from REVIEWS_Q in a bad merge would revert DEV-959 with the whole suite
+# still green. This file's own memory of that shape is at `pr_state`: "The harness missed it
+# because the stand-in `gh` answered the shape I had assumed."
+ok "REVIEWS_Q asks for each row's state"             "$(grep -c 'number title url isDraft state headRefOid' "$disp" || true)" "1"
+
 # ---- the negative control: reverse the fix, and require these tests to fail ------------------
 #
 # Without this, every assertion above could be passing for a reason unrelated to the bug. The
@@ -590,6 +876,79 @@ ok "no guard: the start-up item loses its flag"      "$(sed -n '/after_recovery/
 instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$work/noguard.py" two_zeroes)
 ok "no guard: one zero sweeps the trigger markers"   "$(sed -n '/zero_1/p' "$work/out" | grep -c 'ZZ-1|trigger' || true)" "0"
+
+# DEV-959's own control: make `search_pr_closed` answer False for everything, leaving the rest of
+# the pass intact, and require the merged row to be recorded and offered again.
+sed 's/^    return isinstance(state, str) and state\.lower() in PR_CLOSED$/    return False  # STATE CHECK REVERSED/' \
+    "$disp" > "$work/nostate.py"
+ok "the state reversal changed one line"             "$(grep -c 'STATE CHECK REVERSED' "$work/nostate.py" || true)" "1"
+
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$work/nostate.py" pr_state_rows)
+ok "no state check: a merged row IS recorded"        "$(sed -n '/"phase": "recorded"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "1"
+ok "no state check: a merged row IS offered"         "$(grep -c '"event": "review_request".*9602' "$work/out" || true)" "1"
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9602 active s9
+entry gh-r-9606 active s9
+rc=$(run "$work/nostate.py" merged_rerequest)
+ok "no state check: a merged row IS re-requested"    "$(grep -c '"event": "review_rerequested".*9602' "$work/out" || true)" "1"
+
+# The OTHER half of DEV-959's poller change, which `nostate.py` cannot isolate: keep the guard
+# but put the merged key back in `present`, which is how the first version of this shipped. The
+# clearance sweep then skips it, so the Dispatcher is told about the merge only when the search
+# index drops the row -- never, under a `review_query` with no `is:open`.
+python3 - "$disp" "$work/keptpresent.py" <<'PYREVERSAL'
+import sys
+src = open(sys.argv[1]).read()
+old = """                                    ledger.get(key) or {}, every)
+                continue"""
+new = """                                    ledger.get(key) or {}, every)
+                present[key] = {"repo": repo, "number": pr["number"]}  # PRESENT REVERSED
+                continue"""
+assert old in src, "reversal anchor missing from the source under test"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYREVERSAL
+ok "the present reversal changed one line"           "$(grep -c '# PRESENT REVERSED' "$work/keptpresent.py" || true)" "1"
+
+instance "2026-09-11T13:18:11+00:00"
+entry gh-r-9621 active s1
+entry gh-r-9622 active s1
+rc=$(run "$work/keptpresent.py" merged_clears)
+ok "kept in present: the merged key never leaves"    "$(sed -n '/"phase": "two"/p' "$work/out" | grep -c 'gh-r-9621' || true)" "1"
+ok "kept in present: the sweep says nothing"         "$(grep -c '"event": "review_cleared"' "$work/out" || true)" "0"
+
+# DEV-959's amendment has two halves and each needs its own control. First: delete the test that
+# keeps the carve-out to a pull request Review Desk holds NOTHING for, and a held review is
+# written to -- which on a review that exists is the next round, on a pull request that shipped.
+python3 - "$disp" "$work/anyreview.py" <<'PYCARVE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        if found is None and not self.record_stopped and not self.look_stopped:"""
+new = """        if True:  # CARVE-OUT REVERSED"""
+assert old in src, "carve-out anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYCARVE
+ok "the carve-out reversal changed one line"          "$(grep -c 'CARVE-OUT REVERSED' "$work/anyreview.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$work/anyreview.py" closed_held)
+ok "no carve-out: a held review IS written to"       "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9631' || true)" "1"
+
+# Second: delete the carve-out entirely, which is the commit before the amendment, and the row
+# DEV-945 exists to produce goes missing.
+python3 - "$disp" "$work/noreview.py" <<'PYNOREC'
+import sys
+src = open(sys.argv[1]).read()
+old = """        rid = self.record_if_never_reviewed(rd, recording, key, repo, pr, every)"""
+new = """        rid = None  # CARVE-OUT REMOVED"""
+assert old in src, "recording call anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYNOREC
+ok "the no-recording reversal changed one line"       "$(grep -c 'CARVE-OUT REMOVED' "$work/noreview.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+rc=$(run "$work/noreview.py" pr_state_rows)
+ok "no carve-out: the never-reviewed row is lost"     "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "0"
+ok "  and the event carries no review either"         "$(grep -c '"event": "review_request_closed".*9602.*"review_desk_id": null' "$work/out" || true)" "1"
 
 sed 's/^        self\.first_tick = True$/        self.first_tick = not self.state.get("started")/' \
     "$disp" > "$work/prefix.py"

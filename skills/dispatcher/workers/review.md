@@ -986,6 +986,26 @@ post again, on somebody's pull request, under your principal's name.
    while you work: your principal may send an approved draft back, which clears `event` and
    `approved_at` with it. An `approved` you read minutes ago is a claim about the past, and
    step 6 carries the one case where acting on a stale one cannot be undone.
+
+   **And an approved draft on a merged or closed pull request is not posted — ever, and this
+   outranks the `approved` you just read.** Approval says the developer signed off on the text.
+   It does not say the pull request is still open, and Review Desk is not asked: it holds the
+   record and has no reason to know what GitHub did a minute ago. Your watcher does. If its last
+   `pr_state` said merged or closed, or `watch_stopped` named the merge, then **do not post, do
+   not mark the draft posted, and do not revise it.** Say so in one line, and say which of the
+   two it is, because they are different news:
+
+   | What happened | What you say |
+   |---|---|
+   | approved, then merged before you posted | "approved at `<approved_at>`, not posted: the pull request merged first" |
+   | merged, and the approval arrived afterwards | "approved after the merge, not posted: there is nothing left to review" |
+
+   Then follow **When the pull request merges or closes** and end. A review posted on a merged
+   pull request is a review of a decision already taken, under your principal's name, on a
+   thread nobody is reading — and `draft posted` would then record it as the answer to that
+   round for ever. The draft stays approved and unposted in the record, which is the true
+   account of what happened; DEV-957 is what makes Review Desk show that review as finished,
+   and it is not your write to make.
 2. **`review-desk draft handover --review <id> --json` is what you post.** One read — write it
    out to a file, because steps 3, 4 and 5 all work from it — and it is the only thing you post
    from:
@@ -1238,4 +1258,106 @@ what it names and do not edit the body to suit it; step 7 governs this too.
   moved.
 - `pr_review` / `pr_comment` from others: fold them in. If someone already raised your point,
   say so rather than duplicating it.
-- `pr_state` merged or closed: tell the Dispatcher; it will ask about discarding you.
+- `pr_state` merged or closed: **your work is over. Say one line and end** — the next section
+  is the whole of it.
+
+## When the pull request merges or closes
+
+The review is finished, whatever state your round was in. There is nothing left to revise,
+approve or post: the code has shipped, and a draft written about it is a draft about a decision
+somebody else has already taken.
+
+This is not a tidy-up instruction. A session for `tc-portal#9585` was still running hours after
+that pull request merged, telling its principal "the draft was never posted" — about a round
+that had opened after the author pushed and that nothing was ever going to post. Four rounds of
+#9568 did the same. Every one of those lines cost its reader a decision they did not need to
+make, and every one of those sessions held a slot.
+
+So, in this order and nothing else:
+
+1. **Write nothing more to Review Desk that would advance the review.** Not a brief, not
+   `draft put`, not `review open`, not a round, not a finding, not a disposition. The record
+   stops where the merge found it, and that is the honest shape of it: DEV-957 is making a
+   merged pull request's review read as finished on Review Desk's own side, and **you do not
+   wait for that and you do not depend on it.** Your watcher read the pull request from GitHub,
+   which is the only source either of you should trust about whether it merged.
+
+   **The line is advancing the review, not writing at all**, and the difference decides four
+   commands you may still owe. A write that **records an outward act you have already
+   performed** is finishing a sentence you started, and leaving it unsaid makes the record lie
+   about what is on GitHub:
+
+   | Still write it | Because |
+   |---|---|
+   | `draft posted --github-review <id>` | you posted. The review exists under your principal's name, and without this the record says approved-and-unposted while GitHub shows it |
+   | `finding link` for each thread you posted | same posting, same sentence |
+   | `review link --github-review <id>` | the fallback when `draft posted` refuses — **Posting exactly once** step 6 |
+   | `review nit-ticket`, in the form **Filing the held-back findings** gives | you filed the ticket. See the exception at the end of this section |
+
+   Nothing else. If a merge lands between your `gh api …/reviews` and your `draft posted`,
+   finish the reporting and then come back here: the posting was not a mistake, and a record
+   that cannot say the review exists is worse than one that says it late.
+2. **Write your status, so nothing is waiting on you.** A session that ends with its entry still
+   in a working state holds a slot against `limits.max_workers` and shows as working on
+   `D status` for ever, and the Dispatcher cannot tell it from a worker that died:
+   * **merged** → `D ledger put <KEY> status=merged --by worker --note "PR merged"`. `merged`
+     is this file's own word for "no session should exist and this is never dispatched again",
+     and writing it does four things at once: your watcher stops through the ledger, the poller
+     stops offering the key, the key stops counting as a live worker, and a `nits_to_ticket`
+     that arrives later is handed to a replacement instead of being swallowed by an entry that
+     still looks alive.
+   * **closed without merging** → `D ledger put <KEY> status=done --by worker --note "PR closed
+     without merging"`. **Not `merged`**, and the reason is that a close is reversible: a pull
+     request is closed to re-target a base branch or by a misclick, and `merged` would take the
+     key out of play for ever. `done` leaves the reopen able to come back round.
+3. **Say one line to the Dispatcher**, self-contained, naming three things:
+   * the key and that the pull request merged or closed, which it was;
+   * **the round you were on** — its number, and what state it was in (brief waiting, draft
+     being written, draft waiting on the developer, draft sent back);
+   * **whether your draft was posted** — `yes`, with the review's URL, or `no`, with the reason
+     in four or five words.
+
+   `gh-tc-portal-9585 review: PR merged — round 2 draft was waiting on approval, not posted.`
+
+   Then two or three lines at most: what the round had found, and whether any of it is worth
+   raising another way. Do not propose posting it anywhere.
+4. **End — which means stop working, not remove yourself.** End your turn with that message
+   and do nothing further: do not re-arm your Monitor, do not wait for an approval that can no
+   longer be acted on, and do not ask the Dispatcher whether you should stop. Ending the turn is
+   the whole of it — you do not exit, kill anything or clean up.
+
+   Your watcher has already stopped itself. It says so as `watch_stopped` with
+   `"reason": "pull_request"` — a different word from the `ledger` every other stop carries,
+   precisely so that you are not told "nothing to do" at the one moment you have one thing left
+   to do. **Re-arming it is futile**: it reads the same cursor and exits in zero ticks.
+
+**Your session is then discarded, and this is the one discard nobody is asked about.** Your
+principal decided that on DEV-959: a review worker whose pull request has merged or closed is
+discarded by the Dispatcher without a question, once it has stopped, and the Dispatcher says
+afterwards which session it was and why. So **the line in step 3 is the last thing you will ever
+say about this key** — write it as if nothing else can follow it, because nothing will. Anything
+you were holding back for a follow-up question goes in those two or three lines or is lost.
+
+It is still not yours to do. `_common.md`'s "never discard your own session" is unchanged and
+absolute: you stop, and something else reclaims the slot. Nor is the discard destructive —
+uncommitted work is committed and the branch archived — so there is nothing to tidy first.
+
+**One exception, and it is the kind that outlives a merge:** if you were dispatched for a
+`nits_to_ticket`, or one arrives before you have said your line, **file the ticket before step
+2.** Not merely before step 3 — **before you write `merged`**, and the order is the whole of it:
+`merged` is what tells the poller no session is listening, so the moment you write it the request
+is offered to a replacement. File first and the replacement is never dispatched; write first and
+two sessions are filing one ticket, with nothing but `nit_ticket_status` between them and two
+tickets in your principal's tracker.
+**Filing the held-back findings as one ticket** says why — the findings were held back so the
+merge need not wait on them, so a merge is the likeliest time for that click rather than a
+reason to ignore it, and your poller sends somebody for this kind even on a merged pull request,
+which it does for no other.
+
+**It will arrive in the same breath as the merge, and the order is not yours to guess.** Your
+watcher reads the pull request before it reads Review Desk, so on the one tick a replacement
+gets, `pr_state` merged and the `nits_to_ticket` land together in one batch. **The ticket
+wins.** File it, report the id with `review nit-ticket`, then say your line and end. If you were
+dispatched for it after the merge, your watcher may stop before it ever relays anything — read
+`review show --review <id>` yourself and work from that, exactly as your brief tells a
+replacement to.
