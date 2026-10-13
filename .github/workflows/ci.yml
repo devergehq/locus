@@ -49,8 +49,19 @@ name: CI
 #
 # WHEN THIS RUNS, and it is not "every push". A draft pull request runs
 # NOTHING: every job below is gated on the pull request not being a draft, so a
-# draft push creates a run whose jobs all report `skipped` and bills no minutes.
-# Marking the pull request ready, and every push after that, runs the lot. This
+# draft push creates a run whose jobs all report `skipped` and are never
+# allocated a runner. Marking the pull request ready, and every push after
+# that, runs the lot.
+#
+# "Never allocated a runner" is the claim to make, and NOT "bills no minutes",
+# because the second one is not measurable from outside. The run timing
+# endpoint's `billable` reads `total_ms: 0` on this repository even for a run
+# that spent three and a half minutes on a macOS runner -- measured on runs
+# 38329480206 and 38329384224, which report the same 0 -- so a check built on
+# it would pass on a repository where this gate had been deleted. What does
+# separate them is the job's `conclusion`, plus `completed_at` landing at or
+# before `started_at` on a skipped job: the two timestamps are bookkeeping
+# rather than a measurement, because nothing ran between them. This
 # is DEV-961, and the number behind it is Review Desk's rather than this repo's:
 # about 146 pushes across 17 branches over 11 and 12 October 2026, about 13
 # billed minutes each, which took the organisation's 3,000 monthly minutes by
@@ -80,15 +91,30 @@ name: CI
 # default set (`opened`, `synchronize`, `reopened`) rather than adding to it.
 # Dropping it would mean a pull request closed and reopened ran nothing.
 #
-# `workflow_dispatch` is the escape hatch for a branch with no pull request.
-# GitHub only offers it once the configuration is on the default branch, so it
-# becomes usable when this merges, not while it is in review.
+# `workflow_dispatch` is the escape hatch for a branch with no pull request,
+# and it works BEFORE this is on the default branch. That is measured, against
+# the expectation: GitHub's docs are read as requiring the configuration on the
+# default branch, and on the strength of that this was written off as
+# untestable until merge. `gh workflow run ci.yml --ref <branch>` was accepted
+# anyway and ran all four jobs (run 38329505003), from a branch whose `master`
+# had no `workflow_dispatch` at all. What was NOT checked is the Actions-tab
+# dropdown, which may well need the default branch; the API and the CLI do not.
 #
 # None of these block a merge until they are marked as required status checks
 # in the branch-protection rule for `master` -- a repo setting, not a file.
 # Per the doctrine above, do not mark a check required until it is green.
-# A skipped job satisfies a required check by design, which is what makes the
-# draft gate safe to add before any such rule exists.
+# A skipped job satisfies a required check by design, so the draft gate is safe
+# to add before any such rule exists -- but that is true of `rustfmt` and
+# `clippy` and NOT of the two `test` contexts, and whoever fills in that rule
+# needs the difference. A skipped matrix job is never expanded, so on a draft
+# the only test context that exists is the literal `test (${{ matrix.os }})`
+# (measured on commit b78eaf6). A rule requiring `test (ubuntu-latest)` would
+# find it ABSENT on a draft, not skipped, and a required check that never
+# reports leaves the pull request waiting rather than passing. That is the
+# correct outcome for a draft -- it cannot merge either way -- but it looks like
+# a stuck check rather than a deliberate one. If it ever needs to look
+# deliberate, the gate moves off the job and onto its steps, at the cost of
+# allocating a runner to do nothing.
 #
 # The four contexts this workflow emits, for whoever fills in that rule. A
 # matrix job reports one check per combination, so there is NO context named
@@ -165,8 +191,14 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
-    # One job-level gate covers both matrix legs; a skipped matrix job reports
-    # one skipped check per combination, exactly as a run one reports one each.
+    # One job-level gate covers both matrix legs, and a skipped matrix job does
+    # NOT report one check per combination the way a run one does. Measured on
+    # commit b78eaf6: a draft's check runs are `rustfmt`, `clippy` and one
+    # unexpanded `test (${{ matrix.os }})`. The matrix is never expanded,
+    # because expansion happens on the way to allocating runners and this job
+    # never gets there. So on a draft the contexts `test (ubuntu-latest)` and
+    # `test (macos-14)` are ABSENT rather than skipped -- see the required-check
+    # paragraph in the header, which is where that distinction bites.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30

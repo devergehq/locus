@@ -52,7 +52,7 @@ open PR. If a bump is needed, land it on its own, on an empty PR queue.
 
 ## CI
 
-**A draft pull request runs nothing — every job is skipped and no minute is billed.**
+**A draft pull request runs nothing — every job reports `skipped` and no runner is allocated.**
 **Marking it ready, and every push after that, runs every check; a merge to `master` runs
 nothing, because the ready pull request's own run already tested that commit.**
 

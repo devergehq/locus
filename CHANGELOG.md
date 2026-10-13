@@ -366,8 +366,14 @@ refuses to build when they disagree.
   event — a missing property and `false` both coerce to 0 — and so would have passed a
   `workflow_dispatch` by accident rather than by intent. `reopened` is named because listing
   any type replaces the default set instead of adding to it. Concurrency groups are unchanged
-  and still cancel superseded runs. No branch on this repository has protection rules, and a
-  skipped job satisfies a required check by design, so a skipped job blocks nothing either way.
+  and still cancel superseded runs. No branch on this repository has protection rules, so
+  nothing is blocked either way — and one wrinkle is recorded in `ci.yml` for whoever writes
+  such a rule later. A skipped job satisfies a required check by design, but a skipped MATRIX
+  job is never expanded: measured on commit `b78eaf6`, a draft's check runs are `rustfmt`,
+  `clippy` and one literal `test (${{ matrix.os }})`, so the contexts `test (ubuntu-latest)`
+  and `test (macos-14)` are **absent** on a draft rather than skipped. A rule requiring them
+  would leave a draft waiting rather than passing, which is the right outcome for something
+  that cannot merge and looks like a stuck check rather than a deliberate one.
 - **`pr-lint.yml` keeps `edited` and gains a manual trigger that takes a pull request
   number.** `edited` is this repository's one addition to the four triggers the three
   repositories settled on, and it is load-bearing: a description is edited in the web UI with
