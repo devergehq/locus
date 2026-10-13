@@ -2786,7 +2786,7 @@ ok "  and still names both intervals"                 "$(intervals | grep -c 'ha
 
 printf '\n  and `limits`, which is the block an instance is most likely to have tuned\n'
 # DEV-931 adds two keys to it. `fill_absent` adds only what a config has never heard of, which
-# is what makes it safe over a block holding `tc-portal`'s 300 against the template's 90.
+# is what makes it safe over a block holding one live instance's 300 against the template's 90.
 rc=$(run "$disp" fill_absent '{"watch_interval_secs": 300}' limits)
 ok "an older limits block learns the draft interval"   "$(says 'limits.draft_watch_interval_secs')" yes
 ok "  and the harvest interval"                        "$(says 'limits.harvest_interval_secs')" yes
