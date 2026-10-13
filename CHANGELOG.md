@@ -13,6 +13,61 @@ refuses to build when they disagree.
 
 ### Added
 
+- **A round is a posted review: new commits before a post update the review in place instead of
+  opening round 2.** Patrick's queue showed one pull request twice, round 1 and round 2 "changes
+  since your last review", though he had never posted round 1 — and the only new commits were
+  the author merging the base branch in. Another reached round 4 unposted before it merged.
+  `Poller.record_request` now branches on `action` from `review open --json`: `created` is a
+  round and reaches the Dispatcher as a `review_request`; `head_moved` is the SAME review on the
+  SAME round and reaches it as a new `review_head_moved`, which asks for one SendMessage to the
+  session already on it and dispatches nobody; `unchanged` and `diff_unchanged` ask for nothing.
+  `created: false` no longer distinguishes the middle two, which is why the field is read rather
+  than inferred. The gate that kept the poller out of a live session's review entirely is gone,
+  deliberately: an unposted round moves, so the poller is the right caller — it is the one that
+  sees the push on every tick and the only one that can tell the Dispatcher not to dispatch.
+  **A moved head on a round nobody has STARTED is still offered for dispatch**, because an
+  unclaimed request moves its head too and suppressing it would take a review nobody began off
+  the list the moment its author pushed. DEV-962 items 5 and 7, DEV-954's Locus rows.
+- **Commits that only bring the base branch in change nothing and wake nobody.** The poller
+  fingerprints the pull request's own diff — `gh api repos/O/R/pulls/N/files`, which serves the
+  merge-base diff, paginated 100 at a time to GitHub's 3000-file cap — hashing `filename`,
+  `previous_filename`, `status` and `patch` per file, or the blob `sha` where a file has no
+  patch. The digest is kept in the poll state against the commit it was taken at, and
+  `--diff-unchanged` is passed only when the new digest equals the stored one. **Every
+  uncertainty omits the flag**: no stored digest, a page that is not a list, a file with neither
+  a patch nor a blob sha, a walk that reached the cap, or any `gh` that failed. An omitted flag
+  moves the head and wakes a session that need not have woken; a wrongly asserted one would hide
+  a real change, which is the one direction this must not fail in.
+- **A pull request converted to draft, or whose review request is withdrawn, leaves play with
+  its reason and comes back on the round it was on.** `review out-of-play --reason
+  draft|withdrawn` from the clearance sweep, which lives inside the trusted block so a
+  disbelieved or truncated GitHub tick cannot take a live review out of play; `review in-play`
+  the moment GitHub shows the request again. `why_cleared` gained `isDraft` on the live read it
+  already made — a draft pull request is still `OPEN`, so before this the clearance was reported
+  as "review request removed", a withdrawal that never happened. Merged and closed are NOT this:
+  they stay DEV-957's finished state. A review worker's watcher now stops on a draft pull
+  request as it does on a closed one, gated on `github.skip_drafts` so an instance that reviews
+  drafts neither takes them out of play nor stops their workers. `review_out_of_play` and
+  `review_in_play` are the two new events for a key no session held; `review_cleared` carries
+  `out_of_play` for one that was.
+- **The worker links its session on its first `review open`.** `--session <allele session id>`
+  on that call, dropping only that flag on an `error.code` of `usage` and following with
+  `review link --session` as before. Review Desk's `started` is true from that call, which closes
+  the window in which a push between a brief and a link could be read as a round nobody had
+  begun (DEV-954). `round_started` prefers the store's own `started` — wider than "a session is
+  linked" by four more facts — and falls back to the ledger's claim where a build does not offer
+  it. That fallback is computed in one place now; it used to be a local in `record_request` and
+  an inline copy of the same expression in `review_requests`, so the negative control that
+  reverses it could only reach one of the two.
+- **One probe, `review open --help`, decides whether the install carries any of this.** A build
+  without `--diff-unchanged` has no `action`, no move on a started round and no out-of-play —
+  they are one Review Desk commit — so it gets exactly the behaviour this file had before
+  DEV-962 and one loud `review_desk_unavailable` naming all three facts. **It has to be a
+  forward probe and the reason is worth keeping**: on such a build `review open` on a started
+  round's new head opens round N+1 and `action` is absent from the answer that reports it, so
+  reading the answer would learn the fact one spent round too late — DEV-962's own harm arriving
+  through DEV-962's fix. The probe is a read, made once a tick, and never cached across ticks.
+
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a
   session ran `review open`, so it could not say how many requests had come in, which were never

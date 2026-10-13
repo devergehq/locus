@@ -176,6 +176,71 @@ cursor
 ok "no pr_status at all keeps watching"          "$(watch gh-test-1 --once)" 0
 ok "  and does not stop"                         "$(says watch_stopped)" no
 
+echo "DEV-962: and when its pull request goes to draft, which is reversible"
+# A draft is NOT a state GitHub reports in `state` -- a draft pull request is `open` -- so this
+# needed a field of its own on the cursor. Before it, a review worker whose pull request was
+# pulled back to a draft went on waiting for a sign-off nobody could act on until the 120-hour
+# ceiling; #9541's session was one of them.
+#
+# The stop is a PAUSE and the merge stop is an end, and the difference is what the two sentences
+# carry: a draft keeps the rounds, the draft and any sign-off, and the review returns on the
+# round it was on when the author marks it ready.
+draft_cursor () {
+  printf '{"pr": {"repo": "o/r", "number": 1}, "pr_status": "open", "pr_draft": %s}' "$1" \
+    > "$inst/runtime/watch/gh-test-1.json"
+}
+# skip_drafts <true|false> -> the instance's own statement about whether a draft is work.
+skip_drafts () { python3 -c "
+import json, pathlib, sys
+p = pathlib.Path('$inst/config.json'); c = json.loads(p.read_text())
+c['github']['skip_drafts'] = sys.argv[1] == 'true'
+p.write_text(json.dumps(c, indent=2))" "$1"; }
+for status in active needs-input stopped claimed done; do
+  put gh-test-1 "status=$status" --by test
+  draft_cursor true
+  ok "'$status' plus a draft PR stops"           "$(watch gh-test-1)" 0
+  ok "  naming the draft, not a merge"           "$(says "pull request is a draft")" yes
+  ok "  and saying it comes back when it is ready" "$(says "marks it ready again")" yes
+  # `pull_request`, not `ledger`: `_common.md` reads `ledger` as "nothing more will arrive on
+  # this key", which is false of a draft -- the key is coming back. Same distinction DEV-959
+  # drew for the merge, and for the same reason.
+  ok "  with reason pull_request, not ledger"    "$(says "\"reason\": \"pull_request\"")" yes
+  ok "  and keeping the cursor"                  "$([ -f "$inst/runtime/watch/gh-test-1.json" ] && echo yes || echo no)" yes
+  draft_cursor false
+  ok "'$status' with a ready PR keeps watching"  "$(watch gh-test-1 --once)" 0
+done
+# An absent `pr_draft` is a cursor that has armed and not yet read the pull request, exactly as
+# an absent `pr_status` is. Reading it as a draft would stop every review watcher on its first
+# pass -- the same failure the `pr_status` control above exists for.
+put gh-test-1 status=active --by test
+cursor open
+ok "no pr_draft at all keeps watching"           "$(watch gh-test-1 --once)" 0
+ok "  and does not stop"                         "$(says watch_stopped)" no
+# **A merge beats a draft**, because a draft that then merges is over rather than paused. The
+# order of the two branches is what says so; this is the assertion that keeps it.
+put gh-test-1 status=active --by test
+printf '{"pr": {"repo": "o/r", "number": 1}, "pr_status": "merged", "pr_draft": true}' \
+  > "$inst/runtime/watch/gh-test-1.json"
+ok "a merged draft stops as a merge"             "$(watch gh-test-1)" 0
+ok "  naming what is left to do, not the draft"  "$(says "nothing is left to revise")" yes
+# **Gated on the instance's own `skip_drafts`**, which is the same key the poller's draft
+# handling is gated on -- so an instance that reviews drafts neither takes them out of play nor
+# stops their workers, and the two halves cannot disagree.
+skip_drafts false
+put gh-test-1 status=active --by test
+draft_cursor true
+ok "with skip_drafts off a draft keeps watching" "$(watch gh-test-1 --once)" 0
+ok "  and does not stop"                         "$(says watch_stopped)" no
+skip_drafts true
+# And only a REVIEW's, like the merge stop: an implement worker's pull request is routinely a
+# draft while it is being written, and stopping its watcher would make it deaf for most of its
+# life.
+put impl-test-1 mode=implement status=active --by test
+printf '{"pr": {"repo": "o/r", "number": 1}, "pr_status": "open", "pr_draft": true}' \
+  > "$inst/runtime/watch/impl-test-1.json"
+ok "implement with a draft PR keeps watching"    "$(watch impl-test-1 --once)" 0
+ok "  and does not stop"                         "$(says watch_stopped)" no
+
 echo "  and only a review's: every other mode is left as it was"
 # Narrow on purpose. `implement.md` writes `status=done --note \"merged\"` only once it has SEEN
 # the merge, and a merged pull request still collects review comments its author should answer --
