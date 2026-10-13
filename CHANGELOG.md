@@ -48,8 +48,8 @@ refuses to build when they disagree.
   with Review Desk off, absent or older behaves exactly as it did.
 
 - **Every session the dispatcher starts says which allele group it belongs in.** On 12 October
-  2026 the `tc-portal` project held 56 sessions in one flat list, and finding "the review of PR
-  9586" meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,
+  2026 one live project held 56 sessions in one flat list, and finding "the review of one
+  pull request" meant reading every name. `group` on `allele_sessions_create` is allele's own (DEV-853,
   built alongside this), and `allele.groups` in the instance config says which group each mode
   goes in: `linear` for the four modes a Linear label triggers, `review` for a review request.
   Defaulted in code, so no instance needs an edit; `init` adds the block on a re-run so a mode
@@ -135,10 +135,10 @@ refuses to build when they disagree.
 ### Fixed
 
 - **A review session kept running after its pull request merged, and the poller opened rounds on
-  merged pull requests.** On 13 October 2026 the session for `tc-portal#9585` was still running
-  hours after that pull request merged, telling Patrick "the draft was never posted" — about a
-  round opened after the author pushed that nothing was ever going to post. Four rounds of #9568
-  are the same shape. Three things were true at once. `watch_stop_reason` was merge-aware on the
+  merged pull requests.** On 13 October 2026 the session for one real pull request was still
+  running hours after that pull request merged, telling Patrick "the draft was never posted" —
+  about a round opened after the author pushed that nothing was ever going to post. Four rounds
+  on another are the same shape. Three things were true at once. `watch_stop_reason` was merge-aware on the
   `done` path only, so a review worker that was anything else — `active` mid-round,
   `needs-input`, `stopped` — kept its watcher to the 120-hour ceiling; **a review key now stops
   on a merged or closed pull request whatever its status is**, in the same pass that read the
@@ -272,7 +272,7 @@ refuses to build when they disagree.
 - **The dispatcher's start-up backlog is reachable again.** `Poller.__init__` read `first_tick`
   out of the *persisted* state file — `not self.state.get("started")` — while `tick()` writes
   `started` to disk, so `backlog` was true once per instance **lifetime** rather than once per
-  session. The `tc-portal` instance carried `"started": "2026-09-11T13:18:11+00:00"` for 19 days,
+  session. One live instance carried `"started": "2026-09-11T13:18:11+00:00"` for 19 days,
   which made SKILL.md step 4's whole start-up contract (list the review backlog, ask before
   dispatching) unreachable dead code for all of them: `review_backlog` was `[]` and stayed `[]`,
   and on 30 Sep a three-hour session surfaced 1 of 10 open review requests. `first_tick` is now a
@@ -304,7 +304,7 @@ refuses to build when they disagree.
   difference (DEV-794).
 
 - **A dispatcher watcher now stops.** `dispatcher.py watch` had no exit condition and never read
-  its own key's ledger status, so nine watcher processes were alive on the `tc-portal` instance on
+  its own key's ledger status, so nine watcher processes were alive on one live instance on
   30 September 2026 — all nine on keys whose status was `discarded`, the oldest for 6 days 14
   hours. Fourteen watchers were alive thirteen hours later with the orphan count still nine, so
   creation outpaces reaping: at `watch_interval_secs` 300 that is 168 ticks an hour and, at the
@@ -325,7 +325,7 @@ refuses to build when they disagree.
   (default `limits.watch_max_hours`, 120) and `--max-ticks`; `doctor` lists every `watch` process
   with its key, age and ledger status and **fails** on an orphan; and a new `reap` subcommand
   terminates this instance's orphans and removes cursor files for finished keys — 112 of the 127
-  cursors on `tc-portal` were for keys nobody is working. `reap --dry-run` reports without
+  cursors on one live instance were for keys nobody is working. `reap --dry-run` reports without
   signalling. Process matching is narrow on purpose: a `ps | grep dispatcher.py` on that machine
   also matched three Claude sessions quoting the docs and a `/bin/zsh -c` wrapper per watcher.
 
@@ -354,8 +354,8 @@ refuses to build when they disagree.
   decision's threshold can be set from a week of real traffic rather than by arithmetic on an
   unmeasured cost — which is what the ticket asked for.
 
-- **`review_lint.py` fails a review body's table over four columns.** An index on
-  Trilogy-Care/tc-portal#9125 passed 23/24 — `layout.table_prose` reported `0 table cell(s) over
+- **`review_lint.py` fails a review body's table over four columns.** An index on one real
+  pull request passed 23/24 — `layout.table_prose` reported `0 table cell(s) over
   140 characters`, correctly, its widest cell being 64 — and was reported rendering as
   `Disposit/ion` and `P/1`. The per-cell checks cannot see how many columns a row asks for.
   A total-width threshold was measured and rejected: over 96 harvested tables that pass the
@@ -368,7 +368,7 @@ refuses to build when they disagree.
   585 real bodies and threads.
 
 - **Worker briefs no longer trip the `reasoning_extraction` refusal.** v0.5.3 fixed the
-  Algorithm, but dispatched workers on Opus 5.5 were still refused: DAR-603, 557, 563 and 555
+  Algorithm, but dispatched workers on Opus 5.5 were still refused: ACME-603, 557, 563 and 555
   (`req_011CfLJyhfDxQxHrAdS8LySX`, `req_011CfLK6z3AkuqFgKhCb7PPQ`,
   `req_011CfLK34vzSfN6hABdTEVTb`, `req_011CfLKAfHQb85fpSgaUrjoJ`), two of them before the
   Algorithm skill loaded. Probing on fresh 5.5 sessions found the trigger is cumulative and
