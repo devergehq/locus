@@ -5631,6 +5631,13 @@ forget_calls
 rc=$(run "$disp" poll 1)
 ok "a broken in-play is one attempt"                   "$(inplays)" 1
 ok "  and still out of play, nothing having answered"  "$(oop_state acme/portal 412 | cut -d@ -f1)" draft
+# **And it is SAID**, which is the half the first version of this block left unasserted. A review
+# of this branch was part-way through probing exactly this when its session was discarded, so it
+# is finished here: `note_broken` keys `record_broken` by the COMMAND, and the second
+# `record_unreachable` call -- the one after the clearance sweep -- is what reports it. Without
+# that second call this is silent, which is the hole the same commit closed.
+ok "  and it is reported, naming the call"             "$(says '"call": "review in-play"')" yes
+ok "  as broken"                                       "$(says '"state": "broken"')" yes
 rm -f "$work/rd.oop.mode"
 forget_calls
 rc=$(run "$disp" poll 1)
