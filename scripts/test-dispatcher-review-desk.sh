@@ -2160,7 +2160,7 @@ ok "  and the tick exits clean"                        "$rc" 0
 python3 - "$disp" "$work/noclosedflag.py" <<'PYFLAG'
 import sys
 src = open(sys.argv[1]).read()
-old = """        if (self.state["recorded"].get(key) or {}).get("closed"):
+old = """        if self.recorded_closed(key):
             return True"""
 new = """        if False:  # CLOSED SHAPE REVERSED
             return True"""
@@ -2170,6 +2170,105 @@ PYFLAG
 ok "the fourth-shape reversal changed one line"        "$(grep -c 'CLOSED SHAPE REVERSED' "$work/noclosedflag.py")" 1
 rc=$(run "$work/noclosedflag.py" poll 1)
 ok "no fourth shape: it IS offered for dispatch"       "$(count '"event": "review_desk_requested"')" 1
+
+printf '\n  DEV-959: what the SECOND independent review found in the first six fixes\n'
+# One `/code-review` pass over 4a46530, three behavioural findings and one paragraph that had
+# started lying. Each assertion below is the shape that pass reproduced.
+
+# 1 (medium). `record_broken` is reset per TICK, not per key, so the retry clear fired on another
+# row's failure: a `review show` that broke while recording an OPEN pull request cleared the
+# window of a merged one three rows later, whose own look had answered cleanly -- and re-said its
+# merge every tick afterwards. Only the two calls this attempt makes can speak for it now.
+instance '{"mode":"auto"}'
+search_pair acme/portal 422 sha422 423 sha423
+python3 - "$work/gh.search" <<'PYONEMERGED'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+# 422 open, 423 merged: one row takes the open path, the other the carve-out.
+doc["data"]["search"]["nodes"][1]["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYONEMERGED
+echo '{"state":"OPEN"}' > "$work/pr.422.json"
+echo '{"state":"MERGED"}' > "$work/pr.423.json"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "the merged row of a mixed page is recorded"        "$(count '"event": "review_request_closed"')" 1
+# Now break `review show`, which is the OPEN row's dismissal read and nothing to do with 423.
+echo broken > "$work/rd.show.mode"
+rc=$(run "$disp" poll 1)
+ok "another row's broken read does not re-say it"      "$(count '"event": "review_request_closed"')" 0
+rc=$(run "$disp" poll 1)
+ok "  nor on the tick after that"                      "$(count '"event": "review_request_closed"')" 0
+rm -f "$work/rd.show.mode"
+
+# 2 (medium). One mark did both jobs, so every retry re-said the merge: a `review find` broken on
+# four consecutive ticks emitted four lines, which is the "one line per tick for ever" the absent
+# case was narrowed out to avoid, arriving through the broken case instead. Two marks now.
+instance '{"mode":"auto"}'
+merged_doc acme/portal 424 sha424 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.424.json"
+echo broken > "$work/rd.find.mode"
+no_sessions
+said=0
+for tick in 1 2 3 4; do
+  rc=$(run "$disp" poll 1)
+  said=$((said + $(count '"event": "review_request_closed"')))
+done
+ok "four broken ticks say the merge once"              "$said" 1
+ok "  and nothing was written"                         "$(opens)" 0
+# And the retry still works: the recording lands on the tick the install comes back, and THAT is
+# said -- one more line, because "the row reached the list" is news the first line could not carry.
+rm -f "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "the fixed install records on the next tick"        "$(opens)" 1
+ok "  and says so once, with the review id"            "$(count '"event": "review_request_closed"')" 1
+ok "  carrying a number rather than null"              "$(grep -c '"review_request_closed".*"review_desk_id": [0-9]' "$work/out" || true)" 1
+rc=$(run "$disp" poll 1)
+ok "  and never again after that"                      "$(count '"event": "review_request_closed"')" 0
+
+# 3 (medium). The fourth shape looked `recorded` up by a differently-cased key: `recorded` is
+# keyed from GitHub's `nameWithOwner`, and the work-list row with no `ledger_id` is keyed by
+# `review_desk_item`'s lower-cased fallback. A build too old for `--ledger` is what produces a
+# row with no `ledger_id` -- so on exactly that install, a recorded merged pull request went back
+# to being offered for dispatch. Capitalised repository, `oldledger`, then GitHub goes quiet and
+# `gh pr view` returns junk, which is the state that used to dispatch.
+instance '{"mode":"auto"}'
+merged_doc Acme/Portal 425 sha425 MERGED
+echo '{"state":"MERGED"}' > "$work/pr.425.json"
+echo oldledger > "$work/rd.open.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+# TWO `review open` calls for one recording, not one: `oldledger` is a build that refuses
+# `--ledger`, and `open_request` retries without the flag. That retry is what makes a row carry
+# no `ledger_id`, which is what makes `review_desk_item` fall back to a lower-cased key -- so the
+# count is not incidental to this case, it IS the case.
+ok "a capitalised repo's merged row is recorded"       "$(opens)" 2
+rm -f "$work/gh.search" "$work/rd.open.mode"
+work_doc review_requested 1 acme/portal 425 1791520400
+printf 'not json at all' > "$work/pr.425.json"
+rc=$(run "$disp" poll 1)
+ok "  and is never offered despite the casing"         "$(count '"event": "review_desk_requested"')" 0
+ok "  and the tick exits clean"                        "$rc" 0
+# The control: the direct `.get` the first version used, which misses the capital.
+python3 - "$disp" "$work/nocasefold.py" <<'PYCASE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        return any(v.get("closed") for k, v in self.state["recorded"].items()
+                   if isinstance(v, dict) and requested_key(k) == want)"""
+new = """        return bool((self.state["recorded"].get(key) or {}).get("closed"))  # CASE FOLD REVERSED"""
+assert old in src, "case fold anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYCASE
+ok "the case-fold reversal changed one line"           "$(grep -c 'CASE FOLD REVERSED' "$work/nocasefold.py")" 1
+rc=$(run "$work/nocasefold.py" poll 1)
+ok "no case fold: the capitalised row IS offered"      "$(count '"event": "review_desk_requested"')" 1
+
+# 4 (low). The paragraph that had started lying, and the reason it is worth an assertion: the
+# kept `recorded` entry is what shape 4 reads, so a future editor trusting the old sentence would
+# restore the prune and re-open finding 3's harm for every closed row.
+ok "the docstring says the entry is KEPT"              "$(grep -c 'The .recorded. entry this leaves is KEPT' "$disp")" 1
+ok "  and names the sentence it replaced"              "$(grep -c 'an earlier version of this paragraph' "$disp")" 1
+ok "  while the prune still keeps it"                  "$(grep -c 'v.get("dismissed") or v.get("closed")}' "$disp")" 1
 
 printf '\n  DEV-959: the merged row still speaks for itself through the other source\n'
 # The ordering the GitHub pass depends on, and it is not obvious from either side. A merged row

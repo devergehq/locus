@@ -924,8 +924,8 @@ ok "kept in present: the sweep says nothing"         "$(grep -c '"event": "revie
 python3 - "$disp" "$work/anyreview.py" <<'PYCARVE'
 import sys
 src = open(sys.argv[1]).read()
-old = """        if found is not None or self.record_stopped or self.look_stopped:"""
-new = """        if False:  # CARVE-OUT REVERSED"""
+old = """        if found is None and not self.record_stopped and not self.look_stopped:"""
+new = """        if True:  # CARVE-OUT REVERSED"""
 assert old in src, "carve-out anchor missing"
 open(sys.argv[2], "w").write(src.replace(old, new, 1))
 PYCARVE
