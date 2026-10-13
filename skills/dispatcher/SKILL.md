@@ -29,7 +29,7 @@ triggers:
 > `/locus:dispatcher`. It must be human-started — see the next section for why.
 >
 > **Give that session the group `dispatcher` in allele.** It keeps the long-lived session your
-> principal talks to apart from the short-lived workers it dispatches, which land in `linear`
+> principal talks to apart from the short-lived workers it dispatches, which land in `agent`
 > and `review`. This one is theirs to set: nothing in Locus can group a session it did not
 > create.
 
@@ -61,11 +61,29 @@ allele sidebar, and stop.
 
 `group` on `allele_sessions_create` is the named section of its project a session appears under.
 Sessions with the same group sit together, which is the difference between a sidebar of 56 names
-and one with a `review` section you can open. **Every dispatch below passes it**, and the group is
-named for you in the brief's **Allele group** line — `D brief` resolves `allele.groups[<mode>]`,
-defaulted in code, so there is no config to read and nothing to work out. Reviews go in `review`,
-tickets picked up from a Linear label go in `linear`, and a worker's own helpers go wherever the
-worker went.
+and one with a `review` section you can open. **Every dispatch below passes it.**
+
+**There are two groups, and what raised the work decides which.** That is the whole rule:
+
+| What raised it | Modes | Group |
+|---|---|---|
+| A Linear Agent label on your principal's ticket | `implement`, `investigate`, `decompose`, `decide` | **`agent`** |
+| A GitHub review request to your principal | `review` | **`review`** |
+
+A worker's own helpers go wherever the worker went — that travels on the child's ledger entry,
+so you never work it out.
+
+**Why `agent` and not `linear`.** Your principal opens sessions by hand in these same projects.
+The group is the line between a session they started and a session that spun itself up to work
+their tickets, and `agent` says which of the two every name under it is. It was called `linear`
+until 13 October 2026, which named where the work came from instead — and left an autonomous run
+and a hand-started session sitting indistinguishably in one list. **Reviews stay in their own
+group** rather than joining `agent`: a review is the thing most often hunted for by name, and
+the one kind of work a human asked for directly.
+
+You never have to look any of this up. The group is named for you in the brief's **Allele
+group** line — `D brief` resolves `allele.groups[<mode>]`, defaulted in code, so there is no
+config to read. Read the line, pass what it says.
 
 **Pass `group` only when the `allele_sessions_create` tool you have been given lists it as a
 parameter.** Read your own tool's schema; do not assume. An allele that predates named groups
@@ -74,8 +92,9 @@ state this skill exists not to leave behind. When it is absent, dispatch without
 **exactly as before, and say nothing about it** — it is not a fault and not worth your
 principal's attention.
 
-Two more things it is not: a group is never chosen from a ticket's content, its Linear project or
-its labels — one group per mode, and that is the whole rule — and a brief whose line says
+Two more things it is not: a group is never chosen from a ticket's content, its Linear project
+or which label of the Agent group raised it — the table above is the whole rule, and `agent`
+does not subdivide per mode, per ticket or per dispatch — and a brief whose line says
 `Allele group: none` is dispatched with **no `group` argument at all**, not with an empty one.
 
 ## Start-up

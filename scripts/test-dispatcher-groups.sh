@@ -153,14 +153,14 @@ ok "  and the reversal of one is caught"               "$(grep -c "^[[:space:]]*
 # =============================================================================================
 printf '\nThe defaults, in code and not only in the template\n'
 # The ticket's first acceptance criterion: with no `allele.groups` block, a review goes in
-# `review` and a Linear-label item in `linear`. An instance that has never heard of this setting
+# `review` and a Linear-label item in `agent`. An instance that has never heard of this setting
 # is every instance on 12 Oct 2026, so this is the case that must need no edit.
 
 rc=$(run "$disp" defaults)
-ok "the four Linear modes default to linear"           "$(count '"linear"')" 1
+ok "the four Linear modes default to agent"            "$(count '"agent"')" 1
 ok "  with all four named"                             "$(python3 -c "
 import json; d = json.load(open('$work/out'))
-print(sorted(k for k, v in d.items() if v == 'linear'))")" \
+print(sorted(k for k, v in d.items() if v == 'agent'))")" \
   "['decide', 'decompose', 'implement', 'investigate']"
 ok "review defaults to its own group"                  "$(python3 -c "
 import json; print(json.load(open('$work/out'))['review'])")" review
@@ -172,22 +172,22 @@ ok "the limit is allele's 40 characters"               "$(cat "$work/out")" 40
 rc=$(run "$disp" group_for '{}' review)
 ok "no block at all: a review is grouped review"       "$(cat "$work/out")" '"review"'
 rc=$(run "$disp" group_for '{}' implement)
-ok "  and an implement ticket linear"                  "$(cat "$work/out")" '"linear"'
+ok "  and an implement ticket agent"                   "$(cat "$work/out")" '"agent"'
 rc=$(run "$disp" group_for '{"allele":{}}' decide)
-ok "an allele block with no groups is the same"        "$(cat "$work/out")" '"linear"'
+ok "an allele block with no groups is the same"        "$(cat "$work/out")" '"agent"'
 rc=$(run "$disp" group_for '{"allele":{"groups":null}}' decompose)
-ok "  as is a null groups block"                       "$(cat "$work/out")" '"linear"'
+ok "  as is a null groups block"                       "$(cat "$work/out")" '"agent"'
 
 # =============================================================================================
 printf '\nA mode mapped somewhere else, and a mode mapped nowhere\n'
 # Acceptance criteria 2 and 3. `null` and `""` must both reach the dispatch site as "pass no
 # group argument at all", and that is the one behaviour the defaulting idiom used elsewhere in
-# this file gets wrong -- it filters nulls, which would hand the mode `linear` back.
+# this file gets wrong -- it filters nulls, which would hand the mode `agent` back.
 
 rc=$(run "$disp" group_for '{"allele":{"groups":{"review":"pr-reviews"}}}' review)
 ok "a mode mapped to another name takes it"            "$(cat "$work/out")" '"pr-reviews"'
 rc=$(run "$disp" group_for '{"allele":{"groups":{"review":"pr-reviews"}}}' implement)
-ok "  and leaves the modes beside it alone"            "$(cat "$work/out")" '"linear"'
+ok "  and leaves the modes beside it alone"            "$(cat "$work/out")" '"agent"'
 rc=$(run "$disp" group_for '{"allele":{"groups":{"review":null}}}' review)
 ok "null means ungrouped, not default"                 "$(cat "$work/out")" null
 rc=$(run "$disp" group_for '{"allele":{"groups":{"review":""}}}' review)
@@ -215,7 +215,7 @@ printf '\nWhat doctor crosses, and what it merely reports\n'
 
 rc=$(run "$disp" problems '{}')
 ok "no block is no problem"                            "$(cat "$work/out")" '[]'
-rc=$(run "$disp" problems '{"allele":{"groups":{"review":null,"implement":"linear"}}}')
+rc=$(run "$disp" problems '{"allele":{"groups":{"review":null,"implement":"agent"}}}')
 ok "a deliberate null is not a fault"                  "$(cat "$work/out")" '[]'
 rc=$(run "$disp" problems "{\"allele\":{\"groups\":{\"review\":\"$(printf 'r%.0s' $(seq 41))\"}}}")
 ok "41 characters is reported as a problem"            "$(says '41 characters')" yes
@@ -232,7 +232,7 @@ ok "  and reports every mode"                          "$(doctor | grep -c 'revi
 ok "  marking the answer as a default"                 "$(doctor | grep -c 'review → review (default)')" 1
 instance '{"review":"pr-reviews"}'
 ok "a configured group is marked as config"            "$(doctor | grep -c 'review → pr-reviews (config)')" 1
-ok "  while its neighbours stay defaults"              "$(doctor | grep -c 'implement → linear (default)')" 1
+ok "  while its neighbours stay defaults"              "$(doctor | grep -c 'implement → agent (default)')" 1
 instance '{"review":null}'
 ok "a null mode reads as ungrouped, and passes"        "$(doctor | grep -c '✓ allele groups: .*review → ungrouped')" 1
 instance "{\"review\":\"$(printf 'r%.0s' $(seq 41))\"}"
@@ -256,30 +256,30 @@ ok "  only when its own tool lists the parameter"      "$(says 'lists a .group. 
 ok "  saying nothing when it does not"                 "$(says 'say nothing')" yes
 put EX-1 mode=implement status=claimed title=T url=u --by test
 set +e; D brief EX-1 > "$work/out" 2>&1; set -e
-ok "an implement brief names linear"                   "$(says 'Allele group: .linear.')" yes
+ok "an implement brief names agent"                    "$(says 'Allele group: .agent.')" yes
 
 instance '{"implement":null}'
 put EX-1 mode=implement status=claimed title=T url=u --by test
 set +e; D brief EX-1 > "$work/out" 2>&1; set -e
 ok "an ungrouped mode says so in the brief"            "$(says 'Allele group: none')" yes
 ok "  and asks for no group argument at all"           "$(says 'no .group. argument')" yes
-ok "  without naming a group to pass"                  "$(count 'Allele group: .linear.')" 0
+ok "  without naming a group to pass"                  "$(count 'Allele group: .agent.')" 0
 
 # Inheritance. A coordinator writes its OWN group on the child's claim, and `D brief` prefers
 # that over the group the child's mode would have had -- which is what makes "a session
 # dispatched by a worker carries the worker's own group" mechanical rather than a line of prose
 # somebody has to remember.
-instance '{"implement":"linear","decide":"decisions"}'
+instance '{"implement":"agent","decide":"decisions"}'
 put EX-9 mode=implement status=claimed title=T url=u parent=EX-1 group=review --by coordinator
 set +e; D brief EX-9 > "$work/out" 2>&1; set -e
 ok "a child carries the group on its claim"            "$(says 'Allele group: .review.')" yes
-ok "  not the one its own mode would have had"         "$(count 'Allele group: .linear.')" 0
+ok "  not the one its own mode would have had"         "$(count 'Allele group: .agent.')" 0
 put EX-9 group="" --by coordinator
 set +e; D brief EX-9 > "$work/out" 2>&1; set -e
 ok "an empty group on the claim means ungrouped"       "$(says 'Allele group: none')" yes
 put EX-8 mode=implement status=claimed title=T url=u parent=EX-1 --by coordinator
 set +e; D brief EX-8 > "$work/out" 2>&1; set -e
-ok "a claim with no group falls back to the mode"      "$(says 'Allele group: .linear.')" yes
+ok "a claim with no group falls back to the mode"      "$(says 'Allele group: .agent.')" yes
 
 # The ledger records it, which is the whole of acceptance criterion 6: `ledger put` merges
 # arbitrary fields, so what is under test is that the field survives a write and a read rather
@@ -347,11 +347,11 @@ ok "silent doctor: nothing is reported"                "$(cat "$work/out")" '[]'
 #    its own mode's group, which is the defect the field exists to prevent.
 sed 's/^    if isinstance(recorded, str):$/    if False:  # LEDGER GROUP IGNORED/' "$disp" > "$work/noinherit.py"
 ok "the inheritance reversal changed one line"         "$(grep -c 'LEDGER GROUP IGNORED' "$work/noinherit.py")" 1
-instance '{"implement":"linear"}'
+instance '{"implement":"agent"}'
 put EX-9 mode=implement status=claimed title=T url=u parent=EX-1 group=review --by coordinator
-rc=$(run "$work/noinherit.py" group_for '{"allele":{"groups":{"implement":"linear"}}}' implement)
+rc=$(run "$work/noinherit.py" group_for '{"allele":{"groups":{"implement":"agent"}}}' implement)
 set +e; INST="$inst" DISPATCHER_INSTANCE="$inst" python3 "$work/noinherit.py" --instance "$inst" brief EX-9 > "$work/out" 2>&1; set -e
-ok "ignored: the child takes its own mode's group"     "$(says 'Allele group: .linear.')" yes
+ok "ignored: the child takes its own mode's group"     "$(says 'Allele group: .agent.')" yes
 ok "  and the group it was dispatched with is lost"    "$(count 'Allele group: .review.')" 0
 
 # 5. The brief line itself. Without it a worker has no channel to its group at all, and neither
