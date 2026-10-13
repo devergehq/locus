@@ -660,8 +660,12 @@ Response times are side-project pace (days to weeks). If you need faster, please
 Pull requests here are checked against the `review-craft` house style by
 [`.github/actions/pr-lint`](.github/actions/pr-lint/README.md) — the character budget for the
 diff, headings, template debris, words that rot in a commit message, and whether the comment
-the body's working notes link to exists. It runs on a push, on a description edit, and on a new
-comment, because the last two change the thing being checked without producing a commit.
+the body's working notes link to exists. It runs when a pull request is marked ready, on a push
+to one that is ready, on a description edit, and on a new comment — the last two because they
+change the thing being checked without producing a commit. **A draft is not linted**, for the
+same reason a draft runs no tests: the description of a pull request nobody can merge yet is
+still being written. It can also be started by hand from the Actions tab against a pull request
+number.
 
 The action is reusable. **Another repository turns the same check on by copying one snippet**,
 pinned to a commit SHA — the snippet, the inputs and the permissions it needs are in

@@ -1,7 +1,7 @@
 # Mode: implement (`Agent - Todo`)
 
 Finish line: **a clean PR marked ready for review**, after an independent self-review has come
-back with no blockers and CI is green. Not a draft, not "mostly done".
+back with no blockers and CI is green **on the ready PR**. Not a draft, not "mostly done".
 
 ## Steps
 
@@ -21,7 +21,8 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
    from; do not assume `main`. If that branch already exists on the remote, a previous session
    started it: check it out and continue.
 4. **Build it with tests.** Tests that fail without the change and pass with it. Run the relevant
-   tests, the formatter and static analysis locally before every push.
+   tests, the formatter and static analysis locally before every push. **Locally is where the
+   suite runs while the PR is a draft** — see step 7.
 5. **Push early and open a draft PR**, written from the repo's own PR templates and rules (title
    `<KEY>: <what changes, in plain words>`). Keep the sections those templates give you, and fill
    them following `review-craft`'s **"PR descriptions"** section:
@@ -41,7 +42,9 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
      folded blocks verbatim. A path, a line range, a count or a date outranks the budget.
    - `<details>` **does** render in a PR body, but a squash copies the raw tags into the commit
      message. Fold only reviewer aids you are content to see in `git log`; never the transcript.
-   - **Run the linter before you call the PR ready**, and paste its output when you report:
+   - **Run the linter before you call the PR ready**, and paste its output when you report.
+     The description check does not run on a draft either, so running it yourself is the only
+     reading of it you get until step 8:
      `python3 ~/.locus/skills/review-craft/pr_lint.py --repo OWNER/REPO --pr <n>`. Exit 1 means
      fix it and run it again.
 
@@ -80,9 +83,17 @@ back with no blockers and CI is green. Not a draft, not "mostly done".
 6b. **Lint it.** `review-craft`'s `review_lint.py <PR> --repo OWNER/REPO` must pass before you
    call the review done. Fix what it names — it checks arithmetic you cannot check by eye — and paste the final
    output in your report.
-7. **CI green.** `gh pr checks <n> --watch`. Fix real failures. A flake gets one re-run, with a
-   note saying so.
-8. **Ready it.** `gh pr ready <n>` → `D label <KEY> done --state "In Review"` →
+7. **Run the whole suite locally, and leave GitHub's checks to the ready PR.** The repo's
+   CLAUDE.md or CONTRIBUTING names the set; run all of it and paste the result when you report.
+   **Do not wait on `gh pr checks` while the PR is a draft.** These repos run nothing on a
+   draft — every job is gated on `github.event.pull_request.draft == false`, so a draft push
+   creates a run whose jobs all report `skipped` — and `gh pr checks` exits 0 on that, so
+   waiting on it returns a green that means "nothing ran". Local is the only answer available
+   until step 8, and it is the same set the runner executes.
+8. **Ready it, then read the checks.** `gh pr ready <n>` fires `ready_for_review`, which is what
+   starts every check; **that** is the run to read, with `gh pr checks <n> --watch`. Fix real
+   failures and push — a push to a ready PR runs them again. A flake gets one re-run, with a note
+   saying so. Only once they are green: `D label <KEY> done --state "In Review"` →
    `D ledger put <KEY> status=done pr_url=<url>` → one ticket comment: the PR link, what changed,
    how you verified it, **what you did not verify**, and a two-line self-review summary → message
    the Dispatcher. Link the self-review in that comment.

@@ -30,6 +30,15 @@ inputs:
       sections your template asks for that the defaults do not name.
     required: false
     default: ""
+  pr:
+    description: >-
+      The number of the pull request to lint. Leave it unset -- which is the default -- on a
+      `pull_request` or `issue_comment` event, where the event carries the number itself and
+      this input would only duplicate it. It exists for `workflow_dispatch`, which carries no
+      pull request at all: the action hard-exits on an event with no number, so a workflow
+      that offers a manual trigger has to say which pull request by hand.
+    required: false
+    default: ""
   github-token:
     description: >-
       The token `gh` reads the pull request with. Needs `contents: read` (template discovery),
@@ -51,8 +60,11 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         PR_LINT_REPO: ${{ github.repository }}
         # `pull_request` carries the number on the pull request; `issue_comment` carries it on
-        # the issue. One of the two is always empty, and the script fails loudly if both are.
-        PR_LINT_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+        # the issue. One of the two is always empty, and the script fails loudly if all three
+        # are. The `pr` input comes FIRST so a caller can override the event deliberately --
+        # on `workflow_dispatch` it is the only one with a value, and on the other two events
+        # it is empty unless the caller passed it.
+        PR_LINT_PR: ${{ inputs.pr || github.event.pull_request.number || github.event.issue.number }}
         PR_LINT_TEMPLATE: ${{ inputs.template }}
         PR_LINT_EXEMPT: ${{ inputs.exempt-sections }}
       run: "$GITHUB_ACTION_PATH/lint.sh"

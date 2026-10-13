@@ -46,7 +46,7 @@ command -v python3 >/dev/null 2>&1 || die "python3 is not on PATH"
 command -v gh >/dev/null 2>&1 || die "gh is not on PATH"
 [ -n "${PR_LINT_REPO:-}" ] || die "no repository in the event context"
 if [ -z "${PR_LINT_PR:-}" ]; then
-  die "this event carries no pull request number (both github.event.pull_request.number and github.event.issue.number are empty). The action supports pull_request and issue_comment events on a pull request."
+  die "this event carries no pull request number (the pr input, github.event.pull_request.number and github.event.issue.number are all empty). The action supports pull_request and issue_comment events on a pull request; on any other event, including workflow_dispatch, pass the number as the action's pr input."
 fi
 [ -n "${GH_TOKEN:-}" ] || die "no token. Pass one as the action's github-token input; the default is \${{ github.token }}."
 

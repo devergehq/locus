@@ -342,6 +342,43 @@ refuses to build when they disagree.
 
 ### Changed
 
+- **CI runs once a pull request is ready, not on every push to every draft.** Both check
+  workflows now trigger on `pull_request: [opened, reopened, synchronize, ready_for_review]`
+  plus `workflow_dispatch`, and every job is gated on
+  `if: github.event_name != 'pull_request' || github.event.pull_request.draft == false`. So a
+  draft push creates a run whose jobs all report `skipped` and bills no minutes; marking the
+  pull request ready, and every push after that, runs the lot. `push: branches: [master]` is
+  gone from `ci.yml`, because a merge is the commit the ready pull request's run already
+  tested — the consequence to know about is that a check can no longer be read off `master`
+  itself, only off the pull request that produced the commit. DEV-961, and the number behind
+  it is Review Desk's rather than this repository's: about 146 pushes across 17 branches over
+  11 and 12 October 2026, about 13 billed minutes each, which took the organisation's 3,000
+  monthly minutes by the 13th. Locus is public, so its minutes were free and nothing here was
+  costing anything; the change lands for one rule across all three repositories, and so that
+  dozens of runs nobody reads stop being queued. The gate is written as a negative guard
+  rather than as `draft == false` alone, which is silently TRUE on every non-pull-request
+  event — a missing property and `false` both coerce to 0 — and so would have passed a
+  `workflow_dispatch` by accident rather than by intent. `reopened` is named because listing
+  any type replaces the default set instead of adding to it. Concurrency groups are unchanged
+  and still cancel superseded runs. No branch on this repository has protection rules, and a
+  skipped job satisfies a required check by design, so a skipped job blocks nothing either way.
+- **`pr-lint.yml` keeps `edited` and gains a manual trigger that takes a pull request
+  number.** `edited` is this repository's one addition to the four triggers the three
+  repositories settled on, and it is load-bearing: a description is edited in the web UI with
+  no commit, so without it the check reports on a description that no longer exists. The
+  `issue_comment` trigger is NOT draft-gated, deliberately — the working-notes comment is what
+  the description links at, and the issues-API payload that event arrives with carries no
+  `draft` field to gate on. The manual trigger needs the number because the action hard-exits
+  on an event carrying none, so `.github/actions/pr-lint` gains an optional **`pr` input**
+  that takes precedence over the event when set. Every existing caller is unaffected: it
+  defaults to empty and the event is read exactly as before.
+- **`implement.md` step 7 runs the suite locally instead of waiting on a draft's checks.** It
+  said `gh pr checks <n> --watch` at a point in the pass where the pull request is still a
+  draft, which under the rule above returns exit 0 on a run where every job was skipped — a
+  green that means "nothing ran". It now runs the full local set there and reads GitHub's
+  checks in step 8, after `gh pr ready` has fired `ready_for_review`. `stack.v2.md` needed no
+  change: its named-check gate already runs after the ready.
+
 - **`review-craft` fits GitHub's column.** A body renders about 760px wide, and a
   table that can't fit breaks its words between letters. `house-style.md` gains "Fit
   GitHub's column": cells hold short scannable things only, and a finding that needs

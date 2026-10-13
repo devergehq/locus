@@ -31,12 +31,44 @@ name: PR lint
 # GITHUB_TOKEN a fork's pull request gets is sufficient. `pull_request_target` would hand a
 # WRITE token to a check that needs no writes, which is the documented way to turn a linter
 # into a credential leak.
+#
+# A DRAFT PULL REQUEST IS NOT LINTED. The job is gated on the pull request not being a
+# draft, so a draft push creates a run whose one job reports `skipped`. That is DEV-961, and
+# it applies to the description for the same reason it applies to the code: the description
+# of a pull request nobody can merge yet is still being written. `ready_for_review` joins the
+# `types:` list, so the lint lands the moment the pull request is offered for review -- which
+# is also the first moment its description is making a claim anybody is meant to act on.
+#
+# `reopened` is in the list because naming ANY type replaces the default set rather than
+# adding to it. `edited` is in the list for the reason three paragraphs up, and it is the one
+# addition this workflow makes to the four triggers DEV-961 settled on across the three
+# repositories: without it this check reports on a description that no longer exists.
+#
+# `issue_comment` is NOT draft-gated, and that is deliberate rather than an oversight. The
+# working-notes comment is what the description's link points at, and a dead link in the body
+# is worth saying on a draft; a comment is also not the push this ticket was filed about. If
+# that ever needs gating, note that the issues-API representation of a pull request carries no
+# `draft` field reachable from this payload, so it would take an API read rather than one more
+# clause here.
+#
+# `workflow_dispatch` TAKES A PULL REQUEST NUMBER, unlike ci.yml's. This workflow lints a
+# pull request rather than a tree, and the action hard-exits when the event carries no number
+# -- so a bare manual trigger here would be a red run rather than a usable one. The number
+# goes in by hand and is passed through as the action's `pr` input. GitHub only offers the
+# trigger once the configuration is on the default branch, so it becomes usable when this
+# merges, not while it is in review.
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, edited]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
   issue_comment:
     types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: The number of the pull request to lint.
+        required: true
+        type: string
 
 # Read-only, and all three reads are load-bearing:
 #   contents       - template discovery walks `repos/{repo}/contents/...`. Without it those
@@ -56,7 +88,10 @@ concurrency:
   # refs - `refs/pull/N/merge` for `pull_request`, the default branch for `issue_comment` -
   # so a group keyed on the ref would never put a push and a comment in the same group, and a
   # stale run could land after a fresh one.
-  group: pr-lint-${{ github.event.pull_request.number || github.event.issue.number }}
+  # `inputs.pr` is last because it is only set on `workflow_dispatch`, where the other two
+  # are empty; without it two hand-started runs on different pull requests would share the
+  # group `pr-lint-` and cancel each other.
+  group: pr-lint-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr }}
   # Safe here, unlike in ci.yml: this check reads live state from the API rather than from a
   # commit, so the newest run is always the authoritative one and a superseded run has
   # nothing to tell us.
@@ -65,11 +100,23 @@ concurrency:
 jobs:
   description:
     name: description
-    # `issue_comment` fires for issues as well as pull requests, and a comment on a closed or
-    # merged pull request should not re-lint it for the rest of time.
+    # Two guards, both written as negatives, and the shape is the point: each one names the
+    # event it constrains and lets every other event through. The positive form this
+    # replaced -- `github.event_name == 'pull_request' || (the issue_comment conditions)` --
+    # was an allowlist of event names, so adding `workflow_dispatch` to the triggers above
+    # would have silently excluded it from the job.
+    #
+    # First guard: `issue_comment` fires for issues as well as pull requests, and a comment on
+    # a closed or merged pull request should not re-lint it for the rest of time.
+    #
+    # Second guard: the DEV-961 draft gate, verbatim as the three repositories agreed it.
+    # `github.event.pull_request.draft == false` ALONE is silently true on every non-pull-request
+    # event -- a missing property and `false` both coerce to 0 -- so it would let an
+    # `issue_comment` or a `workflow_dispatch` through by accident rather than by intent.
     if: >-
-      github.event_name == 'pull_request' ||
-      (github.event.issue.pull_request != null && github.event.issue.state == 'open')
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request != null && github.event.issue.state == 'open')) &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -86,3 +133,8 @@ jobs:
 
       - name: Lint the description
         uses: ./.github/actions/pr-lint
+        with:
+          # Empty on every event that carries a pull request number of its own, which is
+          # every event but `workflow_dispatch`; the action falls back to the event in that
+          # case. See the action's `pr` input.
+          pr: ${{ inputs.pr }}
