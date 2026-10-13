@@ -2,7 +2,7 @@
 # Unit tests for the watcher lifecycle in skills/dispatcher/dispatcher.py (DEV-795).
 #
 # Every case runs against a THROWAWAY instance under mktemp. That is not tidiness:
-# ~/.locus/data/dispatcher/tc-portal/runtime/ is in use by a live dispatcher and the
+# ~/.locus/data/dispatcher/<instance>/runtime/ is in use by a live dispatcher and the
 # watcher processes this change exists to stop, and a test that reaped one of those
 # out from under the running operation would be a self-inflicted outage.
 #
@@ -154,9 +154,9 @@ ok "  and removes the cursor, being ledger-only" "$([ -f "$inst/runtime/watch/gh
 
 echo "DEV-959: a review's eyes close when its pull request does, at any status"
 # The bug, by status. `watch_stop_reason` was merge-aware on the `done` path alone, so a review
-# worker that was anything else ran to the 120-hour ceiling: on 13 October the session for
-# tc-portal#9585 was `active` mid-round when the pull request merged, and was still there hours
-# later telling its principal "the draft was never posted".
+# worker that was anything else ran to the 120-hour ceiling: on 13 October the session for one
+# real pull request was `active` mid-round when the pull request merged, and was still there
+# hours later telling its principal "the draft was never posted".
 for status in active needs-input stopped claimed; do
   put gh-test-1 "status=$status" --by test
   for state in merged closed; do
@@ -279,8 +279,8 @@ ok "an implement worker is NOT told on arming"    "$(ghwatch impl-test-1 --pr o/
 ok "  so it writes no false done"                 "$(says '"event": "pr_state"')" no
 # The merge is seen and acted on in the SAME pass, which is what the ticket's "within one watch
 # interval" asks for. With the stop check only at the top of the loop it waited out a sleep as
-# well -- on tc-portal's 300-second interval, ten minutes of a watcher polling a shipped pull
-# request. `--max-ticks 5` bounds the run; the stop must beat it to the exit.
+# well -- on one live instance's 300-second interval, ten minutes of a watcher polling a
+# shipped pull request. `--max-ticks 5` bounds the run; the stop must beat it to the exit.
 echo '{"head":{"sha":"deadbee"},"state":"open","merged":false}' > "$work/pr.json"
 put gh-test-1 mode=review status=active --by test
 fresh
@@ -349,8 +349,8 @@ ok "  and a statusless entry does not print None"     "$(says 'is None')" no
 ok "  it says so in words instead"                    "$(says 'gh-test-4 is no status')" yes
 rm -f "$inst/runtime/watch/gh-test-4.json"
 # A leftover FILE must not stop the Dispatcher starting. SKILL.md's start-up step says "anything
-# cross: tell your principal and stop", and tc-portal holds 112 of these. An orphaned PROCESS
-# earns that hard stop because it spends API budget; a dead file costs disk and can wait.
+# cross: tell your principal and stop", and one live instance holds 112 of these. An orphaned
+# PROCESS earns that hard stop because it spends API budget; a dead file costs disk and can wait.
 printf '{}' > "$inst/runtime/watch/gh-test-2.json"
 put gh-test-2 status=discarded --by test
 set +e; D doctor > "$work/out" 2>&1; set -e
@@ -393,34 +393,34 @@ echo "reap refuses the processes that look like watchers but are not"
 ok "a zsh -c wrapper is not a watcher"           "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-argv = \"/bin/zsh -c source /x/snapshot.sh 2>/dev/null || true && eval 'python3 /p/dispatcher.py --instance /i/tc-portal watch DAR-667 --pr o/r#1'\".split()
+argv = \"/bin/zsh -c source /x/snapshot.sh 2>/dev/null || true && eval 'python3 /p/dispatcher.py --instance /i/acme-portal watch ACME-667 --pr o/r#1'\".split()
 print(d.parse_watch_argv(argv))")" None
 ok "a framework Python IS a watcher"             "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 argv = ['/opt/homebrew/Cellar/python@3.10/3.10.17/Frameworks/Python.framework/Versions/3.10/Resources/Python.app/Contents/MacOS/Python',
-        '/p/dispatcher.py', '--instance', '/i/tc-portal', 'watch', 'DAR-667', '--pr', 'o/r#9471']
-print(d.parse_watch_argv(argv)['key'])")" DAR-667
+        '/p/dispatcher.py', '--instance', '/i/acme-portal', 'watch', 'ACME-667', '--pr', 'o/r#9471']
+print(d.parse_watch_argv(argv)['key'])")" ACME-667
 ok "--pr's value is not read as the key"         "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--pr', 'Trilogy-Care/tc-portal#9395', 'DAR-614'])['key'])")" DAR-614
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--pr', 'Acme-Corp/acme-portal#9395', 'ACME-614'])['key'])")" ACME-614
 ok "--instance=PATH equals form parses"          "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['python3', '/p/dispatcher.py', '--instance=/i/tc-portal', 'watch', 'K'])['instance'])")" /i/tc-portal
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', '--instance=/i/acme-portal', 'watch', 'K'])['instance'])")" /i/acme-portal
 ok "--max-hours value is not read as the key"    "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-hours', '2', 'DAR-563'])['key'])")" DAR-563
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-hours', '2', 'ACME-563'])['key'])")" ACME-563
 ok "--max-ticks value is not read as the key"    "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-ticks', '5', 'DAR-563'])['key'])")" DAR-563
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--max-ticks', '5', 'ACME-563'])['key'])")" ACME-563
 ok "--exit-on-done consumes no value"            "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--exit-on-done', 'DAR-563'])['key'])")" DAR-563
+print(d.parse_watch_argv(['python3', '/p/dispatcher.py', 'watch', '--exit-on-done', 'ACME-563'])['key'])")" ACME-563
 ok "python3 -c holding the script is not one"    "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
@@ -432,12 +432,12 @@ print(d.parse_watch_argv(['python3', '/p/dispatcher.py', '--instance', '/i/x', '
 ok "a claude session quoting the docs is not"    "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-argv = 'claude --prompt cmd_watch in dispatcher.py never stops, run dispatcher.py watch DAR-1'.split()
+argv = 'claude --prompt cmd_watch in dispatcher.py never stops, run dispatcher.py watch ACME-1'.split()
 print(d.parse_watch_argv(argv))")" None
 ok "the script run directly is a watcher"        "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
-print(d.parse_watch_argv(['/p/dispatcher.py', 'watch', 'DAR-9'])['key'])")" DAR-9
+print(d.parse_watch_argv(['/p/dispatcher.py', 'watch', 'ACME-9'])['key'])")" ACME-9
 
 echo "A watcher whose argv names no instance is only ours with evidence"
 # Everything reap signals comes through attribute_instance. An argv with no --instance could
@@ -522,8 +522,8 @@ ok "a 0.5.2 orphan is matched, not missed"       "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d
 argv = ['/usr/bin/python3', '/Users/x/.claude/plugins/cache/locus/locus/0.5.2/skills/dispatcher/dispatcher.py',
-        '--instance', '/i/tc-portal', 'watch', 'gh-tc-portal-9395']
-print(d.parse_watch_argv(argv)['key'])")" gh-tc-portal-9395
+        '--instance', '/i/acme-portal', 'watch', 'gh-acme-portal-9395']
+print(d.parse_watch_argv(argv)['key'])")" gh-acme-portal-9395
 ok "  and its version is reported"               "$(python3 -c "
 import sys; sys.path.insert(0, '$root/skills/dispatcher')
 import dispatcher as d

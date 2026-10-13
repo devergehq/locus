@@ -1267,11 +1267,11 @@ The review is finished, whatever state your round was in. There is nothing left 
 approve or post: the code has shipped, and a draft written about it is a draft about a decision
 somebody else has already taken.
 
-This is not a tidy-up instruction. A session for `tc-portal#9585` was still running hours after
-that pull request merged, telling its principal "the draft was never posted" — about a round
-that had opened after the author pushed and that nothing was ever going to post. Four rounds of
-#9568 did the same. Every one of those lines cost its reader a decision they did not need to
-make, and every one of those sessions held a slot.
+This is not a tidy-up instruction. A session for one real pull request was still running hours
+after that pull request merged, telling its principal "the draft was never posted" — about a
+round that had opened after the author pushed and that nothing was ever going to post. Four
+rounds on another did the same. Every one of those lines cost its reader a decision they did
+not need to make, and every one of those sessions held a slot.
 
 So, in this order and nothing else:
 
@@ -1317,7 +1317,7 @@ So, in this order and nothing else:
    * **whether your draft was posted** — `yes`, with the review's URL, or `no`, with the reason
      in four or five words.
 
-   `gh-tc-portal-9585 review: PR merged — round 2 draft was waiting on approval, not posted.`
+   `gh-acme-portal-9585 review: PR merged — round 2 draft was waiting on approval, not posted.`
 
    Then two or three lines at most: what the round had found, and whether any of it is worth
    raising another way. Do not propose posting it anywhere.

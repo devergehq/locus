@@ -138,7 +138,7 @@ folded further down and cited from here.
 Three asks or more is a spike, not a ticket with questions. Write it as one and say what decision
 it unblocks.
 
-A blocker is an ask too: `## Blocked by DAR-547` with one line on what DAR-547 delivers that this
+A blocker is an ask too: `## Blocked by ACME-547` with one line on what ACME-547 delivers that this
 needs. It is also a Linear relation — set both. The relation is what a poller reads; the heading is
 what a human reads.
 
@@ -401,12 +401,12 @@ the same read a minute later was correct. An agent that reads a ticket right aft
 touched it can get the old text. If a read looks wrong, re-read before concluding the write
 failed — and never re-write on the strength of one stale read.
 
-**An issue link expands into a chip carrying the full title.** `[DAR-547](https://linear.app/...)`
-renders as a pill with "DAR-547" and the whole title of DAR-547 after it, inline. In prose that is
+**An issue link expands into a chip carrying the full title.** `[ACME-547](https://linear.app/...)`
+renders as a pill with "ACME-547" and the whole title of ACME-547 after it, inline. In prose that is
 useful. In a table cell or a blockquote it is not: a five-row table with a linked key in each row
 grows a paragraph per row, and a blockquote citing three tickets becomes three lines of other
-tickets' titles. Verified 16 Sep 2026 on DAR-566. **In tables and blockquotes, write the bare key
-in backticks** (`DAR-547`) and put the link once, in prose or in the Linear relation.
+tickets' titles. Verified 16 Sep 2026 on ACME-566. **In tables and blockquotes, write the bare key
+in backticks** (`ACME-547`) and put the link once, in prose or in the Linear relation.
 
 **Linear supports:** tables, mermaid (in a ```mermaid fence or via `/diagram`), checkboxes,
 blockquotes, `:emoji:`, code fences, `@` mentions of issues, users and projects, and headings

@@ -247,8 +247,8 @@ def search_says_closed(pr: dict) -> bool:
     `is:open` in `github.review_query` cannot do this job. It is the instance's own config — an
     edited one need not carry the filter at all — and GitHub's search index lags a merge, so the
     search goes on matching a pull request that merged while the last tick was running. DEV-959's
-    report is that window: a round opened on #9585 after the author pushed, and the merge landed
-    before anything was posted.
+    report is that window: a round opened on one real pull request after the author pushed, and
+    the merge landed before anything was posted.
 
     **And `state` cannot do the job either, which is why it only narrows.** `PullRequestState` is
     non-null in GitHub's schema and is one of `OPEN`, `CLOSED`, `MERGED`, so the value is sound —
@@ -444,10 +444,10 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
 
 # ----------------------------------------------------------------------------- session groups
 
-# Which named allele group each mode's sessions land in. On 12 October 2026 the `tc-portal`
-# project held 56 sessions in one flat list, and finding "the review of PR 9586" meant reading
-# every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session under a named
-# section of its project instead.
+# Which named allele group each mode's sessions land in. On 12 October 2026 one live project
+# held 56 sessions in one flat list, and finding the review of a given pull request meant
+# reading every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session
+# under a named section of its project instead.
 #
 # One group per mode, and nothing else decides it: not the ticket, not its Linear project, not
 # its labels. Four modes share `linear` because what a person is looking for is "the agents
@@ -765,13 +765,19 @@ def canonical_repo(repo: str) -> str:
 
     **`review find` does not normalise its `--repo` and every other call here does, which is
     how the look before the first write came to be dead on half the instances that have one.**
-    Measured against review-desk 82c0a09: `review open --repo Trilogy-Care/tc-portal` stores
-    `trilogy-care/tc-portal`, `work list --repo Trilogy-Care/tc-portal` finds it, and
-    `review find --repo Trilogy-Care/tc-portal` answers `reviews: []` — echoing the query back,
+    Measured against review-desk 82c0a09 (repository renamed; the fold is the real one):
+    `review open --repo Acme-Corp/acme-portal` stores `acme-corp/acme-portal`,
+    `work list --repo Acme-Corp/acme-portal` finds it, and
+    `review find --repo Acme-Corp/acme-portal` answers `reviews: []` — echoing the query back,
     so the mismatch is invisible in the answer. GitHub hands this file `nameWithOwner` as the
-    repository is registered, and `Trilogy-Care/tc-portal` is the live instance's own slug, so
-    the look answered "no review here" for every request on it and the blind write it exists to
-    prevent happened anyway.
+    repository is registered, and that spelling was the live instance's own slug, so the look
+    answered "no review here" for every request on it and the blind write it exists to prevent
+    happened anyway.
+
+    **The mixed case in the stand-in is load-bearing, so do not "normalise" it to the
+    `acme/portal` used elsewhere in the tests.** A lower-case single-segment name folds to
+    itself, which would leave this docstring measuring nothing, and `pr_key` would derive
+    `gh-portal-…` instead of the multi-hyphen key shape `reap`'s tests turn on.
 
     `review_desk_repos` has said this for its own callers since DEV-865 — "`DevergeHQ/Locus`
     from a config would answer with an empty list and read as nothing waiting" — and the lesson
@@ -1070,8 +1076,8 @@ class Poller:
         # it is remembered at all, and `review_requests` for where it is pruned.
         self.state.setdefault("recorded", {})
         # Keyed on THIS PROCESS, and never on the state file. `started` is persisted, so reading
-        # it made `backlog` true once per instance LIFETIME instead of once per session: the
-        # `tc-portal` instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
+        # it made `backlog` true once per instance LIFETIME instead of once per session: one
+        # live instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
         # whole start-up contract -- list the review backlog, ask before dispatching -- was
         # unreachable dead code for every one of them (DEV-794). A fresh `Poller` is a fresh
         # session's eyes, so the first tick of the process is the first tick, full stop.
@@ -1360,7 +1366,7 @@ class Poller:
             # `setdefault`, not assignment. `first_tick` is true once per PROCESS, so an assignment
             # here would rewrite `started` on every arm and destroy the one thing it is still for:
             # when this instance's poller first ran. Write-once keeps it honest, and keeps
-            # `tc-portal`'s 2026-09-11 stamp on disk as the evidence for DEV-794.
+            # a live instance's 2026-09-11 stamp on disk as the evidence for DEV-794.
             self.state.setdefault("started", now_iso())
             self.announced = True
             emit("poller_started", working=working_count(), max_workers=cfg["limits"]["max_workers"],
@@ -3215,8 +3221,8 @@ class Watcher:
         which is why this is not called on the ceiling path: a ceiling says the process has run
         long enough, never that the work is over.
 
-        Nothing else removes them, which is the other half of DEV-795: `runtime/watch/` on the
-        `tc-portal` instance held 123 cursors for 9 live watchers.
+        Nothing else removes them, which is the other half of DEV-795: `runtime/watch/` on one
+        live instance held 123 cursors for 9 live watchers.
         """
         try:
             self.path.unlink()
@@ -3531,9 +3537,9 @@ def watch_stop_reason(key: str, state: dict,
     **A REVIEW key stops on a closed pull request whatever its status is, and that is DEV-959.**
     The `done` branch below was the only merge-aware path, so a review worker that was anything
     else — `active` mid-round, `needs-input`, `stopped` — kept its watcher to the ceiling. On 13
-    October 2026 the session for `tc-portal#9585` was one of them: a second round opened after
-    the author pushed, the pull request merged, and the session was still there hours later
-    telling its principal "the draft was never posted". Four rounds of #9568 are the same shape.
+    October 2026 the session for one real pull request was one of them: a second round opened
+    after the author pushed, the pull request merged, and the session was still there hours later
+    telling its principal "the draft was never posted". Four rounds on another are the same shape.
 
     Reviewing is the one mode where a closed pull request means the work itself is over.
     Nothing is left to revise, approve or post, so there is nothing a later event could ask the
@@ -3595,10 +3601,10 @@ def cmd_watch(args) -> None:
         cfg["limits"].get("watch_max_hours", WATCH_MAX_HOURS))
     # Wall-clock, and from THIS process's start rather than the key's. Two deliberate choices:
     #
-    #   * Not ticks. `watch_interval_secs` is 90 in the shipped config and 300 on `tc-portal`, so
-    #     a ceiling counted in ticks is a different amount of time on every instance — and the
-    #     ticket rules out "cheaper ticks forever" for the same reason it has to rule out
-    #     "a ceiling that shortens when you shorten the interval".
+    #   * Not ticks. `watch_interval_secs` is 90 in the shipped config and 300 on one live
+    #     instance, so a ceiling counted in ticks is a different amount of time on every
+    #     instance — and the ticket rules out "cheaper ticks forever" for the same reason it
+    #     has to rule out "a ceiling that shortens when you shorten the interval".
     #   * Not persisted. Storing the deadline in the cursor would carry it across relaunches, so
     #     one expiry would make the key permanently unwatchable and no operator action short of
     #     deleting state would bring it back. A process ceiling is recoverable by restarting;
@@ -3631,8 +3637,8 @@ def cmd_watch(args) -> None:
         The one after is about a key this pass has just finished, and DEV-959 is why it is here:
         the ticket asks that a worker whose pull request merges end "within one watch interval",
         and with the check only at the top of the loop the stop waited out a whole sleep as well
-        — up to `watch_interval_secs` twice over, which on `tc-portal`'s 300 is ten minutes of a
-        watcher polling a pull request that has shipped. The tick that reads the merge has
+        — up to `watch_interval_secs` twice over, which on a live instance's 300 is ten minutes
+        of a watcher polling a pull request that has shipped. The tick that reads the merge has
         already written `pr_status` to the cursor, so the answer costs one more `open()`.
 
         After `--once`, deliberately. That flag means one pass and exit, and it already exits;
@@ -4155,11 +4161,12 @@ def cmd_status(args) -> None:
 # --------------------------------------------------------------------------- watchers on the box
 
 # Flags of `watch` that consume the next token. Needed because the tokeniser below has to know
-# which bare word is the ledger key: `watch --pr Trilogy-Care/tc-portal#9395 DAR-614` is a real
-# command line off this machine, and a walker that skipped only `--instance`'s value would read
-# the repo#number as the key, look it up, find no entry, and report the wrong thing.
+# which bare word is the ledger key: `watch --pr Acme-Corp/acme-portal#9395 ACME-614` is a real
+# command line off this machine (repository and key renamed), and a walker that skipped only
+# `--instance`'s value would read the repo#number as the key, look it up, find no entry, and
+# report the wrong thing.
 # `--max-ticks` and `--max-hours` are here because they were added by the same change as this set
-# and were missed: `watch --max-hours 2 DAR-563` parses `2` as the key, which spares a real orphan
+# and were missed: `watch --max-hours 2 ACME-563` parses `2` as the key, which spares a real orphan
 # forever and lists it under a key that does not exist. Any flag added to the `watch` parser that
 # takes a value must be added here too, and a `store_true` flag must not be.
 WATCH_VALUE_FLAGS = {"--instance", "--as", "--pr", "--max-ticks", "--max-hours"}
@@ -4204,7 +4211,7 @@ def parse_watch_argv(argv: list[str]) -> dict | None:
       * **The script must be at argv index 0, 1 or 2.** `ps` flattens argv to a space-joined
         string with no quoting, so a wrapper's whole command line arrives as tokens
         indistinguishable from real arguments. Every watcher here is started through
-        `/bin/zsh -c 'source … && eval "python3 …/dispatcher.py --instance … watch DAR-667 …"'`,
+        `/bin/zsh -c 'source … && eval "python3 …/dispatcher.py --instance … watch ACME-667 …"'`,
         and that wrapper's flattened tokens contain `…/dispatcher.py`, `--instance`, the path,
         `watch` and the key — so "some token ends in /dispatcher.py" passes on the wrapper. The
         index does not: a real invocation has the script at 1 (interpreter first), the wrapper
@@ -4269,7 +4276,7 @@ VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)+$")
 def script_version(script: str) -> str | None:
     """The plugin version a watcher is *running*, read out of its own script path.
 
-    Not cosmetic. `gh-tc-portal-9395`'s watcher was executing locus 0.5.2 while every other
+    Not cosmetic. `gh-acme-portal-9395`'s watcher was executing locus 0.5.2 while every other
     watcher on the box ran 0.5.4: an orphan outlives the install that started it, because the
     plugin cache keeps a directory per version and a running process holds the path it was
     launched with. So `reap` must never key on one `dispatcher.py` location — it matches any argv
@@ -4567,8 +4574,8 @@ def cmd_doctor(args) -> None:
 
     def cursors():
         # Reports, never fails. `SKILL.md`'s start-up step says "anything ✗: tell your principal and
-        # stop", and there are 112 stale cursors on `tc-portal` — so failing here would stop the
-        # Dispatcher from starting until someone swept a directory of dead files. An orphaned
+        # stop", and there are 112 stale cursors on one live instance — so failing here would stop
+        # the Dispatcher from starting until someone swept a directory of dead files. An orphaned
         # *process* is worth that hard stop because it is spending API budget; a leftover file is
         # costing nothing but disk and can wait for the next `reap`.
         prunable, unknown = prunable_cursors()
@@ -4928,7 +4935,7 @@ def cmd_init(args) -> None:
                + fill_absent("review", cfg.setdefault("review", {}), template["review"])
                # Seven, and this one needs its rule checked rather than assumed, because `limits`
                # is the block whose values an instance is most likely to have TUNED —
-               # `tc-portal` runs `watch_interval_secs` 300 against the template's 90. It
+               # one live instance runs `watch_interval_secs` 300 against the template's 90. It
                # qualifies anyway: `fill_absent` adds only keys the config has never heard of and
                # never touches one it has, so a tuned value is not at risk, and every key here is
                # a number with a real default rather than a placeholder somebody must edit. What
