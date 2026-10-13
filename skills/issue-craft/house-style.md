@@ -196,7 +196,7 @@ none of them is a wall of prose with collapsible sections, and the eye cannot te
 flowchart LR
   A[ItemApprovedEvent] --> B[SnapshotWriter]
   A --> C[AllocationProjector]
-  D[ServiceTypeCorrectedEvent] --> C
+  D[CategoryCorrectedEvent] --> C
   D -. never .-> B
 ```
 ````

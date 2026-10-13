@@ -73,7 +73,7 @@ The PR moves the reopen behind a preflight, which is the right shape: refusals n
 
 **in diff** · `Open — needs a decision`
 
-The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, in [`ApplyInvoiceUpdatesAction.php:212`](https://github.com/o/r/blob/abc/app/Actions/Invoices/ApplyInvoiceUpdatesAction.php#L212). If it throws for a reason the dry run missed, the invoice is left OPEN — the red path below. I'd wrap the reopen and the correction in one compensating step.
+The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, in [`ReconcileInvoiceAction.php:212`](https://github.com/o/r/blob/abc/app/Actions/Invoices/ReconcileInvoiceAction.php#L212). If it throws for a reason the dry run missed, the invoice is left OPEN — the red path below. I'd wrap the reopen and the correction in one compensating step.
 
 ```mermaid
 flowchart TD
@@ -95,7 +95,7 @@ Right shape.
 ### Open — needs a decision
 | | Where | Finding | Disposition |
 |---|---|---|---|
-| 🟠 Should | [`app/Actions/Invoices/ApplyInvoiceUpdatesAction.php:212`](https://github.com/o/r/pull/1#discussion_r1) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw after the reopen at the payer leaves the invoice OPEN with nothing to put it back | Open |
+| 🟠 Should | [`app/Actions/Invoices/ReconcileInvoiceAction.php:212`](https://github.com/o/r/pull/1#discussion_r1) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw after the reopen at the payer leaves the invoice OPEN with nothing to put it back | Open |
 
 ### Diagrams
 ```mermaid
@@ -116,7 +116,7 @@ Right shape.
 ### Open — needs a decision
 | | Id | Where | Finding | Disposition |
 |---|---|---|---|---|
-| 🟠 Should | S1 | [`Apply…Action.php:212`](https://github.com/o/r/pull/1#discussion_r1) | A throw after the reopen strands the invoice OPEN | Open |
+| 🟠 Should | S1 | [`Recon…Action.php:212`](https://github.com/o/r/pull/1#discussion_r1) | A throw after the reopen strands the invoice OPEN | Open |
 EOF
 
 # The house index, verbatim in shape: an agent review with one thread.

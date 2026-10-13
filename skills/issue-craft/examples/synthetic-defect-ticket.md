@@ -41,7 +41,7 @@ make every correction path recompute the snapshot, then backfill the rows that a
 
 ```
 app/Handlers/ApprovalHandler.php:88        SnapshotWriter::write($item)   <- the only caller
-app/Handlers/ServiceTypeCorrection.php     (no call)
+app/Handlers/CategoryCorrection.php        (no call)
 app/Handlers/ServiceDateCorrection.php     (no call)
 app/Handlers/QuantityCorrection.php        (no call)
 ```
@@ -54,7 +54,7 @@ listening.**
 flowchart LR
   A[ItemApprovedEvent] --> S[SnapshotWriter]
   A --> P[AllocationProjector]
-  C[ServiceTypeCorrectedEvent] --> P
+  C[CategoryCorrectedEvent] --> P
   C -. never .-> S
 ```
 
@@ -98,7 +98,7 @@ claimed rows are a Finance conversation and their own ticket.
 
 ## Acceptance criteria
 
-- [ ] After a service-type correction, `line_items.fee_amount` equals `allocations.fee_amount` for that item
+- [ ] After a category correction, `line_items.fee_amount` equals `allocations.fee_amount` for that item
 - [ ] After a service-date correction, the same
 - [ ] After a quantity correction, the same
 - [ ] An approval with no subsequent correction writes the snapshot exactly once
