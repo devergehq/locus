@@ -68,6 +68,42 @@ refuses to build when they disagree.
   reading the answer would learn the fact one spent round too late — DEV-962's own harm arriving
   through DEV-962's fix. The probe is a read, made once a tick, and never cached across ticks.
 
+### Fixed
+
+- **`github.skip_drafts` is read in one place, so the poller and the watcher cannot disagree
+  about a config that does not carry the key.** `review_requests` has always read it as
+  `g.get("skip_drafts")` — absent is falsy, so a draft row is kept, offered and dispatched — and
+  DEV-962's new draft stop was written as `.get("skip_drafts", True)`. On any `config.json` older
+  than the key those are opposites: the poller would dispatch a review worker onto a draft and
+  that worker's own watcher would stop on its first tick, so the review was never done and the
+  record never taken out of play. `skip_drafts(cfg)` is the one reader, absent means False —
+  the poller's long-standing reading, not the new one — and `watch_stop_reason`'s parameter
+  defaults to False with every caller passing the config value. `prunable_cursors` and
+  `live_watchers` were that forgotten caller: they called it three-arg and took the old `True`,
+  so on an instance with the key off `D reap` would SIGTERM and unlink a live review watcher that
+  `cmd_watch` on the same instance would have kept — which is exactly the "second rule that could
+  disagree with the first" `prunable_cursors`' own docstring promises not to be.
+- **A first tick over a pull request that is both closed and a draft reports the close again.**
+  DEV-962's `pr_draft` block was written between the two halves of `pr_state`'s `if`/`elif` and
+  took the `elif` that belonged to the second, so that shape emitted `pr_draft` and swallowed the
+  one piece of history a first tick does not suppress — in the case that branch exists for: `D
+  reap` prunes a finished key's cursor, a replacement arms a fresh one, and it gets one tick. The
+  two questions are independent and are two chains now.
+- **An out-of-play recording survives the `recorded` prune**, like a dismissal and a closed one.
+  A key taken out of play has by definition just left `present`, so the field was discarded on
+  the tick it was written and the return depended on `find_request` re-reading it — a read that
+  is skipped whenever `look_stopped` or `record_stopped` is set, so one transient broken
+  `review find` on the return tick left the review out of play while the poller went on offering
+  the key.
+- **The wake's rate-limit marks are pruned with the record they are about.** `emitted` is
+  persisted and nothing pruned it but the Linear trigger marks, so
+  `review_desk|head_moved|<key>|<from>|<to>` was one permanent entry per push per reviewed pull
+  request for the life of the instance.
+- **`why_cleared`'s live `gh pr view` is made only when something will read its answer.** It was
+  moved above the live-session test so the out-of-play write could use it, which made it one
+  subprocess per cleared key — including, on an instance with Review Desk off, keys whose answer
+  is discarded immediately.
+
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a
   session ran `review open`, so it could not say how many requests had come in, which were never

@@ -546,6 +546,27 @@ def group_problems(cfg: dict) -> list[str]:
 REVIEW_DEFAULTS = {"blind_options_pass": True}
 
 
+def skip_drafts(cfg: dict) -> bool:
+    """Does this instance treat a DRAFT pull request as not-work? (`github.skip_drafts`)
+
+    **One reader, because DEV-962 gave the key a second half and the two defaulted
+    differently.** `review_requests` has always read it as `g.get("skip_drafts")` — absent means
+    falsy means a draft row is kept, offered and dispatched — and the watcher's new draft stop
+    was written as `.get("skip_drafts", True)`. On any `config.json` that predates the key those
+    two are opposites: the poller dispatches a review worker onto a draft and the worker's own
+    watcher stops on its first tick, so the review is never done and the record is never taken
+    out of play. The comment in `watch_stop_reason` asserted they could not disagree; this is
+    what makes that true rather than claimed.
+
+    **Absent is False, which is the poller's long-standing reading and not the new one.**
+    `config.example.json` ships `true` and `init` writes it, so the only instances that reach
+    the default are hand-written or older than the key — and changing what THEY do is a
+    behaviour change this ticket was not asked for. The shipped default is in the config file,
+    where an operator can see it, rather than in code where it would silently override them.
+    """
+    return bool((cfg.get("github") or {}).get("skip_drafts"))
+
+
 def review_cfg(cfg: dict) -> dict:
     """The `review` block with every key defaulted. `None` is treated as absent, as elsewhere."""
     block = dict(REVIEW_DEFAULTS)
@@ -1618,7 +1639,7 @@ class Poller:
         recording = not review_desk_off(rd)
         present = {}
         for pr in nodes:
-            if not pr or (g.get("skip_drafts") and pr.get("isDraft")):
+            if not pr or (skip_drafts(cfg) and pr.get("isDraft")):
                 continue
             repo = pr["repository"]["nameWithOwner"]
             key = pr_key(repo, pr["number"])
@@ -1863,10 +1884,17 @@ class Poller:
                 # truncated tick returns long before this, so the one thing that could take a
                 # live review out of play — GitHub's list looking empty when it is not — cannot
                 # reach it. `source_empty` is what that tick says instead.
-                reason = self.why_cleared(cfg, where)
+                #
+                # **And only when something will READ it.** It used to be computed for every key
+                # that left the list, and on an instance with Review Desk off (`recording` false)
+                # a cleared key with no live session discards it immediately — one `gh pr view`
+                # per key for a value nobody looks at, on a tick where a page's worth of requests
+                # clears at once. Both readers are named in the condition rather than inferred.
+                alive_here = entry.get("status") in ALIVE
+                reason = self.why_cleared(cfg, where) if recording or alive_here else ""
                 left = self.out_of_play(rd, key, where, reason, entry, every) if recording \
                     else None
-                if entry.get("status") not in ALIVE:
+                if not alive_here:
                     # Nobody to discard, so no `review_cleared` — but the record moved, and a row
                     # leaving Patrick's queue with a reason is the whole of what he asked for.
                     # Said once per key and reason, through `once` rather than `due`, because a
@@ -1900,12 +1928,32 @@ class Poller:
         # request, for as long as the instance lives, and that is the right side to err on: the
         # entry is small and the write is on a row somebody said to leave alone.
         #
+        # **The wake marks are pruned here too, because `emitted` is persisted and nothing else
+        # prunes them.** `review_desk|head_moved|<key>|<from>|<to>` is keyed on both commits, so
+        # that a second push speaks and the same push does not — which is right, and which means
+        # one permanent entry per push per reviewed pull request for the life of the instance.
+        # That is the "a dict that only grows is a file that only grows" problem this prune was
+        # written for, reached through a different bucket. Dropped for any key this trusted tick
+        # did not name: a request that is no longer open has no session left to wake.
+        for mark in [m for m in self.state["emitted"] if m.startswith("review_desk|head_moved|")]:
+            if mark.split("|")[2] not in present:
+                del self.state["emitted"][mark]
         # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
         # the fact it holds is "this row is on the work list and must never be dispatched from";
         # `request_spoken_for`'s fourth shape is its only reader, and losing it is a review
         # worker eventually sent to a pull request that shipped.
+        #
+        # **And an OUT-OF-PLAY recording, which is the third fact of the same kind.** A key taken
+        # out of play has by definition just left `present`, so without this the field written a
+        # few lines above is discarded on the same tick — and bringing the review back then
+        # depends on `find_request` re-reading it on the tick the pull request returns. That read
+        # is skipped whenever `look_stopped` or `record_stopped` is set, so one transient broken
+        # `review find` on the return tick left the review out of play in Review Desk while the
+        # poller went on offering the key. Found in review of this branch; the cost is one dict
+        # entry per out-of-play pull request, which `back_in_play` clears the moment it returns.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
-                                  if k in present or v.get("dismissed") or v.get("closed")}
+                                  if k in present or v.get("dismissed") or v.get("closed")
+                                  or v.get("out_of_play")}
 
     def record_unreachable(self, rd: dict, every: int) -> None:
         """Say that Review Desk could not be reached while recording a request.
@@ -3344,10 +3392,14 @@ class Poller:
                      command=rd["command"], repo=repo, number=pr["number"],
                      call="review in-play", detail=detail, example=True)
             return
-        held = self.state["recorded"].get(key)
+        held, review = self.state["recorded"].get(key), review_of(payload)
         if isinstance(held, dict):
-            held["out_of_play"] = review_of(payload).get("out_of_play") \
-                if isinstance(review_of(payload), dict) else None
+            # Read off the ANSWER, like `out_of_play` is, and `review_of` called once — the first
+            # version called it twice inside one expression, which was two type checks and two
+            # chances to read a different answer. Cleared to None whatever the answer says it is
+            # now, because a build that accepted `review in-play` and still reported a reason
+            # would have the next tick looking for a change that already happened.
+            held["out_of_play"] = review.get("out_of_play") if isinstance(review, dict) else None
         # Said once per return, which is what the `once` mark gives: the mark is cleared the
         # moment the review is out of play again, so a pull request that goes draft twice is
         # reported coming back twice. One line, and it asks for nothing — the `review_request`
@@ -4174,19 +4226,6 @@ class Watcher:
             emit("pr_pushed", key=self.key, pr=n, previous=self.state.get("pr_head"), current=head)
         if not first and status != self.state.get("pr_status"):
             emit("pr_state", key=self.key, pr=n, previous=self.state.get("pr_status"), current=status)
-        if draft != bool(self.state.get("pr_draft")) and (not first or draft):
-            # **Both directions**, which is what makes the return half of DEV-962 item 7 work: a
-            # pull request marked ready again is the thing that brings the review back, and a
-            # worker that only heard the conversion would be a worker that stopped and never
-            # learned it could start.
-            #
-            # **A first tick is suppressed only when it is NOT a draft**, which is the same
-            # exception `pr_state` makes two lines up and for the same reason: a session arming
-            # over a conversion that has ALREADY happened cannot be made to wait for it to
-            # happen again. `watch_stop_reason` will usually stop such a watcher before this
-            # tick runs; this covers the case where the cursor was pruned and a fresh one armed.
-            emit("pr_draft", key=self.key, pr=n, previous=self.state.get("pr_draft"),
-                 current=draft, first=first or None)
         elif first and status in PR_CLOSED and self.mode == "review":
             # **The one piece of history a first tick does not suppress**, and the exception is
             # the same one `review_desk()` makes a paragraph below for the same reason: a worker
@@ -4209,6 +4248,27 @@ class Watcher:
             # `_common.md` step 3 before it reads the ticket at step 4 — would report itself done
             # on a pull request somebody else closed, before it had read anything at all.
             emit("pr_state", key=self.key, pr=n, previous=None, current=status, first=True)
+        # **Its own `if`, AFTER the chain above and not inside it.** Written between the two
+        # halves of that chain, this block took the `elif` that belonged to `pr_state` — so a
+        # first tick on a pull request that is BOTH closed and a draft emitted `pr_draft` and
+        # swallowed the one piece of history the branch above exists to deliver. That is exactly
+        # the case the paragraph above names: `D reap` prunes a finished key's cursor, a
+        # replacement arms a fresh one, and it gets one tick. Found in review of this branch.
+        # The two questions are independent — a draft can be open, closed or merged — so they
+        # are two chains.
+        if draft != bool(self.state.get("pr_draft")) and (not first or draft):
+            # **Both directions**, which is what makes the return half of DEV-962 item 7 work: a
+            # pull request marked ready again is the thing that brings the review back, and a
+            # worker that only heard the conversion would be a worker that stopped and never
+            # learned it could start.
+            #
+            # **A first tick is suppressed only when it is NOT a draft**, which is the same
+            # exception the branch above makes and for the same reason: a session arming over a
+            # conversion that has ALREADY happened cannot be made to wait for it to happen
+            # again. `watch_stop_reason` will usually stop such a watcher before this tick runs;
+            # this covers the case where the cursor was pruned and a fresh one armed.
+            emit("pr_draft", key=self.key, pr=n, previous=self.state.get("pr_draft"),
+                 current=draft, first=first or None)
         self.state.update(pr_head=head, pr_status=status, pr_draft=draft, pr_since=now_z(),
                           pr_seen=sorted(seen)[-500:])
 
@@ -4357,7 +4417,7 @@ def full_pass_due(last_full: float, cfg: dict) -> bool:
 
 
 def watch_stop_reason(key: str, state: dict, exit_on_done: bool,
-                      skip_drafts: bool = True) -> tuple[str | None, str, bool, str] | None:
+                      drafts_skipped: bool = False) -> tuple[str | None, str, bool, str] | None:
     """Why this watcher should stop, from local files only. `None` means carry on.
 
     Returns `(status, detail, ledger_decided, reason)`. The annotation used to say `tuple[str,
@@ -4451,7 +4511,7 @@ def watch_stop_reason(key: str, state: dict, exit_on_done: bool,
         # to do. A worker can now tell the two apart without parsing prose.
         return (status, f"a review whose pull request is {pr_status} — nothing is left to "
                         f"revise, approve or post", False, "pull_request")
-    if key_mode(key, entry) == "review" and skip_drafts and state.get("pr_draft"):
+    if key_mode(key, entry) == "review" and drafts_skipped and state.get("pr_draft"):
         # **DEV-962 item 7, and it is a different stop from the one above.** A draft is
         # REVERSIBLE: the rounds, the draft and any sign-off are kept, the pull request is marked
         # out of play in Review Desk, and the review returns on the round it was on when the
@@ -4460,9 +4520,16 @@ def watch_stop_reason(key: str, state: dict, exit_on_done: bool,
         # draft could otherwise hold for a week.
         #
         # **Gated on `github.skip_drafts`**, which is the instance's own statement about whether
-        # a draft is work. It is on in the shipped config and the poller's own draft handling is
-        # gated on the same key, so the two halves cannot disagree: an instance that reviews
-        # drafts neither takes them out of play nor stops their workers.
+        # a draft is work, read through `skip_drafts()` so that this half and the poller's cannot
+        # disagree about a config that does not carry the key. It is `true` in the shipped
+        # config; an instance that reviews drafts neither takes them out of play nor stops their
+        # workers.
+        #
+        # **The parameter defaults to False and every caller passes the config value**, which is
+        # the direction that cannot do harm: a reader who forgot to pass it keeps watching, where
+        # a default of True would have `cmd_reap` kill a watcher that would not have stopped
+        # itself. Found in review of this branch — `prunable_cursors` and `live_watchers` were
+        # exactly that reader.
         #
         # Cursor kept, like the branch above and for the same reason: `pr_draft` lives only here,
         # so deleting it would make the next relaunch re-derive the conversion over a full
@@ -4532,8 +4599,7 @@ def cmd_watch(args) -> None:
         a stop reason on a run whose caller asked for exactly one pass would be a new emission
         on a path that reads as "tick and go".
         """
-        stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done,
-                                 bool(cfg["github"].get("skip_drafts", True)))
+        stop = watch_stop_reason(args.key, watcher.state, args.exit_on_done, skip_drafts(cfg))
         if not stop:
             return False
         status, why, from_ledger, reason = stop
@@ -5259,6 +5325,13 @@ def live_watchers() -> list[dict]:
     # leaves the process unattributed and therefore never signalled.
     installed = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
     sole = installed[0].resolve() if len(installed) == 1 else None
+    # Read once for the whole sweep. A config that will not parse must not take `doctor` and
+    # `reap` down with it — they are the two commands somebody runs when an instance is already
+    # broken — so an unreadable one reads as "drafts are work", which keeps every watcher.
+    try:
+        drafts = skip_drafts(load_config())
+    except Exception:
+        drafts = False
     found = []
     for line in out.stdout.splitlines():
         parts = line.split(None, 2)
@@ -5277,7 +5350,12 @@ def live_watchers() -> list[dict]:
                "script": parsed["script"], "version": script_version(parsed["script"])}
         if mine:
             row["status"] = (ledger_get(parsed["key"]) or {}).get("status")
-            row["stop"] = watch_stop_reason(parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False)
+            # `skip_drafts(cfg)`, not the parameter's default: `cmd_watch` passes the config
+            # value, so reading it any other way here is the "second rule that could disagree
+            # with the first" `prunable_cursors` promises not to be.
+            row["stop"] = watch_stop_reason(
+                parsed["key"], read_json(cursor_path(parsed["key"], parsed["as"]), {}), False,
+                drafts)
         found.append(row)
     return sorted(found, key=lambda r: -(etime_secs(r["etime"]) or 0))
 
@@ -5297,6 +5375,13 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
     """
     if not watch_dir().exists():
         return [], []
+    # Same read and the same fallback as `live_watchers`, and for the stronger reason: this
+    # function's answer is what `cmd_reap` DELETES on. A config it cannot read must not make it
+    # prune more than `cmd_watch` would stop.
+    try:
+        drafts = skip_drafts(load_config())
+    except Exception:
+        drafts = False
     entries = ledger_all()
     prunable, unknown = [], []
     for path in sorted(watch_dir().glob("*.json")):
@@ -5305,7 +5390,7 @@ def prunable_cursors() -> tuple[list[tuple[Path, str, str]], list[Path]]:
         if key is None:
             unknown.append(path)
             continue
-        stop = watch_stop_reason(key, read_json(path, {}), False)
+        stop = watch_stop_reason(key, read_json(path, {}), False, drafts)
         if stop:
             # `stop[0] or ...`, because the status can now be absent. Every branch that could
             # stop a watcher before DEV-959 was keyed on the status itself, so `stop[0]` was

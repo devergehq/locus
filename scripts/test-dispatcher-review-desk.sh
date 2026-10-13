@@ -1083,6 +1083,15 @@ last_oop () { grep '^review out-of-play ' "$work/rd.calls" | tail -1; }
 # here want. A few need "and nothing more was asked on the NEXT tick", and resetting the whole
 # instance would throw away the poll state those ticks are about.
 forget_calls () { : > "$work/rd.calls"; }
+# marks <prefix>: how many `emitted` markers the poll state holds with that prefix. `emitted` is
+# PERSISTED, so a mark nothing prunes is a file that only grows -- which is what this counts.
+marks () {
+  python3 - "$inst/runtime/poll-state.json" "$1" <<'MARKS'
+import json, sys, pathlib
+state = json.loads(pathlib.Path(sys.argv[1]).read_text())
+print(sum(1 for m in (state.get("emitted") or {}) if m.startswith(sys.argv[2])))
+MARKS
+}
 oops () { grep -c '^review out-of-play ' "$work/rd.calls" 2>/dev/null || true; }
 inplays () { grep -c '^review in-play ' "$work/rd.calls" 2>/dev/null || true; }
 shows () { grep -c '^review show ' "$work/rd.calls" 2>/dev/null || true; }
@@ -2576,7 +2585,9 @@ ok "no case fold: the capitalised row IS offered"      "$(count '"event": "revie
 # restore the prune and re-open finding 3's harm for every closed row.
 ok "the docstring says the entry is KEPT"              "$(grep -c 'The .recorded. entry this leaves is KEPT' "$disp")" 1
 ok "  and names the sentence it replaced"              "$(grep -c 'an earlier version of this paragraph' "$disp")" 1
-ok "  while the prune still keeps it"                  "$(grep -c 'v.get("dismissed") or v.get("closed")}' "$disp")" 1
+# The clause moved onto a line of its own when DEV-962 added `out_of_play` to it, so this now
+# pins the pair without the closing brace. Still exactly one place, which is the claim.
+ok "  while the prune still keeps it"                  "$(grep -c 'v.get("dismissed") or v.get("closed")' "$disp")" 1
 
 printf '\n  DEV-959: two closed rows on one broken tick, and neither is lost\n'
 # The review of `bb9f886` read `broken_since` (then `broken_calls`, a SET of names) and argued
@@ -5376,6 +5387,78 @@ cleared_doc 1 OPEN draft
 rc=$(run "$disp" poll 1)
 ok "a truncated page writes no out-of-play either"     "$(oops)" 0
 
+printf '\n  the three things a review of this branch found\n'
+# **An out-of-play recording survives the prune**, like a dismissal and a closed one. A key taken
+# out of play has by definition just left `present`, so without this the field is discarded on
+# the same tick it is written -- and bringing the review back then depends on `find_request`
+# re-reading it when the pull request returns. That read is skipped whenever `look_stopped` or
+# `record_stopped` is set, so one transient broken `review find` on the return tick left the
+# review out of play in Review Desk while the poller went on offering the key.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+ok "an out-of-play recording survives the prune"       "$(remembered gh-portal-412 out_of_play)" draft
+# And that is what makes the return work even on a tick whose look cannot be made.
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+echo broken > "$work/rd.find.mode"
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "  so a broken look still brings it back in play"   "$(inplays)" 1
+ok "  and the record says it is in play again"         "$(remembered gh-portal-412 out_of_play)" None
+rm -f "$work/rd.find.mode"
+
+# **The wake marks are pruned with the record they are about.** `emitted` is persisted and
+# nothing pruned it but the Linear trigger marks, so `review_desk|head_moved|<key>|<from>|<to>`
+# -- keyed on both commits, which is what makes a second push speak and the same push not --
+# was one permanent entry per push per reviewed pull request for the life of the instance.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+preopen acme/portal 412 sha412 7 sess-h
+search_doc acme/portal 412 sha777 Retry
+rc=$(run "$disp" poll 1)
+ok "a wake leaves a mark behind it"                    "$(marks 'review_desk|head_moved|')" 1
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+ok "  which is pruned once the request is gone"        "$(marks 'review_desk|head_moved|')" 0
+
+# **`why_cleared`'s live read is made only when something will read its answer.** It was computed
+# for every key that left the list, and on an instance with Review Desk off a cleared key with no
+# live session discards it at once -- one `gh pr view` per key for a value nobody looks at, on a
+# tick where a page's worth of requests clears together.
+instance '{"mode":"off"}'
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+search_doc acme/portal 999 shaother Retry
+: > "$work/gh.calls"
+rc=$(run "$disp" poll 1)
+ok "a clearance nobody reads costs no live read"       "$(grep -c '^pr view ' "$work/gh.calls" || true)" 0
+# Both readers still get it: a live session, through `review_cleared`...
+instance '{"mode":"off"}'
+search_doc acme/portal 412 sha412 Retry
+put gh-portal-412 mode=review status=active repo=acme/portal number=412 session_id=sess-i --by test
+rc=$(run "$disp" poll 1)
+search_doc acme/portal 999 shaother Retry
+: > "$work/gh.calls"
+rc=$(run "$disp" poll 1)
+ok "  but a live session's clearance still reads it"   "$(grep -c '^pr view ' "$work/gh.calls" || true)" 1
+ok "  and is told the reason"                          "$(count '"event": "review_cleared"')" 1
+# ...and the out-of-play write, through `recording`.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+: > "$work/gh.calls"
+rc=$(run "$disp" poll 1)
+ok "  and a recording instance reads it with no session" "$(grep -c '^pr view ' "$work/gh.calls" || true)" 1
+ok "  and takes the pull request out of play"          "$(oops)" 1
+
 printf '\n  a Review Desk with no out-of-play at all\n'
 instance '{"mode":"auto"}'
 files_doc 412 "$DIFF_ONE"
@@ -6169,7 +6252,8 @@ dismiss acme/portal 412 "closed unmerged"
 rc=$(run "$work/nowindow.py" poll 1)
 ok "  without it the dismissal waits out the interval" "$(remembered gh-portal-412 dismissed)" False
 
-sed 's/^                                  if k in present or v\.get("dismissed") or v\.get("closed")}$/                                  if k in present}  # DISMISSAL PRUNED/' \
+sed -e 's/^                                  if k in present or v\.get("dismissed") or v\.get("closed")$/                                  if k in present}  # DISMISSAL PRUNED/' \
+    -e 's/^                                  or v\.get("out_of_play")}$//' \
     "$disp" > "$work/noprunekeep.py"
 ok "the keep-a-dismissal reversal changed one line"    "$(grep -c 'DISMISSAL PRUNED' "$work/noprunekeep.py")" 1
 instance '{"mode":"auto"}'

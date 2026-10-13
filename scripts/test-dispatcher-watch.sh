@@ -412,7 +412,57 @@ set +e; D reap --dry-run > "$work/out" 2>&1; set -e
 ok "a merged review cursor is prunable at any status" "$(says 'would prune gh-test-4.json')" yes
 ok "  and a statusless entry does not print None"     "$(says 'is None')" no
 ok "  it says so in words instead"                    "$(says 'gh-test-4 is no status')" yes
+# **And a DRAFT cursor is prunable exactly when a watcher reading it would stop**, which is this
+# function's own promise -- "rather than a second rule that could disagree with the first".
+# `watch_stop_reason` grew a `drafts_skipped` parameter with DEV-962, and `prunable_cursors` and
+# `live_watchers` went on calling it three-arg: on an instance with `github.skip_drafts: false`
+# they took its default and `reap` would SIGTERM and unlink a live review watcher that `cmd_watch`
+# on the same instance would have kept. Found in review of this branch. Both now read the config.
+put gh-test-5 mode=review status=active --by test
+printf '{"pr": {"repo": "o/r", "number": 5}, "pr_status": "open", "pr_draft": true}' \
+  > "$inst/runtime/watch/gh-test-5.json"
+skip_drafts true
+set +e; D reap --dry-run > "$work/out" 2>&1; set -e
+ok "a draft review cursor is prunable with the key on" "$(says 'would prune gh-test-5.json')" yes
+skip_drafts false
+set +e; D reap --dry-run > "$work/out" 2>&1; set -e
+ok "  and is NOT with the key off"                     "$(says 'would prune gh-test-5.json')" no
+# **The key ABSENT is the case the two halves disagreed about**, and `skip_drafts()` is the one
+# reader that settles it. `load_config` has no defaults, so the poller read a missing key as
+# falsy and the watcher's new stop read it as True: the poller would dispatch a review worker
+# onto a draft and that worker's watcher would stop on its first tick. Absent reads as the
+# poller always read it -- drafts are work -- so neither half acts.
+python3 -c "
+import json, pathlib
+p = pathlib.Path('$inst/config.json'); c = json.loads(p.read_text())
+c['github'].pop('skip_drafts', None)
+p.write_text(json.dumps(c, indent=2))"
+set +e; D reap --dry-run > "$work/out" 2>&1; set -e
+ok "  and is not prunable when the key is absent"      "$(says 'would prune gh-test-5.json')" no
+put gh-test-5 status=active --by test
+ok "  nor does the watcher stop on one"                "$(watch gh-test-5 --once)" 0
+ok "  which is the poller's own reading of absent"     "$(says watch_stopped)" no
+skip_drafts true
+rm -f "$inst/runtime/watch/gh-test-5.json"
 rm -f "$inst/runtime/watch/gh-test-4.json"
+# **A first tick over a pull request that is BOTH closed and a draft still reports the close.**
+# DEV-962's `pr_draft` block was written between `pr_state`'s two halves and took the `elif` that
+# belonged to the second -- so this exact shape emitted `pr_draft` and swallowed the one piece of
+# history a first tick does not suppress. The case is the one the branch's own comment names:
+# `D reap` prunes a finished key's cursor, a replacement arms a fresh one, and it gets one tick.
+# Found in review of this branch; the two questions are independent and are two chains now.
+printf '{"merged": false, "state": "closed", "draft": true, "head": {"sha": "s1"}}' \
+  > "$work/pr.json"
+put gh-closed-draft mode=review status=active repo=o/r number=1 --by test
+rm -f "$inst/runtime/watch/gh-closed-draft.json"
+ok "a first tick on a closed DRAFT still says closed" "$(ghwatch gh-closed-draft --pr o/r#1 --once)" 0
+ok "  as pr_state, with first true"                   "$(says '"event": "pr_state".*"first": true')" yes
+ok "  naming the state it found"                      "$(says '"current": "closed"')" yes
+ok "  and says the draft as well, not instead"        "$(says '"event": "pr_draft"')" yes
+printf '{"merged": false, "state": "open", "draft": false, "head": {"sha": "s1"}}' \
+  > "$work/pr.json"
+rm -f "$inst/runtime/watch/gh-closed-draft.json"
+
 # A leftover FILE must not stop the Dispatcher starting. SKILL.md's start-up step says "anything
 # cross: tell your principal and stop", and one live instance holds 112 of these. An orphaned
 # PROCESS earns that hard stop because it spends API budget; a dead file costs disk and can wait.
