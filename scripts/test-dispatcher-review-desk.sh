@@ -2270,6 +2270,75 @@ ok "the docstring says the entry is KEPT"              "$(grep -c 'The .recorded
 ok "  and names the sentence it replaced"              "$(grep -c 'an earlier version of this paragraph' "$disp")" 1
 ok "  while the prune still keeps it"                  "$(grep -c 'v.get("dismissed") or v.get("closed")}' "$disp")" 1
 
+printf '\n  DEV-959: two closed rows on one broken tick, and neither is lost\n'
+# The review of `bb9f886` read `broken_since` (then `broken_calls`, a SET of names) and argued
+# that a second closed row whose own attempt broke the SAME call would see no change, hold its
+# window, and be lost when the row left the search. **Measured, that does not happen**, and the
+# numbers below are why: `finds` is 1 on the broken tick, not 2 -- every path that marks these
+# two calls broken also sets `record_stopped`, and the guard on it precedes the window, so the
+# second row never takes a window to hold. Both rows record on the tick the install comes back.
+#
+# The count replaced the set anyway. The set was correct only because of an invariant two
+# functions away, which is the shape of premise this branch has been caught by four times; a
+# count is right whether or not it holds. This test is what says which it is.
+instance '{"mode":"auto"}'
+search_pair acme/portal 426 sha426 427 sha427
+python3 - "$work/gh.search" <<'PYBOTHMERGED'
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1]); doc = json.loads(d.read_text())
+for node in doc["data"]["search"]["nodes"]:
+    node["state"] = "MERGED"
+d.write_text(json.dumps(doc))
+PYBOTHMERGED
+echo '{"state":"MERGED"}' > "$work/pr.426.json"
+echo '{"state":"MERGED"}' > "$work/pr.427.json"
+echo broken > "$work/rd.find.mode"
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "a broken tick writes neither row"                  "$(opens)" 0
+ok "  asking once for the page, not once per row"      "$(finds)" 1
+ok "  and says each merge once"                        "$(count '"event": "review_request_closed"')" 2
+# The window marks are the finding's own subject: NEITHER is held after the broken tick. The
+# first row's was taken and cleared; the second row's was never taken.
+ok "  and holds no recording window for either"        "$(python3 -c "
+import json
+s = json.load(open('$inst/runtime/poll-state.json'))
+print(sum(1 for k in s.get('emitted', {}) if k.endswith('|review_request_record')))")" 0
+rm -f "$work/rd.find.mode"
+rc=$(run "$disp" poll 1)
+ok "the fixed install records BOTH rows next tick"     "$(opens)" 2
+ok "  and the store holds both reviews"                "$(python3 -c "
+import json
+print(len(json.load(open('$work/rd.opens.json'))))")" 2
+ok "  neither row was lost"                            "$(python3 -c "
+import json
+held = json.load(open('$work/rd.opens.json'))
+print(sorted(k.rsplit('#', 1)[1] for k in held))")" "['426', '427']"
+ok "  and the tick exits clean"                        "$rc" 0
+
+# The counter itself, directly: two broken answers from one call must read as two, where the set
+# it replaced read as one. This is the assertion that would fail on the set version.
+instance '{"mode":"auto"}'
+ok "a repeated broken call counts twice"               "$(python3 -c "
+import importlib.util, os
+spec = importlib.util.spec_from_file_location('d', '$disp')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.Poller.__new__(m.Poller)
+p.record_broken, p.broken_seq = {}, {}
+first = p.broken_since()
+p.note_broken('review find', 'broken', 'd', 'r')
+one = p.broken_since()
+p.note_broken('review find', 'broken', 'd', 'r')
+print(first, one, p.broken_since())")" "(0, 0) (1, 0) (2, 0)"
+ok "  and an absent answer counts none"                "$(python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('d', '$disp')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+p = m.Poller.__new__(m.Poller)
+p.record_broken, p.broken_seq = {}, {}
+p.note_broken('review find', 'absent', 'd', 'r')
+print(p.broken_since(), p.record_broken['review find'][0])")" "(0, 0) absent"
+
 printf '\n  DEV-959: the merged row still speaks for itself through the other source\n'
 # The ordering the GitHub pass depends on, and it is not obvious from either side. A merged row
 # is dropped before it is recorded or offered -- but `self.requested.add` happens BEFORE that

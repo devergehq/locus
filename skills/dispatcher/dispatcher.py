@@ -1159,6 +1159,7 @@ class Poller:
         # a single slot kept whichever came last — silently dropping the other, which was
         # usually the read, which is the dismissal guard.
         self.record_broken: dict = {}
+        self.broken_seq: dict = {}
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1329,6 +1330,7 @@ class Poller:
         self.look_stopped = False
         self.record_old = False
         self.record_broken = {}
+        self.broken_seq = {}
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
         # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
@@ -2008,7 +2010,7 @@ class Poller:
             # Kept, not said: `record_unreachable` says it at the end of `review_requests`, and
             # carries the repository this was met on because SKILL.md tells the Dispatcher to
             # name it.
-            self.record_broken["review open"] = (state, detail, repo)
+            self.note_broken("review open", state, detail, repo)
             return None
         if state != "ok":
             # A refusal about THIS request rather than about the install, so the rest of the page
@@ -2081,7 +2083,7 @@ class Poller:
             if state == "absent":
                 # Nothing on this install can be asked anything, reads included.
                 self.read_stopped = True
-            self.record_broken["review find"] = (state, detail, repo)
+            self.note_broken("review find", state, detail, repo)
             return None
         if state == "refused" and review_desk_unknown(detail):
             # **A build that has never heard of `review find`, which must not take the feature
@@ -2117,7 +2119,7 @@ class Poller:
             self.record_stopped = True
             detail = (f"{rd.get('command')} review find exited 0 with an answer carrying no "
                       f"rounds — too old to use")
-            self.record_broken["review find"] = ("broken", detail, repo)
+            self.note_broken("review find", "broken", detail, repo)
             return None
         newest = rounds[0] if rounds else None
         if rounds and not isinstance(newest, dict):
@@ -2131,7 +2133,7 @@ class Poller:
             self.record_stopped = True
             detail = (f"{rd.get('command')} review find exited 0 with a round this file cannot "
                       f"read — too old to use")
-            self.record_broken["review find"] = ("broken", detail, repo)
+            self.note_broken("review find", "broken", detail, repo)
             return None
         return newest
 
@@ -2165,7 +2167,7 @@ class Poller:
             self.read_stopped = True
             if state == "absent":
                 self.record_stopped = True
-            self.record_broken["review show"] = (state, detail, repo)
+            self.note_broken("review show", state, detail, repo)
             return None
         if state == "refused":
             if review_desk_unknown(detail):
@@ -2363,19 +2365,40 @@ class Poller:
              review=review_desk_link(rd, rid),
              ledger_status=entry.get("status"), session_id=entry.get("session_id"))
 
-    def broken_calls(self) -> tuple:
-        """Which of the two calls `record_if_never_reviewed` makes are reporting a BROKEN install.
+    def note_broken(self, call: str, state: str, detail: str, repo: str) -> None:
+        """Record that `call` could not be used, and COUNT it.
+
+        One place, so the count cannot drift from the dict. `record_broken` is what
+        `record_unreachable` reports from; the count beside it is what `broken_since` compares,
+        and it exists because the dict alone cannot answer "did THIS attempt break".
+        """
+        self.record_broken[call] = (state, detail, repo)
+        if state == "broken":
+            self.broken_seq[call] = self.broken_seq.get(call, 0) + 1
+
+    def broken_since(self) -> tuple:
+        """How many BROKEN answers the two calls `record_if_never_reviewed` makes have given.
 
         Compared before and after that attempt, so the retry window is cleared for a failure the
         attempt itself caused and not for one another row on the page left in `record_broken` —
         which is reset per tick, not per key, and holds `review show` and every other call too.
 
-        `absent` is deliberately not a member. It is an answer, not a failure: under `auto` it is
+        **A count rather than the set of names, and the difference is a premise this file should
+        not have to hold.** A set answers "is this call broken", so a second row whose own attempt
+        broke the SAME call saw no change and did not clear its window. That turned out to be
+        unreachable — every path that marks these two calls broken also sets `record_stopped`,
+        and the guard on it precedes the window, so a later row never takes a window to hold; a
+        two-row tick against a broken install records both rows on the tick after, measured. But
+        the correctness of the set version rested on an invariant two functions away, which is
+        exactly the shape of premise this branch has now been caught by four times. A count is
+        right whether or not that invariant holds, and costs one dict.
+
+        `absent` is deliberately not counted. It is an answer, not a failure: under `auto` it is
         an instance without Review Desk, and retrying it would say the same thing every tick for
         ever on every such instance.
         """
-        return tuple(sorted(call for call in ("review find", "review open")
-                            if (self.record_broken.get(call) or ("",))[0] == "broken"))
+        return tuple(self.broken_seq.get(call, 0)
+                     for call in ("review find", "review open"))
 
     def record_if_never_reviewed(self, rd: dict, recording: bool, key: str, repo: str,
                                  pr: dict, every: int):
@@ -2417,7 +2440,7 @@ class Poller:
         # sets it when a build refuses `--ledger`, and as a tick-wide flag it would leak onto
         # every key recorded after the one that set it.
         self.record_old = False
-        before = self.broken_calls()
+        before = self.broken_since()
         found = self.find_request(rd, repo, pr["number"], every)
         if found is None and not self.record_stopped and not self.look_stopped:
             review = self.open_request(rd, key, repo, pr["number"], head,
@@ -2426,7 +2449,7 @@ class Poller:
             # A review exists, or the store could not be used. Either way nothing is written:
             # the first would be a round on a shipped pull request, the second a blind write.
             review = None
-        if self.broken_calls() != before:
+        if self.broken_since() != before:
             # THIS attempt broke the install, so the window is not spent on it.
             self.state["emitted"].pop(window, None)
         if not isinstance(review, dict):
