@@ -670,7 +670,14 @@ def out_of_play(argv):
 
 
 def in_play(argv):
-    """`review in-play`: clears every round of the pull request. Success when already in play."""
+    """`review in-play`: clears every round of the pull request. Success when already in play.
+
+    `$RDWORK/rd.oop.mode` of `sticky` is a build that accepts the call, exits 0, and reports the
+    pull request STILL out of play. Nothing in the real binary does that — review-desk's author
+    measured in-play clearing every round — and it is modelled because the poller believes the
+    answer rather than the request, which is `out_of_play`'s own rule in the other direction. Un-
+    modelled, no test could reach the branch that decides what such a store costs.
+    """
     mode = (work / "rd.oop.mode").read_text().strip() \
         if (work / "rd.oop.mode").exists() else "ok"
     if mode == "oldoop":
@@ -683,16 +690,18 @@ def in_play(argv):
     held = store.get(slot)
     if held is None:
         refuse("not_found", "no review of %s#%s" % (repo, pr))
-    held["out_of_play"], held["out_of_play_at"] = None, None
-    store[slot] = held
-    (work / "rd.opens.json").write_text(json.dumps(store))
+    if mode != "sticky":
+        held["out_of_play"], held["out_of_play_at"] = None, None
+        store[slot] = held
+        (work / "rd.opens.json").write_text(json.dumps(store))
     print(json.dumps({"review": {"id": held["id"], "repo": repo, "pr": int(pr),
                                  "round": held["round"], "head_sha": held["head"],
                                  "session_id": held.get("session"),
                                  "started": bool(held.get("started")),
                                  "dismissed_at": held.get("dismissed_at"),
                                  "dismissed_reason": held.get("dismissed_reason"),
-                                 "out_of_play": None, "out_of_play_at": None}}))
+                                 "out_of_play": held.get("out_of_play"),
+                                 "out_of_play_at": held.get("out_of_play_at")}}))
     raise SystemExit(0)
 
 
@@ -5458,6 +5467,53 @@ search_doc acme/portal 999 shaother Retry
 rc=$(run "$disp" poll 1)
 ok "  and a recording instance reads it with no session" "$(grep -c '^pr view ' "$work/gh.calls" || true)" 1
 ok "  and takes the pull request out of play"          "$(oops)" 1
+
+# **A store that accepts `review in-play` and does not clear it.** The poller believes the
+# ANSWER, not the request -- `out_of_play`'s own rule in the other direction, because believing
+# the request would send the next tick looking for a change that had not happened. That leaves
+# one problem and these four assertions are it: the gate re-reads the field, so without a bound
+# this is one subprocess per tick for as long as the key is present, which is the
+# `last_activity_at` churn this whole path is arranged to avoid.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+echo sticky > "$work/rd.oop.mode"
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+# The request's own re-emission clock, or "the request is still dispatched" below passes or fails
+# on the fifteen-minute window rather than on anything this test is about.
+age_marker 'gh-portal-412|review_request'
+rc=$(run "$disp" poll 1)
+ok "a store that will not clear it is asked once"      "$(inplays)" 1
+ok "  and the record keeps what the ANSWER said"       "$(remembered gh-portal-412 out_of_play)" draft
+ok "  and it is said, loudly, as a broken install"     "$(count '"event": "review_desk_unavailable"')" 1
+ok "  naming the call and what it costs"               "$(says 'review in-play exited 0 and the review is still out of play')" yes
+ok "  and saying nothing is blocked"                   "$(says 'Nothing is blocked')" yes
+ok "  while the request is still dispatched"           "$(count '"event": "review_request"')" 1
+# **Not once per tick**, which is the whole of the bound: three more ticks, no more calls and no
+# more notices, and the request goes on being offered.
+forget_calls
+rc=$(run "$disp" poll 3)
+ok "  and not asked again inside the window"           "$(inplays)" 0
+ok "  nor said again"                                  "$(count review_desk_unavailable)" 0
+# Once the window is out it tries again -- and says nothing, because the reason has not changed.
+age_marker 'review_desk|in_play|gh-portal-412'
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "  and is retried when the window is out"           "$(inplays)" 1
+ok "  without saying it twice"                         "$(count review_desk_unavailable)" 0
+# And when the store is fixed, it comes back and says so.
+rm -f "$work/rd.oop.mode"
+age_marker 'review_desk|in_play|gh-portal-412'
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "a store that is fixed brings it back"              "$(oop_state acme/portal 412)" "None@None"
+ok "  and the return is said"                          "$(count '"event": "review_in_play"')" 1
 
 printf '\n  a Review Desk with no out-of-play at all\n'
 instance '{"mode":"auto"}'

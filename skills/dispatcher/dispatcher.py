@@ -1778,8 +1778,17 @@ class Poller:
                 # and the record says it was out of play. The write is `review in-play`'s and
                 # nothing else clears it; `back_in_play` has the measurement for why a
                 # successful `review open` must never be read as a return.
+                #
+                # **Bounded by `due`, which costs nothing on the first call and everything after
+                # it.** `due` fires the moment it is first evaluated, so a review comes back on
+                # the tick GitHub shows the request — and a store that answers `review in-play`
+                # with exit 0 and still reports a reason is then retried every
+                # `reemit_after_secs` rather than every tick. Found in review of this branch:
+                # without it, believing the store's answer (which is right) turned this gate into
+                # one subprocess per tick for as long as the key stayed present.
                 if (self.state["recorded"].get(key) or {}).get("out_of_play") \
-                        and not self.out_of_play_stopped:
+                        and not self.out_of_play_stopped \
+                        and self.due(f"review_desk|in_play|{key}", every):
                     self.back_in_play(rd, key, repo, pr, every)
                 #
                 # **Still only for a key that could be dispatched**, which the gate above no
@@ -1871,14 +1880,21 @@ class Poller:
                 if key in present:
                     continue
                 entry = ledger.get(key) or {}
-                # **One live read, two readers, and it is made for every key that left the
-                # list.** It used to be made only for a key a session held, because a clearance
-                # nobody was working asked nothing of the Dispatcher. DEV-962 gives it a second
-                # reader: the record has to say a draft or withdrawn pull request is out of play
-                # whether or not anybody was working it, or Patrick's Reviews list goes on
-                # showing it as live work. One `gh pr view` per clearance, once — a key is in
-                # `previous` and out of `present` on exactly one tick, because the commit below
-                # overwrites `prs_present`.
+                # **One live read and TWO readers, where it used to have one.** It was made only
+                # for a key a session held, because a clearance nobody was working asked nothing
+                # of the Dispatcher. DEV-962 gives it a second reader: the record has to say a
+                # draft or withdrawn pull request is out of play whether or not anybody was
+                # working it, or Patrick's Reviews list goes on showing it as live work. So the
+                # read is made for a key that either of those two wants it for, and for no other
+                # — the condition below names both rather than leaving a reader to infer them.
+                # One `gh pr view` per clearance, once: a key is in `previous` and out of
+                # `present` on exactly one tick, because the commit below overwrites
+                # `prs_present`.
+                #
+                # **An earlier version of this paragraph said "for every key that left the
+                # list"**, which was true of the commit that moved the read above the
+                # live-session test and false of the one that gated it a few hours later. A
+                # reader costing this out from the heading got the wrong answer.
                 #
                 # **Inside the trusted block, which is where it has to be.** A disbelieved or
                 # truncated tick returns long before this, so the one thing that could take a
@@ -1949,8 +1965,18 @@ class Poller:
         # depends on `find_request` re-reading it on the tick the pull request returns. That read
         # is skipped whenever `look_stopped` or `record_stopped` is set, so one transient broken
         # `review find` on the return tick left the review out of play in Review Desk while the
-        # poller went on offering the key. Found in review of this branch; the cost is one dict
-        # entry per out-of-play pull request, which `back_in_play` clears the moment it returns.
+        # poller went on offering the key. Found in review of this branch.
+        #
+        # **The cost is one dict entry per out-of-play pull request, and two shapes never give it
+        # back.** `back_in_play` clears the field, but it only runs for a key GitHub shows again —
+        # so a draft that merges or closes while still a draft (filtered out of the query by
+        # `skip_drafts`, so `request_closed` never runs and no `closed` flag is set either) and a
+        # withdrawn request nobody asks for again are both held for the life of the instance.
+        # That is the same bargain `dismissed` and `closed` already take and it is accepted on
+        # the same argument — the fact is held nowhere else and losing it sends the next tick
+        # towards a write on a row somebody took out of play. **An earlier version of this
+        # paragraph promised `back_in_play` cleared them all**, which a review of this branch
+        # measured as false; the bargain is stated rather than hidden behind a promise.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
                                   if k in present or v.get("dismissed") or v.get("closed")
                                   or v.get("out_of_play")}
@@ -2532,13 +2558,21 @@ class Poller:
             # because the first means fall back and the second means a move is safe.
             "started": review.get("started") if isinstance(review.get("started"), bool) else None,
             # Why this pull request is out of play, as the store holds it: `draft`, `withdrawn`,
-            # or None for in play. **Read here rather than tracked, and that is what keeps the
-            # poll state from growing.** Review Desk puts the field on every review object it
-            # emits — `review find`'s rows and `review show`'s review as well as `review open`'s
-            # — so the return is detectable from the look the next tick makes anyway, and the
-            # record does not have to survive the prune the way a dismissal does. Measured by
-            # review-desk's own author, 13 October 2026: `{"out_of_play":"draft",
-            # "out_of_play_at":1791888255}`.
+            # or None for in play. **Read rather than inferred**, which is what makes it cheap:
+            # Review Desk puts the field on every review object it emits — `review find`'s rows
+            # and `review show`'s review as well as `review open`'s — so the look the next tick
+            # makes anyway sees it, and nothing here has to track a decision of the developer's.
+            # Measured by review-desk's own author, 13 October 2026:
+            # `{"out_of_play":"draft","out_of_play_at":1791888255}`.
+            #
+            # **It DOES survive the prune, in the same clause as a dismissal**, and an earlier
+            # version of this paragraph said it did not have to. That was wrong twice over: a key
+            # taken out of play has by definition just left `present`, so the field was discarded
+            # on the tick it was written — and the look it was relying on is skipped whenever
+            # `look_stopped` or `record_stopped` is set, so one transient broken `review find` on
+            # the return tick left the review out of play while the poller went on offering the
+            # key. Found in review of this branch. **Restoring the prune re-opens that**, which
+            # is the same warning the `closed` flag's paragraph carries about itself.
             #
             # **A successful `review open` is never read as a return**, and that is the one trap
             # here: an open on an out-of-play pull request SUCCEEDS, and a round it creates
@@ -3394,12 +3428,42 @@ class Poller:
             return
         held, review = self.state["recorded"].get(key), review_of(payload)
         if isinstance(held, dict):
-            # Read off the ANSWER, like `out_of_play` is, and `review_of` called once — the first
-            # version called it twice inside one expression, which was two type checks and two
-            # chances to read a different answer. Cleared to None whatever the answer says it is
-            # now, because a build that accepted `review in-play` and still reported a reason
-            # would have the next tick looking for a change that already happened.
+            # **Read off the ANSWER, which is `out_of_play`'s own rule in the other direction:
+            # the store is the fact, and believing the request would send the next tick looking
+            # for a change that had not happened.** `review_of` is called once, where the first
+            # version of this line called it twice inside one expression — two type checks and
+            # two chances to read a different answer.
+            #
+            # **An earlier version of this comment said the opposite** — that the field is
+            # cleared to None whatever the answer holds — while the code read the answer, and a
+            # review of this branch measured the disagreement: with `review in-play` stubbed to
+            # succeed and still report `draft`, the record kept `draft`. The code is right and
+            # the comment was describing the harm as though it were the fix. What a store like
+            # that actually costs is below.
             held["out_of_play"] = review.get("out_of_play") if isinstance(review, dict) else None
+            if held["out_of_play"]:
+                # **A store that accepted the call and did not clear it is broken, and broken is
+                # loud.** Believing the answer is right and leaves one problem: the gate that
+                # sent us here re-reads this field, so without a word being said this would be
+                # one `review in-play` per tick for as long as the key is present — the
+                # `last_activity_at` churn this whole path is arranged to avoid, arriving
+                # through the one branch that is supposed to end it. The caller's `due` bounds
+                # the retry to one call per `reemit_after_secs`; this is what makes the reason
+                # findable. Said once per key and reason, not once per attempt.
+                if self.once(f"review_in_play_stuck|{key}|{held['out_of_play']}"):
+                    emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=pr["number"],
+                         call="review in-play",
+                         detail=f"{rd.get('command')} review in-play exited 0 and the review is "
+                                f"still out of play for '{held['out_of_play']}'. The pull "
+                                f"request is being asked about again, so it should be back: it "
+                                f"will be retried every "
+                                f"reemit_after_secs rather than every tick, and until the store "
+                                f"clears it the review stays off the Reviews list. Nothing is "
+                                f"blocked — the request is dispatched either way.")
+                return
+        self.state["once"].pop(f"review_in_play_stuck|{key}|draft", None)
+        self.state["once"].pop(f"review_in_play_stuck|{key}|withdrawn", None)
         # Said once per return, which is what the `once` mark gives: the mark is cleared the
         # moment the review is out of play again, so a pull request that goes draft twice is
         # reported coming back twice. One line, and it asks for nothing — the `review_request`
@@ -5325,9 +5389,16 @@ def live_watchers() -> list[dict]:
     # leaves the process unattributed and therefore never signalled.
     installed = sorted(p.parent for p in DISPATCHER_HOME.glob("*/config.json"))
     sole = installed[0].resolve() if len(installed) == 1 else None
-    # Read once for the whole sweep. A config that will not parse must not take `doctor` and
-    # `reap` down with it — they are the two commands somebody runs when an instance is already
-    # broken — so an unreadable one reads as "drafts are work", which keeps every watcher.
+    # Read once for the whole sweep, and an unreadable one reads as "drafts are work", which
+    # keeps every watcher — the safe direction for a function whose answer `cmd_reap` deletes on.
+    #
+    # **It does NOT make `doctor` survive a malformed config, and an earlier version of this
+    # comment claimed it did.** Measured in review of this branch: `cmd_doctor`'s own first line
+    # is an unguarded `load_config()`, so on an instance whose `config.json` will not parse
+    # `doctor` dies with a `JSONDecodeError` before any check runs, while `reap --dry-run` on the
+    # same instance exits 0 and prints cleanly. That is a pre-existing gap in `doctor` rather
+    # than anything this guard can reach, and it is named here so the next reader does not take
+    # this `try` for a protection it is not.
     try:
         drafts = skip_drafts(load_config())
     except Exception:

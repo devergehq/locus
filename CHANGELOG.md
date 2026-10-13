@@ -103,6 +103,14 @@ refuses to build when they disagree.
   moved above the live-session test so the out-of-play write could use it, which made it one
   subprocess per cleared key — including, on an instance with Review Desk off, keys whose answer
   is discarded immediately.
+- **A Review Desk that answers `review in-play` with exit 0 and still reports a reason is retried
+  on the interval, not on every tick, and says so once.** The poller believes the store's answer
+  rather than its own request — which is right, and is `review out-of-play`'s rule in the other
+  direction — but the gate that calls in-play re-reads that field, so on such a build this was
+  one subprocess per tick for as long as the pull request stayed on GitHub's list: the
+  `last_activity_at` churn the whole path is arranged to avoid, arriving through the one branch
+  meant to end it. Bounded by `due` at `reemit_after_secs`, and reported as a broken install once
+  per key and reason. Nothing blocks — the request is dispatched either way.
 
 - **A review request reaches Review Desk the moment the poller sees it, and a review the
   developer dismissed is not dispatched.** Review Desk heard nothing about a request until a
