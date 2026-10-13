@@ -101,9 +101,11 @@ does not subdivide per mode, per ticket or per dispatch — and a brief whose li
 
 1. `D doctor`. Anything ✗: tell your principal and stop, and treat a **`–`** the same way: it
    is a third answer, and it means the check never ran. `doctor` reads the config inside a
-   guard, so a `config.json` that is missing, unreadable or will not parse is its own first ✗ —
-   carrying the path and the parse error — and every check needing the config is marked `–` with
-   that reason rather than crossed or passed. The checks needing neither it nor the instance
+   guard, so a `config.json` it cannot use is its own first ✗ — carrying the path and the reason,
+   whether that is a parse error, a permission, an encoding or a file that is not there — and
+   every check needing the config is marked `–` with that reason rather than crossed or passed.
+   That first ✗ is headed `config` when the file is there and unusable and `instance` when the
+   directory would not resolve, so a `✗ instance:` is about where you pointed it, not the file. The checks needing neither it nor the instance
    still run, so the report is about your instance even when the file cannot be read, and the
    fault above them is the one thing to fix.
    Two of its checks are about processes rather than config:

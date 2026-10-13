@@ -70,6 +70,24 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **`doctor` reports a `config.json` it cannot read instead of dying on it.** `cmd_doctor`'s
+  first statement was an unguarded `load_config()`, so an instance whose config would not parse
+  killed the one command meant to diagnose a broken instance — a `JSONDecodeError` traceback
+  before a single check ran, while `reap --dry-run` read the same file through its own guard and
+  exited clean. `config_report` is the new reader: the fault is the FIRST row, carrying the path
+  and the reason, and four states that were a traceback or a two-line stub are findings now — a
+  file that will not parse, one that cannot be read, one that cannot be DECODED (`read_text`
+  decodes, so that failure is a `ValueError` and neither of the exceptions either side of it;
+  it is raised by a hand-edited latin-1 byte and, on a glibc host, by a launchd job with no
+  locale set), and one that parses to something other than an object, which used to reach ten
+  different `.get` calls and report ten crosses with no line naming the file. Each check declares
+  what it cannot run without — eight need the config, four need only the instance directory, four
+  need neither — and one that did not run prints `–` with the reason rather than ✓ or ✗. That gate
+  lives in `check` and not inside each check because `resolve_instance` raises `SystemExit`, a
+  BaseException that walks straight through `check`'s `except Exception`. Exit 1 when the config
+  is broken, never 2. `load_config` still decodes the way it always did, deliberately, so
+  `doctor` answers the question every other command will ask rather than a kinder one of its own.
+  DEV-979.
 - **`github.skip_drafts` is read in one place, so the poller and the watcher cannot disagree
   about a config that does not carry the key.** `review_requests` has always read it as
   `g.get("skip_drafts")` — absent is falsy, so a draft row is kept, offered and dispatched — and

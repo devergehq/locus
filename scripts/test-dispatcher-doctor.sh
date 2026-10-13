@@ -84,9 +84,12 @@ ok () {
 doctor () { set +e; python3 "${1:-$disp}" --instance "$inst" doctor >"$work/out" 2>&1; c=$?; set -e; echo "$c"; }
 says () { grep -q -- "$1" "$work/out" && echo yes || echo no; }
 count () { grep -c -- "$1" "$work/out" || true; }
-# ran -> how many checks actually RAN, which is not `count '^[✓✗] '`: the config fault is itself
-# a cross, and counting it as a check that ran would hide one that did not.
-ran () { grep '^[✓✗] ' "$work/out" | grep -vc '^✗ config:' || true; }
+# ran -> how many checks actually RAN. Not a count of ✓ and ✗ lines: the fault is itself a
+# cross, and counting it as a check that ran would hide one that did not. An alternation of two
+# literals rather than a bracket expression, because `[✓✗]` is a set of BYTES to a C-locale GNU
+# grep and would match nothing -- every other pattern in this file is a literal multibyte string
+# and so cannot be read that way. `: ` on the exclusions, so that `instance root` is not one.
+ran () { grep '^✓ \|^✗ ' "$work/out" | grep -vc '^✗ config: \|^✗ instance: ' || true; }
 first () { head -1 "$work/out"; }
 # healthy -> write a config.json from the shipped template, with the one value that would
 # otherwise read a developer's real allele state redirected into $work.
@@ -138,7 +141,8 @@ rm -f "$inst/config.json"
 rc=$(doctor)
 ok "doctor exits non-zero"                             "$rc" 1
 ok "  with no traceback"                               "$(count Traceback)" 0
-ok "the fault is still the first line"                 "$(first | cut -c1-9)" '✗ config:'
+ok "the fault is still the first line"                 "$(first | cut -c1-11)" '✗ instance:'
+ok "  headed for the instance, not the file"           "$(count '^✗ config: ')" 0
 ok "  naming the directory it looked in"               "$(says "no config.json in $inst")" yes
 ok "  and the command that creates one"                "$(says 'init --instance')" yes
 ok "every check needing the instance is skipped"       "$(count '^– ')" 12
@@ -152,6 +156,7 @@ set +e; python3 "$disp" doctor > "$work/out" 2>&1; rc=$?; set -e
 ok "doctor exits non-zero"                             "$rc" 1
 ok "  with no traceback"                               "$(count Traceback)" 0
 ok "  naming the home it searched"                     "$(says "no dispatcher instance under $DISPATCHER_HOME")" yes
+ok "  under the instance heading"                      "$(count '^✗ instance: ')" 1
 ok "  and still reporting the code root"               "$(says '✓ code root:')" yes
 
 printf '\nA config.json that cannot be read reports the OS error\n'
@@ -173,6 +178,24 @@ else
   ok "  while the instance ones still run"             "$(says '✓ watch cursors:')" yes
 fi
 chmod 644 "$inst/config.json"
+
+printf '\nA config.json that cannot be DECODED is a finding too, not a traceback\n'
+# One latin-1 byte in a value, which is what a hand edit in the wrong editor leaves behind. This
+# is the state the first version of the guard still died on: `read_text` decodes, and a decode
+# failure is a `ValueError`, so it was neither of the two exceptions the guard caught. No fixture
+# above can reach it -- every other one here is ASCII.
+printf '{ "linear": { "mcp_workspace": "caf\351" } }\n' > "$inst/config.json"
+rc=$(doctor)
+ok "doctor exits non-zero"                             "$rc" 1
+ok "  with no traceback"                               "$(count Traceback)" 0
+ok "  no UnicodeDecodeError on either stream"          "$(count UnicodeDecodeError)" 0
+ok "the fault is the first line"                       "$(first | cut -c1-9)" '✗ config:'
+ok "  naming the file"                                 "$(says "$inst/config.json cannot be decoded")" yes
+ok "  and the byte it stopped on"                      "$(says 'at byte 35')" yes
+ok "  it names the codec, which is the cause"          "$(says 'cannot be decoded as')" yes
+ok "  and says the locale is the other cause"          "$(says "process's locale")" yes
+ok "the config checks are skipped with that reason"    "$(count 'skipped — config.json cannot be decoded')" 8
+ok "  while the instance ones still run"               "$(says '✓ watch cursors:')" yes
 
 printf '\nA config.json that parses to something other than an object is ONE fault\n'
 printf '[ "linear", "github" ]\n' > "$inst/config.json"
@@ -210,7 +233,7 @@ ok "the skip-gate reversal changed one line"           "$(grep -c 'SKIP GATE REM
 rm -f "$inst/config.json"
 rc=$(doctor "$work/nogate.py")
 ok "no gate: a missing config prints no checks at all" "$(count '^[✓✗–] ')" 0
-ok "  not even the fault it had already found"         "$(count '^✗ config:')" 0
+ok "  not even the fault it had already found"         "$(count '^✗ ')" 0
 ok "  and nothing is reported as skipped"              "$(count '^– ')" 0
 
 # 3. The object guard. A config that parses but is not a mapping reaches every `.get` and `[]` in
@@ -222,6 +245,19 @@ rc=$(doctor "$work/notadict.py")
 ok "no guard: the list reaches the checks"             "$(says 'list indices must be integers')" yes
 ok "  and no finding names the file"                   "$(count '^✗ config:')" 0
 ok "  while every config check reports a cross"        "$(count '^– ')" 0
+
+# 4. The decode guard, which is the one state the first version of this change still died on and
+#    which a review caught. `read_text` decodes, so the failure is a `ValueError` and neither of
+#    the exceptions either side of it -- a clause that catches the wrong class is indistinguish-
+#    able from no clause at all, which is what this puts back.
+sed 's|^    except UnicodeDecodeError as exc:$|    except RuntimeError as exc:  # DECODE GUARD REMOVED|' \
+    "$disp" > "$work/nodecode.py"
+ok "the decode-guard reversal changed one line"        "$(grep -c 'DECODE GUARD REMOVED' "$work/nodecode.py")" 1
+printf '{ "linear": { "mcp_workspace": "caf\351" } }\n' > "$inst/config.json"
+rc=$(doctor "$work/nodecode.py")
+ok "wrong class: a latin-1 byte is a traceback"        "$(says Traceback)" yes
+ok "  naming the exception instead of the file"        "$(says UnicodeDecodeError)" yes
+ok "  and not one check is reported"                   "$(count '^[✓✗–] ')" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

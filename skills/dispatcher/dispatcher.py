@@ -5748,9 +5748,9 @@ def config_report(slug: str | None) -> tuple[Path | None, dict, tuple[str, str] 
 
     Two strings and not one, because they are read in two places and a path belongs in only one
     of them. The full finding is printed once, at the top, and carries the path and the position.
-    The short reason goes on each of the eleven checks the fault disables, where the same absolute
-    path repeated eleven times is a wall an operator has to read past to find the checks that did
-    run.
+    The short reason goes on each check the fault disables — eight when the config is the thing
+    that cannot be read, twelve when the instance did not resolve — where the same absolute path
+    repeated that many times is a wall an operator reads past to find the checks that did run.
     """
     try:
         root = resolve_instance(slug)
@@ -5766,6 +5766,21 @@ def config_report(slug: str | None) -> tuple[Path | None, dict, tuple[str, str] 
         # Permissions, a dangling symlink, a directory in its place. `strerror` and not `str(exc)`
         # so the line reads as a sentence, with a fallback for the errors that carry neither.
         return root, {}, ("config.json cannot be read", f"{path} cannot be read: {exc.strerror or exc}")
+    except UnicodeDecodeError as exc:
+        # Caught on its own, because it is neither of the two around it: `read_text` DECODES, and
+        # a decode failure is a `ValueError`, so this is the one way the very defect DEV-979 is
+        # about survived the first version of this guard — a traceback out of `cmd_doctor`'s
+        # first statement, for a config.json hand-edited in an editor that wrote one latin-1
+        # byte. Raised by the locale as well as by the file: `read_text()` is called with no
+        # `encoding=` deliberately, because `load_config` decodes the same way and `doctor` has
+        # to answer the question every other command will ask rather than a kinder one of its
+        # own. A config.json with an accented character in it reads fine in the operator's shell
+        # and, on a glibc host, not in a launchd or systemd job with no locale set. The codec
+        # the exception names is what tells those two causes apart, so it is in the line.
+        return root, {}, (f"config.json cannot be decoded as {exc.encoding}",
+                          f"{path} cannot be decoded as {exc.encoding}: {exc.reason} at byte "
+                          f"{exc.start} — either the file is not {exc.encoding}, or this "
+                          f"process's locale says it should be and it is not")
     try:
         cfg = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -5795,7 +5810,12 @@ def cmd_doctor(args) -> None:
     if fault:
         # First, ahead of every check it disables, because an operator reading a column of
         # crosses should not have to work out which one caused the rest.
-        checks.append((False, "config", finding))
+        #
+        # Named for what is at fault, which is not always the file: `instance` when the directory
+        # would not resolve — what `main`'s old fallback called this row — and `config` when the
+        # file is there and unusable. A row headed `config` for `several instances (a, b)` points
+        # the operator at a file that is perfectly fine.
+        checks.append((False, "instance" if root is None else "config", finding))
 
     def check(name, fn, needs: str | None = "config"):
         """Run one check, or say that it did not run, what it needed and what was wrong.
@@ -5817,9 +5837,10 @@ def cmd_doctor(args) -> None:
         except Exception as exc:
             checks.append((False, name, str(exc)[:200]))
 
-    # `needs` on every call, and spelled out even where it is the default: the three values are
-    # the difference between a check that was skipped and a check that silently passed, and a
-    # reader comparing this list against the output needs to see which is which.
+    # `needs` is passed where it is not the default, and the default is `config` because eight of
+    # the sixteen checks read it. The three values are the difference between a check that was
+    # skipped and one that silently passed, so a reader comparing this list against a run's
+    # output can see which of the two a missing line was.
     check("linear auth", lambda: linear(cfg, "{ viewer { name email } }")["viewer"]["email"])
 
     def labels():
