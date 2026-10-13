@@ -60,9 +60,21 @@ name: CI
 #
 # `push: branches: [master]` is deliberately ABSENT. A merge to `master` is the
 # commit the ready pull request's own run already tested, so running it again
-# tests nothing new. The consequence to know about: there is no longer a run on
-# `master` itself, so a check cannot be read off the default branch. Read it off
-# the pull request that produced the commit.
+# tests nothing new. Two consequences to know about, neither of them a surprise
+# at the time:
+#
+#   * There is no longer a run on `master` itself, so a check cannot be read off
+#     the default branch. Read it off the pull request that produced the commit.
+#   * NOTHING WRITES A `master`-SCOPED CACHE ANY MORE. Actions cache scoping
+#     lets a pull request restore from the default branch's caches but keeps its
+#     own scoped to its own ref, so `master`'s entries were the shared warm base
+#     and were refreshed by the run this trigger removal deletes. They are now
+#     frozen at the last one written before this change: every pull request
+#     still restores them, and then rebuilds whatever has moved since. That is
+#     slower, not more expensive -- this repository's minutes are free -- and
+#     the fix if it ever matters is a scheduled or hand-started warming run.
+#     Deliberately not added: a job whose only purpose is to keep a cache warm
+#     is a job that bills on a schedule to save time nobody is waiting for.
 #
 # `reopened` is in the `types:` list because naming ANY type replaces the
 # default set (`opened`, `synchronize`, `reopened`) rather than adding to it.

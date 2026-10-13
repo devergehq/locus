@@ -349,8 +349,14 @@ refuses to build when they disagree.
   draft push creates a run whose jobs all report `skipped` and bills no minutes; marking the
   pull request ready, and every push after that, runs the lot. `push: branches: [master]` is
   gone from `ci.yml`, because a merge is the commit the ready pull request's run already
-  tested — the consequence to know about is that a check can no longer be read off `master`
-  itself, only off the pull request that produced the commit. DEV-961, and the number behind
+  tested. Two consequences follow. A check can no longer be read off `master` itself, only off
+  the pull request that produced the commit. And **nothing writes a `master`-scoped cache any
+  more**: Actions cache scoping lets a pull request restore the default branch's entries but
+  keeps its own scoped to its own ref, so `master`'s were the shared warm base and the removed
+  run was what refreshed them. They are now frozen at the last one written before this change —
+  every pull request still restores them and then rebuilds whatever has moved since, which is
+  slower rather than more expensive here, and no warming job has been added for it. DEV-961,
+  and the number behind
   it is Review Desk's rather than this repository's: about 146 pushes across 17 branches over
   11 and 12 October 2026, about 13 billed minutes each, which took the organisation's 3,000
   monthly minutes by the 13th. Locus is public, so its minutes were free and nothing here was
