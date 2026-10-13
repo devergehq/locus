@@ -442,7 +442,7 @@ required status checks"*. Put those together: **a draft PR runs none of the real
 reports green anyway.** A held draft is not a safe parking space; it is a member of the stack
 that nothing has ever tested, wearing a passing tick, with live members built on top of it.
 
-`docs/ci/merge-queue.md:389` closes the other exit: *"A member is a draft, or unapproved →
+`docs/ci/merge-queue.md` closes the other exit: *"A member is a draft, or unapproved →
 **Waits.** Not queued yet; keeps its position. No comment, no label change."* So the held draft
 also stalls the whole stack in the queue, silently, forever.
 
@@ -1163,7 +1163,7 @@ trusting this paragraph; it was true for v0.1.0.
 ### The gate: "CI green" means these checks, present by name
 
 `gh pr checks <n>` exiting 0 is not evidence of anything and you must never accept it as such.
-On PR #102 it exits **0** with nine passing contexts — `stale-approval-sweep`, `merge-gate`,
+On PR #102 it exits **0** with seven passing contexts — `stale-approval-sweep`, `merge-gate`,
 `Queue eject`, `AI Review`, `Queue advance`, `update-ticket-status`,
 `approval-age` — and not one of them ran a test. The suite was never created, so there
 was nothing to fail. A draft does the same thing for a different reason: its jobs report

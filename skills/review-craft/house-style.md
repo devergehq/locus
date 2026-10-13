@@ -322,7 +322,7 @@ the squash commit — and is covered under "A diagram in a PR body costs its sou
 wider than that is squeezed, not scrolled.** Once the cells can't fit, it breaks words between
 letters. In one live review the index carried a sentence of prose in each Finding cell and full
 paths in each Where cell, and every column came out as fragments: the header read "Que stio n" and
-"Disp ositi on", the path read "Process InvoiceU pdatesAc tion.php". The diagrams sat below the
+"Disp ositi on", the path read "Apply InvoiceU pdatesAc tion.php". The diagrams sat below the
 table with nothing tying them to a finding.
 
 **A table cell holds only something short enough to scan**: a severity, an id, a one-line claim, a

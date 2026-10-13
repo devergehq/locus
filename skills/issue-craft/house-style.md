@@ -194,9 +194,9 @@ none of them is a wall of prose with collapsible sections, and the eye cannot te
 ````markdown
 ```mermaid
 flowchart LR
-  A[ChargeApprovedEvent] --> B[FeeTotalsProjector]
-  A --> C[BalanceProjector]
-  D[ChargeCategoriesCorrectedEvent] --> C
+  A[ItemApprovedEvent] --> B[SnapshotWriter]
+  A --> C[AllocationProjector]
+  D[ServiceTypeCorrectedEvent] --> C
   D -. never .-> B
 ```
 ````
@@ -281,7 +281,7 @@ The only hard rule is that a criterion must be **observable and falsifiable**. A
 cannot test is a wish.
 
 - **Gherkin where something executes it.** If QA reads the scenarios verbatim as the test plan,
-  Gherkin earns its cost and you should use it. The QA-led team here works this way.
+  Gherkin earns its cost and you should use it.
 - **Checkboxes everywhere else.** For a copy change, a config flip or a refactor, a Gherkin
   scenario is ceremony that costs words and buys nothing.
 - **Include the negative space.** "Retrying does not create a second charge." "With the flag off,

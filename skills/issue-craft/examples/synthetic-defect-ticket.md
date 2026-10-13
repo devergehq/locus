@@ -67,7 +67,7 @@ wherever the two disagree the claim follows the stale figure.
 |---|---|---|---|---|
 | PAID | yes | 596 | +$15,972.18 | $16,284.40 |
 | PAID | no | 482 | −$5,804.33 | $13,109.55 |
-| APPROVED | no | 118 | −$2,971.04 | $2,988.71 |
+| APPROVED | no | 118 | −$2,971.05 | $2,988.71 |
 | PAYING | no | 22 | −$231.42 | $231.42 |
 
 **596 rows are already claimed and would need an external adjustment; 622 are not and can be fixed
