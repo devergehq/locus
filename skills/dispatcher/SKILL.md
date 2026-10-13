@@ -260,8 +260,10 @@ unreviewed, which is the review that did not happen — and the Reviews list is 
 principal sees it. A pull request it HAS reviewed is never written to again, because
 `review open` on a head the author has pushed since is the next ROUND, and a round on a
 shipped pull request is the thing this whole section exists to stop. **Nothing is dispatched
-from either case.** `review_request_closed` carries the review id when one was written and
-`null` when none was, so you can say which it is without asking.
+from either case, and the recorded row is held out of dispatch for good** — it stays on Review
+Desk's work list for ever, so the poller marks it as one it recorded closed and never offers it
+again however GitHub answers afterwards. `review_request_closed` carries the review id when one
+was written and `null` when none was, so you can say which it is without asking.
 
 Nothing goes to GitHub from you. Ever.
 

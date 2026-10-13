@@ -166,7 +166,16 @@ refuses to build when they disagree.
   which is the review that did not happen — and Patrick narrowed the criterion to match. A pull
   request it HAS reviewed is never written to again, because `review open` on a head the author
   has pushed since is the next round. Nothing is dispatched from either case, and the event's
-  `review_desk_id` says which one it was.
+  `review_desk_id` says which one it was. A recorded-closed row is marked as such and held out of
+  dispatch permanently by a fourth shape in `request_spoken_for`: it lives on the work list for
+  ever, so `review_desk_item`'s `pr_state` check is re-rolled every interval and `pr_state`
+  answers `None` on any `gh pr view` failure — one flaky call would otherwise have dispatched a
+  review worker onto a merged pull request, which is DEV-959's own harm arriving through the row
+  DEV-959 adds. Found by an independent `/code-review` pass over the recording commit, along with
+  a `due` mark spent on a write that a broken Review Desk never performed, a live-session gate
+  resting on the premise `WORKER_ARMED` exists to retire, a dropped `old` flag, a `look_stopped`
+  guard that was not checked, and a malformed `review find` round that read as "no review at all"
+  and would have been written to.
 - **`workers/review.md` tells a review worker what to do when its pull request goes.** One line
   to the Dispatcher naming the round and whether its draft was posted, its own terminal ledger
   status (`merged` on a merge, `done` on a close, because a close is reversible), and then it

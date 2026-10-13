@@ -1673,8 +1673,13 @@ class Poller:
         # this file keeps arranging itself to avoid. The cost is one dict entry per dismissed
         # request, for as long as the instance lives, and that is the right side to err on: the
         # entry is small and the write is on a row somebody said to leave alone.
+        #
+        # **A `closed` recording is kept on the same argument.** It is DEV-959's carve-out, and
+        # the fact it holds is "this row is on the work list and must never be dispatched from";
+        # `request_spoken_for`'s fourth shape is its only reader, and losing it is a review
+        # worker eventually sent to a pull request that shipped.
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
-                                  if k in present or v.get("dismissed")}
+                                  if k in present or v.get("dismissed") or v.get("closed")}
 
     def record_unreachable(self, rd: dict, every: int) -> None:
         """Say that Review Desk could not be reached while recording a request.
@@ -2115,7 +2120,20 @@ class Poller:
             self.record_broken["review find"] = ("broken", detail, repo)
             return None
         newest = rounds[0] if rounds else None
-        return newest if isinstance(newest, dict) else None
+        if rounds and not isinstance(newest, dict):
+            # **A non-empty list whose newest round is not an object is BROKEN, not "none"**, and
+            # the difference became load-bearing with DEV-959's recording carve-out: that reads a
+            # clean `None` as "the store holds no review of this pull request" and writes one, so
+            # falling through to `None` here is a `review open` against a pull request the store
+            # DOES hold a review of — the round-on-a-shipped-pull-request write the look exists
+            # to prevent. `open_request` already takes this line about its own unreadable exit-0
+            # answer: "exit 0 with an answer this file cannot read is BROKEN, not nothing."
+            self.record_stopped = True
+            detail = (f"{rd.get('command')} review find exited 0 with a round this file cannot "
+                      f"read — too old to use")
+            self.record_broken["review find"] = ("broken", detail, repo)
+            return None
+        return newest
 
     def read_request(self, rd: dict, key: str, rid, every: int, repo: str) -> dict | None:
         """`review show`: whether the developer has dismissed a request already recorded.
@@ -2298,14 +2316,39 @@ class Poller:
         # blunter line followed the good one by one interval, every time, saying the same merge
         # again with less in it. `due` is both the question and the mark, which is why taking it
         # is a statement and not a side effect.
-        said = not self.due(f"{key}|review_request_closed", every)
-        if said or (entry.get("status") in ALIVE and key in (self.state["prs_present"] or {})):
-            # The recording is inside this gate deliberately, so the look costs one `review
-            # find` per key per interval rather than one per tick. A key a live session holds
-            # needs no look either: that session opened the review on its way in, so there is
-            # one, so there is nothing to write.
+        mark = f"{key}|review_request_closed"
+        if not self.due(mark, every):
             return
+        # **The recording is attempted whatever the ledger says, and the gate below is only
+        # about the EVENT.** The first version skipped it for a live session, on the premise that
+        # "that session opened the review on its way in" — which is the same shape of premise
+        # `WORKER_ARMED` was added to this file to retire, and false for the same reason. No
+        # ledger status establishes that `review open` has run: the Dispatcher writes `claimed`
+        # before `allele_sessions_create`, `_common.md` step 2 writes `active` before the mode's
+        # brief has done anything, and a session can die between either and its first command.
+        # The only thing that knows is Review Desk, and asking it is what `find_request` does —
+        # so the status is not consulted at all, and a review that exists is left alone on its
+        # own evidence rather than on an inference about a session.
         rid = self.record_if_never_reviewed(rd, recording, key, repo, pr, every)
+        # **The window is not spent on a write that did not happen**, which is the rule
+        # `record_request` already states for its own read: under the shipped `is:open` query the
+        # row leaves the search within a tick or two, so a mark held for `reemit_after_secs`
+        # after one hung Review Desk is the never-happened review lost for good and silently.
+        #
+        # **Only for an install that was there and FAILING**, and the narrowing is the same one
+        # `record_request` makes when it declines to clear its own window on `read_stopped`:
+        # "that read DID happen and answered". An install that is `absent` has answered — under
+        # `auto` that is an instance without Review Desk, which is owed the nothing-extra-said
+        # this file is careful about, and clearing the mark there would turn one line into one
+        # line per tick for ever. A build with no `review find` has answered too, and it is said
+        # once by `find_request` itself. So the retry is for `broken` alone, which is the state
+        # somebody can fix — and after they do, the next tick records.
+        if rid is None and any(st == "broken" for st, *_ in self.record_broken.values()):
+            self.state["emitted"].pop(mark, None)
+        if entry.get("status") in ALIVE and key in (self.state["prs_present"] or {}):
+            # The clearance sweep speaks for this one, and it speaks better: it names the
+            # session so the Dispatcher can offer the discard. The recording above still ran.
+            return
         emit("review_request_closed", key=key, repo=repo, number=pr["number"],
              title=pr.get("title"), url=pr.get("url"), pr_state=state,
              author=(pr.get("author") or {}).get("login"), review_desk_id=rid,
@@ -2319,16 +2362,23 @@ class Poller:
         Returns the review's id when one was written, and None every other time — which the
         event carries, so the Dispatcher can say whether the row reached the list or not.
 
-        The three guards before the look are the cheap ones: Review Desk off or absent is not
-        asked; a row with no head commit cannot be opened at all (`review open` requires one);
-        and a key this poller already has a review id for has been answered on an earlier tick.
+        The four guards before the look are the cheap ones: Review Desk off or absent is not
+        asked; a build with no `review find` is not asked either, because the first refused call
+        of the tick established that for every row on the page and `find_request` says so in as
+        many words; a row with no head commit cannot be opened at all (`review open` requires
+        one); and a key this poller already has a review id for has been answered on an earlier
+        tick.
         """
         head = pr.get("headRefOid")
-        if not recording or self.record_stopped or not head:
+        if not recording or self.record_stopped or self.look_stopped or not head:
             return None
         held = self.state["recorded"].get(key) or {}
         if review_id(held.get("review")) is not None:
             return None
+        # Per key, exactly as `record_request` resets it and for the same reason: `open_request`
+        # sets it when a build refuses `--ledger`, and as a tick-wide flag it would leak onto
+        # every key recorded after the one that set it.
+        self.record_old = False
         found = self.find_request(rd, repo, pr["number"], every)
         if found is not None or self.record_stopped or self.look_stopped:
             # A review exists, or the store could not be used. Either way nothing is written:
@@ -2337,7 +2387,21 @@ class Poller:
         review = self.open_request(rd, key, repo, pr["number"], head, pr.get("title"), every)
         if not isinstance(review, dict):
             return None
-        self.remember(key, review, head)
+        # `old` carried, not dropped. It means "this build has no `--ledger`, so never follow
+        # this head again", and a record written here that claimed `old: False` would let a
+        # reopened pull request's push reach `review open` on such a build — which answers
+        # `created: true, round 2`, the two-unstarted-reviews-for-one-request harm the flag
+        # exists to prevent. Narrow, and free to get right.
+        self.remember(key, review, head, old=self.record_old)
+        # **And remember that it was recorded CLOSED**, which is what keeps "nothing is
+        # dispatched for this row" true rather than nearly true. The row now sits on Review
+        # Desk's work list as `review_requested` for ever, so `review_desk_item` re-rolls its
+        # `pr_state` check every `reemit_after_secs` — and `pr_state` answers None on any
+        # `gh pr view` failure, which this file deliberately does not read as closed. One flaky
+        # call would eventually emit `review_desk_requested` for a merged pull request: DEV-959's
+        # own harm, arriving through the row this carve-out adds. `request_spoken_for` reads this
+        # flag as a fourth shape; see it for why that is the right place.
+        self.state["recorded"][key]["closed"] = True
         return review_id(review.get("id"))
 
     def request_spoken_for(self, key: str, entry: dict, item: dict) -> bool:
@@ -2373,6 +2437,24 @@ class Poller:
              would object. `skipped` alone was tested here and `deferred` was not, until a
              review of this branch found that the status the file itself defines as "never
              dispatched again" was being offered for dispatch on any tick GitHub stayed quiet.
+          4. **This poller recorded it while its pull request was already closed** (DEV-959's
+             carve-out, which writes a first review for a pull request that merged before anybody
+             reviewed it). Shapes 1 and 3 both lapse on such a row and shape 2 never applies, so
+             without this it is the one recorded request that creeps back towards dispatch:
+             shape 1 holds only while GitHub's search still returns the row, shape 3 needs the
+             ledger entry to be absent — which it is not for a review that was dispatched and
+             then `lost` before its worker ran `review open` — and the only remaining guard is
+             `review_desk_item`'s own `pr_state` check, which answers None on any `gh pr view`
+             failure and does not read None as closed. The row lives on the work list for ever,
+             so that check is re-rolled every `reemit_after_secs`, and one flaky call eventually
+             dispatches a review worker onto a merged pull request. That is DEV-959's own harm
+             arriving through the row DEV-959 added, which is why the flag is set where the row
+             is written and read here rather than inferred from anything.
+
+             **Kept through the prune for the same reason a dismissal is**, and the paragraph
+             there carries the argument: the fact is held nowhere else, losing it sends the next
+             tick back towards a dispatch, and the cost is one dict entry per such pull request
+             for as long as the instance lives.
           3. **It names a ledger entry that does not exist.** Only this poller links a review to
              a ledger entry nobody created; a worker writes its entry before it opens anything.
              So this is a request recorded on sight that was never claimed, and GitHub is no
@@ -2399,6 +2481,8 @@ class Poller:
         if requested_key(key) in self.requested and entry.get("status") in REDISPATCHABLE:
             return True
         if entry.get("status") in DECIDED:
+            return True
+        if (self.state["recorded"].get(key) or {}).get("closed"):
             return True
         return bool(item.get("ledger_id")) and not entry
 
