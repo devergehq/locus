@@ -40,7 +40,11 @@ name: PR lint
 # is also the first moment its description is making a claim anybody is meant to act on.
 #
 # `reopened` is in the list because naming ANY type replaces the default set rather than
-# adding to it. `edited` is in the list for the reason three paragraphs up, and it is the one
+# adding to it. `converted_to_draft` is here to STOP a run rather than start one: taking a
+# ready pull request back to draft fires no other event, so without it the lint from the last
+# push keeps going, and with it the conversion fires a run that skips on the gate and -- same
+# concurrency group, keyed on the pull request number -- cancels the one in flight. It can
+# never start a run, because `draft == false` is false on that event by definition. `edited` is in the list for the reason three paragraphs up, and it is the one
 # addition this workflow makes to the four triggers DEV-961 settled on across the three
 # repositories: without it this check reports on a description that no longer exists.
 #
@@ -60,7 +64,7 @@ name: PR lint
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, edited]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, edited]
   issue_comment:
     types: [created, edited, deleted]
   workflow_dispatch:

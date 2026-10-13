@@ -91,6 +91,19 @@ name: CI
 # default set (`opened`, `synchronize`, `reopened`) rather than adding to it.
 # Dropping it would mean a pull request closed and reopened ran nothing.
 #
+# `converted_to_draft` is the one type here that exists to make a run STOP, and
+# it is the only way to stop one. Taking a ready pull request back to draft
+# fires no other event, so without this the run from the last push keeps going
+# on work somebody has just said is not ready -- the exact minutes this ticket
+# is about, spent after the decision not to spend them. With it, the conversion
+# fires a run of its own whose every job skips on the gate below, and the
+# concurrency group does the work: both runs key on the same `github.ref`
+# (`refs/pull/N/merge`), so starting the second cancels the first.
+#
+# It only stops a run. It cannot start one, because `draft == false` is false on
+# the event by definition -- which is why it is safe to add to a list whose
+# whole purpose is deciding what runs.
+#
 # `workflow_dispatch` is the escape hatch for a branch with no pull request,
 # and it works BEFORE this is on the default branch. That is measured, against
 # the expectation: GitHub's docs are read as requiring the configuration on the
@@ -128,7 +141,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft]
   workflow_dispatch:
 
 permissions:
