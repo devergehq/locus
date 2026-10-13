@@ -3409,6 +3409,14 @@ class Poller:
                 self.record_stopped = True
                 self.read_stopped = True
             self.note_broken("review in-play", state, detail, repo)
+            # **The window is not spent on a call that did not happen**, which is exactly
+            # `record_request`'s rule about its dismissal read and arrives here through the
+            # `due` bound the caller grew a commit ago. `due` writes its marker when it is
+            # EVALUATED, so without this a Review Desk broken for one tick would put the return
+            # a whole `reemit_after_secs` away — a review coming back fifteen minutes late,
+            # which is a worse failure than the churn the bound was added to stop. Raised
+            # against my own change rather than found in it.
+            self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
             return
         if state == "refused":
             if review_desk_unknown(detail):
@@ -3420,11 +3428,18 @@ class Poller:
                          detail=f"{rd.get('command')} has no `review in-play`, so a review taken "
                                 f"out of play cannot be brought back from here and stays off the "
                                 f"Reviews list until the dashboard does it: {detail[:120]}")
-            elif not review_desk_missing(detail) and \
-                    self.due(f"review_desk|in_play_refused|{repo}", every):
-                emit("review_desk_unavailable", state="refused", mode=rd["mode"],
-                     command=rd["command"], repo=repo, number=pr["number"],
-                     call="review in-play", detail=detail, example=True)
+            elif not review_desk_missing(detail):
+                if self.due(f"review_desk|in_play_refused|{repo}", every):
+                    emit("review_desk_unavailable", state="refused", mode=rd["mode"],
+                         command=rd["command"], repo=repo, number=pr["number"],
+                         call="review in-play", detail=detail, example=True)
+                # A locked database, a validation this file has not met: the next tick should try
+                # again rather than wait out the window, on the same argument as the broken path
+                # above. **Not on the two refusals above it**, and the asymmetry is the point —
+                # a build with no `review in-play` and a pull request the store holds no review
+                # of have both ANSWERED, and asking either again every tick learns the same thing
+                # for ever.
+                self.state["emitted"].pop(f"review_desk|in_play|{key}", None)
             return
         held, review = self.state["recorded"].get(key), review_of(payload)
         if isinstance(held, dict):
@@ -3462,8 +3477,12 @@ class Poller:
                                 f"clears it the review stays off the Reviews list. Nothing is "
                                 f"blocked — the request is dispatched either way.")
                 return
-        self.state["once"].pop(f"review_in_play_stuck|{key}|draft", None)
-        self.state["once"].pop(f"review_in_play_stuck|{key}|withdrawn", None)
+        # Over `OUT_OF_PLAY_REASONS` rather than the two reasons written out, which is how
+        # `out_of_play` drops its own marks. Enumerated by hand, a third reason would be a mark
+        # nothing ever clears — so the next person to add one would have to find this line to
+        # know it existed. Raised against my own change.
+        for reason in OUT_OF_PLAY_REASONS:
+            self.state["once"].pop(f"review_in_play_stuck|{key}|{reason}", None)
         # Said once per return, which is what the `once` mark gives: the mark is cleared the
         # moment the review is out of play again, so a pull request that goes draft twice is
         # reported coming back twice. One line, and it asks for nothing — the `review_request`

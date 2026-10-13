@@ -5515,6 +5515,51 @@ rc=$(run "$disp" poll 1)
 ok "a store that is fixed brings it back"              "$(oop_state acme/portal 412)" "None@None"
 ok "  and the return is said"                          "$(count '"event": "review_in_play"')" 1
 
+# **A broken in-play does NOT spend the window**, which is the other half of the bound: `due`
+# writes its marker when it is evaluated, so a Review Desk broken for one tick would otherwise
+# put the return fifteen minutes away -- a review coming back late, which is worse than the churn
+# the bound was added to stop. The same rule `record_request` applies to its dismissal read.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+echo broken > "$work/rd.oop.mode"
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "a broken in-play is one attempt"                   "$(inplays)" 1
+ok "  and still out of play, nothing having answered"  "$(oop_state acme/portal 412 | cut -d@ -f1)" draft
+rm -f "$work/rd.oop.mode"
+forget_calls
+rc=$(run "$disp" poll 1)
+ok "  and the very next tick tries again"              "$(inplays)" 1
+ok "  bringing it back without waiting the interval"   "$(oop_state acme/portal 412)" "None@None"
+# A build that has never heard of the subcommand is the other way: it ANSWERED, so asking again
+# every tick would learn the same thing for ever and the window is kept.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc acme/portal 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN draft
+search_doc acme/portal 999 shaother Retry
+rc=$(run "$disp" poll 1)
+echo oldoop > "$work/rd.oop.mode"
+cleared_doc 412 OPEN ready
+search_doc acme/portal 412 sha412 Retry
+forget_calls
+rc=$(run "$disp" poll 2)
+ok "a build with no in-play is asked once, not twice"  "$(inplays)" 1
+rm -f "$work/rd.oop.mode"
+# And the stuck-marks are dropped over the CONSTANT, so a pull request that sticks, comes back,
+# and sticks again is said both times rather than once.
+instance '{"mode":"auto"}'
+ok "the stuck marks are dropped over the constant"     "$(grep -c 'for reason in OUT_OF_PLAY_REASONS:' "$disp")" 2
+
+
 printf '\n  a Review Desk with no out-of-play at all\n'
 instance '{"mode":"auto"}'
 files_doc 412 "$DIFF_ONE"
