@@ -374,6 +374,19 @@ refuses to build when they disagree.
   and `test (macos-14)` are **absent** on a draft rather than skipped. A rule requiring them
   would leave a draft waiting rather than passing, which is the right outcome for something
   that cannot merge and looks like a stuck check rather than a deliberate one.
+- **Converting a ready pull request back to draft now stops the run in flight.**
+  `converted_to_draft` is in both check workflows' `types:` and is the only type there that
+  exists to make a run STOP rather than start — taking a pull request back to draft fires no
+  other event, so without it the run from the last push kept going on work somebody had just
+  said was not ready, which is this ticket's own waste spent after the decision not to spend
+  it. With it the conversion fires a run whose every job skips on the gate, and the
+  concurrency group does the rest: both runs key on the same group, so starting the second
+  cancels the first. It can never start a run, because `draft == false` is false on that event
+  by definition. Measured on throwaway PR #93, both runs on head `d57cd1e`: run 38331308926
+  was created at 01:16:06Z and run 38331282602 went to `cancelled`, cutting `test (macos-14)`
+  at 1m30s against the 3m27s it takes to finish and `test (ubuntu-latest)` at 1m31s against
+  2m44s — about three minutes of runner time on one conversion. Raised by the session doing
+  this ticket on `devergehq/review-desk`, which owns the trigger the three repositories share.
 - **`pr-lint.yml` keeps `edited` and gains a manual trigger that takes a pull request
   number.** `edited` is this repository's one addition to the four triggers the three
   repositories settled on, and it is load-bearing: a description is edited in the web UI with

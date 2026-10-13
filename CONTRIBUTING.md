@@ -56,8 +56,10 @@ open PR. If a bump is needed, land it on its own, on an empty PR queue.
 **Marking it ready, and every push after that, runs every check; a merge to `master` runs
 nothing, because the ready pull request's own run already tested that commit.**
 
-Both check workflows can also be started by hand from the Actions tab: `CI` on any branch,
-`PR lint` against a pull request number, since it lints a description rather than a tree.
+Converting a ready pull request back to draft **stops the run in flight** — the conversion
+fires a run whose jobs all skip, and that cancels the one still going. Both check workflows
+can also be started by hand from the Actions tab: `CI` on any branch, `PR lint` against a
+pull request number, since it lints a description rather than a tree.
 
 A ready pull request runs `.github/workflows/ci.yml`:
 
