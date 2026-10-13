@@ -90,7 +90,20 @@ count () { grep -c -- "$1" "$work/out" || true; }
 # grep and would match nothing -- every other pattern in this file is a literal multibyte string
 # and so cannot be read that way. `: ` on the exclusions, so that `instance root` is not one.
 ran () { grep '^✓ \|^✗ ' "$work/out" | grep -vc '^✗ config: \|^✗ instance: ' || true; }
-first () { head -1 "$work/out"; }
+# printed -> check lines in ANY of the three states, for the reversals, which assert that not one
+# was printed. Three literal alternatives and no bracket expression, for the reason above, and
+# here it matters more than it does in `ran`: all three of those assertions expect ZERO, so a
+# set a C-locale grep reads as bytes would have matched nothing and passed every one of them
+# without reading the output at all. A reversal that cannot fail is the one thing this section
+# exists not to be, and this is the second place in this file that defect was found.
+printed () { grep -c '^✓ \|^✗ \|^– ' "$work/out" || true; }
+# row -> the marker and the check name on the first line, e.g. "✗ config:". A FIELD range, and
+# never a character range: GNU cut counts bytes for `-c`, ✗ is three of them, and a `-c1-9` so
+# clipped every one of these comparisons two characters short -- 4 failures on ubuntu-latest
+# while macOS passed, because BSD cut counts characters. Field mode splits on a single-byte
+# delimiter, and UTF-8 is ASCII-transparent, so no space byte can occur inside the marker and
+# field 1 arrives whole under any locale.
+row () { head -1 "$work/out" | cut -d' ' -f1,2; }
 # healthy -> write a config.json from the shipped template, with the one value that would
 # otherwise read a developer's real allele state redirected into $work.
 healthy () { python3 - "$root" "$inst" "$work" <<'PY'
@@ -122,7 +135,7 @@ ok "doctor exits non-zero"                             "$rc" 1
 ok "  and never 2 -- nothing in a hook path may block" "$([ "$rc" -eq 2 ] && echo two || echo "not two")" "not two"
 ok "  with no traceback"                               "$(count Traceback)" 0
 ok "  no JSONDecodeError on either stream"             "$(count JSONDecodeError)" 0
-ok "the fault is the first line printed"               "$(first | cut -c1-9)" '✗ config:'
+ok "the fault is the first line printed"               "$(row)" '✗ config:'
 ok "  it names the file by absolute path"              "$(says "$inst/config.json")" yes
 ok "  says the file will not parse"                    "$(says 'will not parse')" yes
 ok "  quotes the parser's own message"                 "$(says "Expecting ',' delimiter")" yes
@@ -141,7 +154,7 @@ rm -f "$inst/config.json"
 rc=$(doctor)
 ok "doctor exits non-zero"                             "$rc" 1
 ok "  with no traceback"                               "$(count Traceback)" 0
-ok "the fault is still the first line"                 "$(first | cut -c1-11)" '✗ instance:'
+ok "the fault is still the first line"                 "$(row)" '✗ instance:'
 ok "  headed for the instance, not the file"           "$(count '^✗ config: ')" 0
 ok "  naming the directory it looked in"               "$(says "no config.json in $inst")" yes
 ok "  and the command that creates one"                "$(says 'init --instance')" yes
@@ -171,7 +184,7 @@ else
   ok "doctor exits non-zero"                           "$rc" 1
   ok "  with no traceback"                             "$(count Traceback)" 0
   ok "  no PermissionError on either stream"           "$(count PermissionError)" 0
-  ok "the fault is the first line"                     "$(first | cut -c1-9)" '✗ config:'
+  ok "the fault is the first line"                     "$(row)" '✗ config:'
   ok "  naming the file"                               "$(says "$inst/config.json cannot be read")" yes
   ok "  and the reason the OS gave"                    "$(says 'Permission denied')" yes
   ok "the config checks are skipped with that reason"  "$(count 'skipped — config.json cannot be read')" 8
@@ -189,7 +202,7 @@ rc=$(doctor)
 ok "doctor exits non-zero"                             "$rc" 1
 ok "  with no traceback"                               "$(count Traceback)" 0
 ok "  no UnicodeDecodeError on either stream"          "$(count UnicodeDecodeError)" 0
-ok "the fault is the first line"                       "$(first | cut -c1-9)" '✗ config:'
+ok "the fault is the first line"                       "$(row)" '✗ config:'
 ok "  naming the file"                                 "$(says "$inst/config.json cannot be decoded")" yes
 ok "  and the byte it stopped on"                      "$(says 'at byte 35')" yes
 ok "  it names the codec, which is the cause"          "$(says 'cannot be decoded as')" yes
@@ -221,7 +234,7 @@ printf '{\n  "linear": { "team_key": "DEV" }\n  "github": { "login": "octocat" }
 rc=$(doctor "$work/unguarded.py")
 ok "unguarded: a malformed config is a traceback"      "$(says Traceback)" yes
 ok "  naming the exception instead of the file"        "$(says JSONDecodeError)" yes
-ok "  and not one check is reported"                   "$(count '^[✓✗–] ')" 0
+ok "  and not one check is reported"                   "$(printed)" 0
 
 # 2. The gate in `check`. `resolve_instance` raises `SystemExit`, which is a BaseException and so
 #    passes straight through `check`'s `except Exception`: without the gate, an instance-dependent
@@ -232,7 +245,7 @@ sed 's|^        if (needs == "config" and fault) or (needs == "instance" and roo
 ok "the skip-gate reversal changed one line"           "$(grep -c 'SKIP GATE REMOVED' "$work/nogate.py")" 1
 rm -f "$inst/config.json"
 rc=$(doctor "$work/nogate.py")
-ok "no gate: a missing config prints no checks at all" "$(count '^[✓✗–] ')" 0
+ok "no gate: a missing config prints no checks at all" "$(printed)" 0
 ok "  not even the fault it had already found"         "$(count '^✗ ')" 0
 ok "  and nothing is reported as skipped"              "$(count '^– ')" 0
 
@@ -257,7 +270,7 @@ printf '{ "linear": { "mcp_workspace": "caf\351" } }\n' > "$inst/config.json"
 rc=$(doctor "$work/nodecode.py")
 ok "wrong class: a latin-1 byte is a traceback"        "$(says Traceback)" yes
 ok "  naming the exception instead of the file"        "$(says UnicodeDecodeError)" yes
-ok "  and not one check is reported"                   "$(count '^[✓✗–] ')" 0
+ok "  and not one check is reported"                   "$(printed)" 0
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

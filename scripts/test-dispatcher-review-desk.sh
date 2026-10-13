@@ -3071,7 +3071,12 @@ print(json.loads((d.CODE_DIR / 'config.example.json').read_text())['review_desk'
 printf '\n  doctor says what the two intervals are, and names one that is being ignored\n'
 # `positive_secs` has to be silent inside the loops -- a value that threw would respawn and run
 # with no sleep at all -- so `doctor` is where an operator learns their edit did nothing.
-intervals () { set +e; D doctor > "$work/out" 2>&1; set -e; grep '^. intervals' "$work/out" || true; }
+# `^✓ \|^✗ \|^– `, not `^. `: a `.` matches one BYTE to a C-locale grep and every marker here is
+# three of them, so this read nothing and all fourteen assertions below it failed -- loudly, and
+# only under `LC_ALL=C`, which is why CI never saw it (the runner sets `C.UTF-8`). Pre-existing,
+# from DEV-931, and fixed here because DEV-979 gives the helper a second reason to need it: a
+# `doctor` check can now report a third state, `–`, and a pattern for the first two cannot see it.
+intervals () { set +e; D doctor > "$work/out" 2>&1; set -e; grep '^✓ intervals\|^✗ intervals\|^– intervals' "$work/out" || true; }
 # limits_raw <json>: REPLACE the limits block, so a shape that is not an object can be tried.
 limits_raw () {
   python3 -c "
