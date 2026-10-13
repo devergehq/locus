@@ -449,15 +449,26 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
 # every name; `group` on `allele_sessions_create` (allele's DEV-853) puts a session under a named
 # section of its project instead.
 #
-# One group per mode, and nothing else decides it: not the ticket, not its Linear project, not
-# its labels. Four modes share `linear` because what a person is looking for is "the agents
-# working my tickets" rather than which pass each one is on, and a review lands in `review`
-# because a review is the thing most often hunted for by name.
+# **There are two groups, and which one a session lands in is decided by what raised it.**
+# Everything raised by a Linear Agent label -- implement, investigate, decompose, decide -- is an
+# autonomous run and shares `agent`. Everything raised by a GitHub review request lands in
+# `review`. One group per mode, and nothing else decides it: not the ticket, not its Linear
+# project, not its labels.
+#
+# `agent` is named for what the sessions ARE, not where they came from. The principal also opens
+# sessions by hand in these same projects, and the group is the line between "something I
+# started" and "something that spun itself up to work my tickets" -- which is the question asked
+# of a sidebar far more often than which pass a given ticket is on. It was `linear` until
+# 13 October 2026 and that name answered neither question: it read as the Linear integration, and
+# it left an agent run and a hand-started session indistinguishable once both were open.
+#
+# `review` stays separate rather than folding into `agent` because a review is the thing most
+# often hunted for by name, and it is the one kind of work whose trigger is a human asking.
 #
 # Defaulted here rather than only in `config.example.json`, like every other setting in this
 # file, so an instance whose config has never heard of `allele.groups` gets these with no edit.
-GROUP_DEFAULTS = {"implement": "linear", "investigate": "linear", "decompose": "linear",
-                  "decide": "linear", "review": "review"}
+GROUP_DEFAULTS = {"implement": "agent", "investigate": "agent", "decompose": "agent",
+                  "decide": "agent", "review": "review"}
 
 # allele refuses a longer one with an error, so a value over this never reaches a create: the
 # dispatch site reads it as ungrouped and `doctor` crosses it. Passing it through would fail
@@ -472,7 +483,7 @@ def groups_cfg(cfg: dict) -> dict:
     **`None` is a VALUE here, not an absence**, which is where this differs from `review_cfg`
     and `review_desk_cfg` and why it does not share their one-liner. `"implement": null` is how
     an operator says "dispatch this mode ungrouped", and filtering nulls out the way those two
-    do would hand that mode `linear` and quietly ignore the edit.
+    do would hand that mode `agent` and quietly ignore the edit.
     """
     block = dict(GROUP_DEFAULTS)
     block.update((cfg.get("allele") or {}).get("groups") or {})
