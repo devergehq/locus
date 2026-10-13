@@ -116,8 +116,9 @@ name: CI
 # deliberate, the gate moves off the job and onto its steps, at the cost of
 # allocating a runner to do nothing.
 #
-# The four contexts this workflow emits, for whoever fills in that rule. A
-# matrix job reports one check per combination, so there is NO context named
+# The four contexts this workflow emits WHEN IT RUNS, for whoever fills in that
+# rule -- a draft emits the three named in the paragraph above instead. A matrix
+# job that runs reports one check per combination, so there is NO context named
 # bare `test` and requiring one would never be satisfied:
 #
 #     rustfmt
