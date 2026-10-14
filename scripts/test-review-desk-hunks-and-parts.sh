@@ -106,10 +106,10 @@ at_head = re.search(r"Take the flagged line and \*\*(\w+) either side\*\*", flat
 # finding a row is about and the RIGHT cell says what its `line_sha` holds, so a reversal of
 # either half breaks the pair and section E can reverse one at a time. A row whose cells the
 # reader cannot place is dropped, which makes "four rows" an assertion worth making.
-WHERE = {"briefed on": "briefed", "re-read there": "reread",
-         "did not re-read": "not_reread", "no file and no line": "no_line"}
+WHERE = {"briefed on": "briefed", "for the first time": "first_raised",
+         "already exists": "existing", "no file and no line": "no_line"}
 HOLDS = {"that head": "briefed_head", "the new head": "new_head",
-         "unchanged": "keep", "leave the field out": "omit"}
+         "cannot be rewritten": "immutable", "leave the field out": "omit"}
 line_sha_rule = {}
 lines = doc.split("\n")
 heading = next((i for i, line in enumerate(lines)
@@ -126,6 +126,18 @@ for line in lines[heading + 2:] if heading is not None else []:
 line_sha_field = re.search(r"\*\*`(\w+)` is the commit whose file you read the line from",
                            flat)
 line_sha_probe = re.search(r"review-desk finding add --help", doc)
+# What a re-read is recorded as instead, since the measurement cannot move. Read as the column
+# and the command, because the builder below has to emit the call and not merely know of it.
+reread_column = re.search(r"a re-read is recorded as the status's commit", flat)
+# The whole call, not the two words in it: a recipe missing `--review` or `--finding` is one a
+# worker cannot run, and matching only the parts it does carry would report PASS about that.
+reread_call = re.search(
+    r"review-desk finding became\s+--review <id>\s+--finding <n>\s*\\?\s*"
+    r"--status (\w+)\s+--by (\w+)\s+--checked \"[^\"]*\"\s+--commit <sha>", flat)
+# The selector the brief hands a worker at the post. Pulled out whole and RUN later in this
+# file: a recipe that contradicts the prose beneath it is the defect this reads it for.
+selector = re.search(r"# Which anchors are NOT addresses[^\n]*\n(?:\s*#[^\n]*\n)*"
+                     r"(\s*jq -r '.*?handover\.json)\n", doc, re.S)
 
 print(json.dumps({
     "context": int(context.group(1)) if context else None,
@@ -151,6 +163,10 @@ print(json.dumps({
                                  "the line there." in flat),
     "line_sha_probe": line_sha_probe.group(0) if line_sha_probe else None,
     "line_sha": line_sha_rule,
+    "line_sha_immutable": "nothing changes it afterwards" in flat,
+    "line_sha_reread_recorded": reread_column is not None,
+    "line_sha_reread_call": list(reread_call.groups()) if reread_call else None,
+    "line_sha_selector": " ".join(selector.group(1).split()) if selector else None,
 }, sort_keys=True))
 SPEC
 
@@ -416,9 +432,17 @@ ok "the brief names the field"                      "$(ask "d['line_sha_field']"
 ok "  and forbids taking it from the head unread"   "$(ask "d['line_sha_never_from_head']")" True
 ok "  four cases, each placed by both its cells"    "$(ask "len(d['line_sha'])")" 4
 ok "  the ordinary one is the head you were briefed on" "$(ask "d['line_sha']['briefed']")" briefed_head
-ok "  a file re-read at a new head carries it"      "$(ask "d['line_sha']['reread']")" new_head
-ok "  one not re-read keeps the commit it had"      "$(ask "d['line_sha']['not_reread']")" keep
-ok "  and a finding with no line carries none"      "$(ask "d['line_sha']['no_line']")" omit
+ok "  a finding first raised at a new head carries it" "$(ask "d['line_sha']['first_raised']")" new_head
+ok "  one that already exists cannot be rewritten" "$(ask "d['line_sha']['existing']")" immutable
+ok "  and a finding with no place at all carries none" "$(ask "d['line_sha']['no_line']")" omit
+# The row above is the shape of the column and not a preference, so the brief has to say why
+# and what a re-read records instead. Without this, a reader meets "unchanged" as advice.
+ok "the brief says the field is written once"       "$(ask "d['line_sha_immutable']")" True
+ok "  and what a re-read records instead"           "$(ask "d['line_sha_reread_recorded']")" True
+ok "  naming the whole call, review and finding too" "$(ask "d['line_sha_reread_call']")" "['still_open', 'agent']"
+ok "  recorded by the agent, never the developer"   "$(grep -c 'never say the developer checked something nobody showed' "$brief")" 1
+ok "  and warns against adding the finding again"   "$(grep -c 'Do not add the finding again' "$brief")" 1
+ok "the fourth row keys on the file, not the line"  "$(grep -c 'It keys on the \*\*file\*\*, not on the line' "$brief")" 1
 ok "the probe is the command, not the version"      "$(ask "d['line_sha_probe']")" "review-desk finding add --help"
 ok "  because both builds print the same version"   "$(grep -c 'Both builds print .review-desk 0.1.0.' "$brief")" 1
 ok "an unknown field loses the whole finding"       "$(grep -c 'loses the whole finding, hunk and all' "$brief")" 1
@@ -433,12 +457,51 @@ printf '\n  the commit a comment is posted at\n'
 ok "the hand-over's threads carry the commit"       "$(grep -c '| .threads\[\].line_sha. | the commit that thread' "$brief")" 1
 ok "the review posts at one commit, not per thread" "$(grep -c 'GitHub takes \*\*one\*\* .commit_id. for the whole review' "$brief")" 1
 ok "  measured against the documented parameters"   "$(grep -c 'start_line. and .start_side. and \*\*no commit of its own\*\*' "$brief")" 1
-ok "  and an older commit is not the way round it"  "$(grep -c 'GitHub shows the lot as outdated' "$brief")" 1
+ok "  and an older commit is not the way round it"  "$(grep -c 'may\*\* render a comment outdated' "$brief")" 1
+ok "  quoting the condition GitHub puts on it"      "$(grep -c 'if a subsequent commit modifies the line you' "$brief")" 1
 ok "a thread measured elsewhere is re-read first"   "$(grep -c 're-read that file at the head first' "$brief")" 1
 ok "  moving the line and not the body"             "$(grep -c 'Re-reading moves the .line. and nothing else' "$brief")" 1
 ok "  and one that cannot be placed is left out"    "$(grep -c 'leave that comment out of .comments\[\]' "$brief")" 1
 ok "a thread with no commit is said once"           "$(grep -c 'say once that the commit was not recorded' "$brief")" 1
 ok "  compared on the shorter of the two"           "$(grep -c 'on the \*\*shorter of the two\*\*' "$brief")" 1
+
+printf '\n  the selector the brief hands a worker, RUN\n'
+# The one executable artefact in the posting step, pulled out of the brief by `hunkspec.py`
+# and run over a hand-over document this file writes. Prose beneath a recipe that does not
+# implement it is the defect this exists for: the recipe is what a worker will actually run,
+# and the first version of this change left it reading `.threads[]` straight into `comments`
+# while the paragraph under it said to check every one.
+#
+# Four threads, which is the whole of the space: measured at an abbreviation of the head,
+# measured somewhere else, not measured at all, and measured at the head written in full.
+cat > "$work/handover.json" <<'HANDOVER'
+{"review": {"id": 9, "repo": "acme/portal", "pr": 412,
+            "head_sha": "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0"},
+ "draft": {"status": "approved", "event": "comment"},
+ "body": "the body the developer signed off",
+ "threads": [
+  {"finding_seq": 1, "path": "jobs/DeliverWebhook.php", "line": 16, "side": "RIGHT",
+   "line_sha": "c9d8e7f", "body": "counted at the head, abbreviated"},
+  {"finding_seq": 2, "path": "jobs/Backoff.php", "line": 26, "side": "RIGHT",
+   "line_sha": "a1b2c3d", "body": "counted somewhere else"},
+  {"finding_seq": 3, "path": "docs/webhooks.md", "line": 10, "side": "RIGHT",
+   "line_sha": null, "body": "nobody recorded the commit"},
+  {"finding_seq": 4, "path": "jobs/Queue.php", "line": 4, "side": "RIGHT",
+   "line_sha": "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0", "body": "the head in full"}]}
+HANDOVER
+ask "d['line_sha_selector']" | sed 's/ handover.json$//' > "$work/selector.jq"
+ok "the brief's selector is one jq command"          "$(head -c 5 "$work/selector.jq")" "jq -r"
+sed 's/^jq -r //' "$work/selector.jq" | tr -d "'" > "$work/selector.txt"
+run_selector () { jq -r -f /dev/stdin "$work/handover.json" < "$work/selector.txt"; }
+ok "it names the thread counted somewhere else"      "$(run_selector | wc -l | tr -d ' ')" 1
+ok "  which one, and the commit it was counted on"   "$(run_selector)" "F2 jobs/Backoff.php:26 measured at a1b2c3d"
+# The two that must NOT be named, and they are the two an equality would get wrong: a head
+# stored in full against a seven-character finding, and the same commit written both ways.
+ok "  never the one abbreviated from the head"       "$(run_selector | grep -c 'F1' || true)" 0
+ok "  nor the one carrying the head in full"         "$(run_selector | grep -c 'F4' || true)" 0
+ok "  nor the one nobody recorded"                   "$(run_selector | grep -c 'F3' || true)" 0
+ok "which the brief lists with a second command"     "$(jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
+    "$work/handover.json")" F3
 
 printf '\n  the draft, in parts\n'
 ok "the draft is written with --sections"            "$(grep -c 'draft put --review <id> --sections draft.json' "$brief")" 1
@@ -703,7 +766,11 @@ cat > "$work/findings.json" <<'FINDINGS'
   "inline_comment": "Not part of the change, and not what the other jobs do."},
  {"lens": "correction", "severity": "should",
   "claim": "the description says the retry is dropped after a day; nothing drops it",
-  "why_it_matters": "A reviewer takes a bound on the blast radius that is not there."}
+  "why_it_matters": "A reviewer takes a bound on the blast radius that is not there."},
+ {"lens": "documentation", "severity": "nit",
+  "claim": "the document never says what bounds the retries",
+  "file": "docs/webhooks.md",
+  "why_it_matters": "A reader cannot tell whether a delivery can be retried for ever."}
 ]
 FINDINGS
 
@@ -754,10 +821,16 @@ for index, finding in enumerate(findings, 1):
     if hunk:
         finding["hunk"] = hunk
         finding["flagged_line"] = finding["line"]
-    # The commit the line was read on, by the brief's own table: the head this pass read, and
-    # nothing at all for a finding that has no line to measure. The store takes a commit with
-    # no line -- measured -- so this rule is the brief's and has to be applied here.
-    if line_sha and (finding.get("line") or rule.get("no_line") != "omit"):
+    # The commit the line was read on, by the brief's own table: the head this pass read for
+    # every finding that names a FILE, and nothing at all for one that names neither a file nor
+    # a line. Keyed on the file and not on the line because that is what composes the link --
+    # `composeRow` falls back to the pull request only where `file` is null, so a file-level
+    # finding with no line still carries a permalink at a commit. The store takes a commit with
+    # no place at all -- measured -- so this rule is the brief's and has to be applied here.
+    # Row 1 says what this pass records at all; row 4 says which findings it leaves out.
+    records = rule.get("briefed") == "briefed_head"
+    omits_placeless = rule.get("no_line") == "omit"
+    if line_sha and records and (finding.get("file") or not omits_placeless):
         finding[field] = line_sha
     pathlib.Path("%s/f%d.json" % (out, index)).write_text(json.dumps(finding, sort_keys=True))
     print("%d %s %s" % (index, branch,
@@ -776,9 +849,9 @@ incomplete () { grep -E ' (diff|at-head) ' "$1" | grep -vc 'hunk,flagged_line,in
 branch () { sed -n "s/^$1 \([a-z-]*\).*/\\1/p" "$work/applied.txt"; }
 ok "three findings take the diff branch"             "$(grep -c ' diff ' "$work/applied.txt")" 3
 ok "  three take the code at head"                   "$(grep -c ' at-head ' "$work/applied.txt")" 3
-ok "  and one has no file, so it takes neither"      "$(grep -c ' none ' "$work/applied.txt")" 1
+ok "  and two name no line, so they take neither"    "$(grep -c ' none ' "$work/applied.txt")" 2
 ok "every finding with a file and a line has a hunk" "$(incomplete "$work/applied.txt")" 0
-ok "  over six of the seven, not a handful"          "$(grep -c 'hunk,flagged_line,inline_comment' "$work/applied.txt")" 6
+ok "  over six of the eight, not a handful"          "$(grep -c 'hunk,flagged_line,inline_comment' "$work/applied.txt")" 6
 ok "the finding with no file carries none"           "$(grep ' none ' "$work/applied.txt" \
     | grep -c hunk)" 0
 ok "a line in the change takes the diff"             "$(branch 1)" diff
@@ -787,6 +860,7 @@ ok "a line the diff does not draw goes to head"      "$(branch 4)" at-head
 ok "a file the change never touches goes to head"    "$(branch 5)" at-head
 ok "a line near the top of a file goes to head"      "$(branch 6)" at-head
 ok "and a correction to the description takes neither" "$(branch 7)" none
+ok "  as does a finding on a file with no line"        "$(branch 8)" none
 
 printf '\n  the commit each line was read on\n'
 carries () { python3 -c "
@@ -795,7 +869,12 @@ print(json.load(open('$1')).get('$(ask "d['line_sha_field']")', 'none'))"; }
 ok "six of the seven carry a commit"                 "$(grep -c ',line_sha$' "$work/applied.txt")" 6
 ok "  and it is the head this pass read"             "$(carries "$work/add/f1.json")" "$head"
 ok "  on the at-head branch too"                     "$(carries "$work/add/f5.json")" "$head"
-ok "the finding with no line carries none"           "$(carries "$work/add/f7.json")" none
+ok "the finding with no place at all carries none"   "$(carries "$work/add/f7.json")" none
+# The case that tells "keys on the file" apart from "keys on the line", and the reason the
+# fixture carries it: `composeRow` falls back to the pull request only where `file` is null,
+# so a file-level finding with no line still links at a commit -- and a builder keyed on the
+# line would have dropped the one field that makes that link a permalink.
+ok "  while one with a file and no line carries it"  "$(carries "$work/add/f8.json")" "$head"
 # The store would take one -- measured on review-desk master e37d64a, a document with the
 # commit and no line is accepted -- so nothing but the builder stops a commit being recorded
 # for a line nobody counted.
@@ -822,14 +901,19 @@ cat > "$work/moved.py" <<'MOVED'
 
     moved.py <spec.json> <in-dir> <out-dir> <new head> <path the delta touched>...
 
-The brief's rule and nothing else: a finding whose file this pass re-read at the new head
-carries that head; every other finding keeps the commit it already had; a finding with no line
-still carries none. The hunk is rebuilt by the same re-read in a real review -- what is under
-test here is which commit each finding ends up claiming, which is the half a reader cannot see
-in the diff.
+The brief's rule and nothing else, and the rule is mostly "nothing": `line_sha` is written
+once by `finding add` and no statement in the store updates it, so a finding that already
+exists keeps the commit it has whatever this pass re-reads. What a re-read produces instead is
+a `finding became --commit <new head>` call, which writes `round_status_commit` in place -- and
+the only document that carries the new head is a finding raised at it for the first time.
 
-The two rows are read from the spec rather than written here, so reversing either one in the
-brief reverses this builder with it.
+That is the half a reader cannot see in the diff, and the half the earlier version of this
+builder got wrong: it rewrote `line_sha` on the same record, a shape the store has no
+operation for.
+
+Prints one line per finding -- `f<n> <file> kept|none` -- then one `became` line per re-read
+and one `raised` line for the new finding. All three rows it leans on are read from the spec,
+so reversing any of them in the brief reverses this builder with it.
 """
 import json, pathlib, sys
 
@@ -837,37 +921,56 @@ spec = json.loads(pathlib.Path(sys.argv[1]).read_text())
 source, out, new_head = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4]
 reread = set(sys.argv[5:])
 field, rule = spec["line_sha_field"], spec["line_sha"]
+immutable = rule.get("existing") == "immutable"
 
 for path in sorted(source.glob("f*.json"), key=lambda p: int(p.stem[1:])):
     finding = json.loads(path.read_text())
     held = finding.get(field)
-    if finding.get("file") in reread and finding.get("line"):
-        if rule.get("reread") == "new_head":
-            finding[field] = new_head
-    elif rule.get("not_reread") != "keep":
+    if not immutable and finding.get("file") in reread:
+        # The reversal section E drives: a re-read that moves the measurement, which is the
+        # write the store will not take and the claim the record must not make.
         finding[field] = new_head
     (out / path.name).write_text(json.dumps(finding, sort_keys=True))
     now = finding.get(field)
     print("%s %s %s" % (path.stem, finding.get("file") or "-",
                         "none" if now is None else
-                        ("new" if now == new_head else
-                         ("kept" if now == held else "moved"))))
+                        ("new" if now == new_head and now != held else "kept")))
+
+# What the re-read does record. One call per existing finding whose file the push touched,
+# naming the commit the status rests on and never the one the line was counted on.
+if immutable and spec.get("line_sha_reread_call"):
+    status, by = spec["line_sha_reread_call"]
+    for path in sorted(source.glob("f*.json"), key=lambda p: int(p.stem[1:])):
+        finding = json.loads(path.read_text())
+        if finding.get("file") in reread:
+            print("became %s --status %s --by %s --commit %s"
+                  % (path.stem, status, by, new_head))
+
+# And the one document that does carry the new head: a finding raised there for the first
+# time, by the same rule row the ordinary pass reads.
+if rule.get("first_raised") == "new_head":
+    raised = {"lens": "boundary", "severity": "should",
+              "claim": "the replacement check accepts a key the schedule has no value for",
+              "file": sorted(reread)[0] if reread else None, "line": 11,
+              field: new_head}
+    (out / "f99.json").write_text(json.dumps(raised, sort_keys=True))
+    print("raised f99 %s %s" % (raised["file"], raised[field]))
 MOVED
 
 mkdir -p "$work/moved"
 python3 "$work/moved.py" "$work/spec.json" "$work/add" "$work/moved" "$moved" jobs/Backoff.php \
     > "$work/moved.txt"
-ok "the two findings in the pushed file are re-read" "$(grep -c ' new$' "$work/moved.txt")" 2
-ok "  f3, which the push moved"                      "$(sed -n 's/^f3 .* //p' "$work/moved.txt")" new
-ok "  and f6, in the same file"                      "$(sed -n 's/^f6 .* //p' "$work/moved.txt")" new
-ok "the four in files it did not touch keep theirs"  "$(grep -c ' kept$' "$work/moved.txt")" 4
-ok "  f1, read at the earlier head and not again"    "$(carries "$work/moved/f1.json")" "$head"
-ok "  and f5, in a file the push never reached"      "$(carries "$work/moved/f5.json")" "$head"
-ok "the finding with no line still carries none"     "$(carries "$work/moved/f7.json")" none
-ok "  and the round has one commit per finding, not one for all" "$(python3 -c "
-import json, pathlib
-held = {json.loads(p.read_text()).get('line_sha') for p in pathlib.Path('$work/moved').glob('f*.json')}
-print(len(held))")" 3
+ok "no finding on the round changes its commit"      "$(grep -c ' new$' "$work/moved.txt")" 0
+ok "  not f3, whose file the push moved"             "$(carries "$work/moved/f3.json")" "$head"
+ok "  nor f1, which it never reached"                "$(carries "$work/moved/f1.json")" "$head"
+ok "  and the one with no place still carries none"  "$(carries "$work/moved/f7.json")" none
+ok "the re-read is recorded as the status's commit"  "$(grep -c '^became ' "$work/moved.txt")" 2
+ok "  naming the new head, on f3 and f6"             "$(grep '^became ' "$work/moved.txt" \
+    | sed "s/.*--commit //" | sort -u)" "$moved"
+ok "  as an agent, which is who checked it"          "$(grep -c -- '--by agent' "$work/moved.txt")" 2
+ok "only a finding raised there carries the new head" "$(sed -n 's/^raised f99 [^ ]* //p' "$work/moved.txt")" "$moved"
+ok "  and it is the only document that does"         "$(grep -lF "$moved" "$work"/moved/f*.json \
+    | wc -l | tr -d ' ')" 1
 
 printf '\n  the code at head, for a line the change does not touch\n'
 # An all-unchanged hunk is how the record says "this line is not part of the change". Its numbers
@@ -1045,7 +1148,8 @@ print(json.load(sys.stdin)['findings'][2]['flagged_line'])")" 16
 import json, sys
 print(json.load(sys.stdin)['findings'][$1].get('line_sha'))"; }
   if [ "$measures" = yes ]; then
-    ok "the probe finds the field on this build"     "$measures" yes
+    ok "the probe put the field in every document"   "$(grep -l 'line_sha' "$work"/send/f*.json \
+        | wc -l | tr -d ' ')" 7
     ok "  and the store read back the commit it was given" "$(held 0)" "$head"
     ok "  for every one of the five"                 "$(review-desk review show --review "$rid" --json \
         | python3 -c "
@@ -1330,22 +1434,40 @@ python3 "$work/apply.py" "$work/stampspec.json" "$work/findings.json" "$fix" "$b
 # store takes it without complaint -- so this assertion is the only thing that catches it.
 ok "a commit is then recorded for a line nobody counted" "$(carries "$work/stamped/f7.json")" "$head"
 
-sed 's/^| a new head after a push, for a finding you did not re-read | the commit you first read it on, \*\*unchanged\*\* |$/| a new head after a push, for a finding you did not re-read | the new head |/' \
+sed 's/^| anything you re-read, for a finding that already exists | \*\*unchanged — it cannot be rewritten\*\* |$/| anything you re-read, for a finding that already exists | the new head |/' \
     "$brief" > "$work/stampround.md"
-ok "the not-re-read reversal changed one line"        "$(ask "d['line_sha']['not_reread']" "$work/stampround.md")" new_head
+ok "the already-exists reversal changed one line"     "$(ask "d['line_sha']['existing']" "$work/stampround.md")" new_head
 python3 "$work/hunkspec.py" "$work/stampround.md" > "$work/roundspec.json"
 mkdir -p "$work/stampedround"
 python3 "$work/moved.py" "$work/roundspec.json" "$work/add" "$work/stampedround" "$moved" \
     jobs/Backoff.php > "$work/stampedround.txt"
-ok "the push then moves every finding"                "$(grep -c ' new$' "$work/stampedround.txt")" 7
-ok "  including the four nobody re-read"              "$(carries "$work/stampedround/f1.json")" "$moved"
-# Which is the defect in one line: every link on the round now claims a commit this session
-# never read that line on, and the round reads as though the whole of it had been re-checked.
-ok "  and the round claims one commit for all of them" "$(python3 -c "
-import json, pathlib
-held = {json.loads(p.read_text()).get('line_sha')
-        for p in pathlib.Path('$work/stampedround').glob('f*.json')}
-print(len(held))")" 1
+ok "the push then moves the findings it re-read"      "$(grep -c ' new$' "$work/stampedround.txt")" 2
+ok "  claiming a measurement at a commit"             "$(carries "$work/stampedround/f3.json")" "$moved"
+# Which is the defect in two lines: the record would claim a line was counted at a commit the
+# store will not even let it write, and the re-read it should have recorded is never made.
+ok "  which is a write the store has no statement for" "$(grep -c 'no statement anywhere in the store updates that column' "$brief")" 1
+ok "  and no status commit is recorded in its place"  "$(grep -c '^became ' "$work/stampedround.txt")" 0
+
+# Row 1, reversed: what this pass records at all. Without it, "the builder reads the table"
+# is a claim about three rows out of four.
+sed 's/^| the head you were briefed on — the ordinary case | that head |$/| the head you were briefed on — the ordinary case | the new head |/' \
+    "$brief" > "$work/norecord.md"
+ok "the ordinary-row reversal changed one line"       "$(ask "d['line_sha']['briefed']" "$work/norecord.md")" new_head
+python3 "$work/hunkspec.py" "$work/norecord.md" > "$work/norecordspec.json"
+mkdir -p "$work/unrecorded"
+python3 "$work/apply.py" "$work/norecordspec.json" "$work/findings.json" "$fix" "$base" "$head" \
+    "$work/unrecorded" "$head" > /dev/null
+ok "  and not one finding records a commit"           "$(grep -l 'line_sha' "$work"/unrecorded/f*.json \
+    2>/dev/null | wc -l | tr -d ' ')" 0
+
+# The selector, reversed to the equality it was written against. Without this, "the brief's
+# selector tells an abbreviation from a move" is a claim about a jq expression nobody failed.
+sed 's/($h | startswith($s)) == false and ($s | startswith($h)) == false/$s != $h/' \
+    "$work/selector.txt" > "$work/badselector.txt"
+ok "the comparison reversal changed one line"         "$(grep -c '\$s != \$h' "$work/badselector.txt")" 1
+bad_selector () { jq -r -f /dev/stdin "$work/handover.json" < "$work/badselector.txt"; }
+ok "an equality calls the abbreviation a move"        "$(bad_selector | grep -c 'F1')" 1
+ok "  and would send a worker to re-read two files"   "$(bad_selector | wc -l | tr -d ' ')" 2
 
 # The composition, reversed: a glyph typed into the title composes twice.
 python3 - "$work/blocks.json" "$work/glyph.json" <<'GLYPH'
