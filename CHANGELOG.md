@@ -68,6 +68,46 @@ refuses to build when they disagree.
   reading the answer would learn the fact one spent round too late — DEV-962's own harm arriving
   through DEV-962's fix. The probe is a read, made once a tick, and never cached across ticks.
 
+- **Every finding the review worker writes says which commit its line was read on.** review-desk
+  #59 (DEV-978) gave a finding a `line_sha` and composes its permalink from it, but nothing
+  defaults it: the review's head is where the review *is*, not where a line was counted. Until
+  now the worker wrote none, so every finding it raised was stored null, read as unmeasured, and
+  linked from the head exactly as it did before DEV-978. `workers/review.md` now states the rule
+  as a table — the head it was briefed on; the new head for a finding first raised there; and
+  **unchanged** for a finding that already exists, whatever it re-reads — and says plainly that
+  the field is never filled from the head without having read the line there, which is the defect
+  DEV-978 was opened for.
+- **The third row is the shape of the column, and the brief says so rather than advising it.** No
+  statement in the store updates `line_sha`; `finding carry`'s conflict clause writes only
+  `continues_review_id` and the five `round_status_*` columns; and the dashboard says in as many
+  words that "nothing can rewrite `line_sha`". So a re-read at a new head is recorded as
+  `finding became --commit <sha>`, which writes `round_status_commit` in place — **re-passing
+  the status the finding already carries**, because
+  `still_open` is Review Desk's word for a finding that survived an earlier round and
+  `standing()` composes it into the posted index row and the inline comment's title with no
+  carried guard, so writing it on a round-1 re-read would put "Still open" on the pull request
+  about findings nobody has seen once. The brief also warns against adding the finding a second
+  time to give it a newer commit — `finding add` allocates the next unused number on the pull
+  request, so that splits the identity a finding carries across rounds. A finding with a file
+  and no line still carries the field, because the permalink keys on the file; only one with
+  neither leaves it out, which is the brief's rule and not the store's — a document with a
+  commit and no place is accepted, measured.
+- **Version tolerance is a probe of `finding add --help` and never of `--version`.** `NewFinding`
+  carries `deny_unknown_fields`, so against a build without the column the field is not dropped —
+  the whole finding is lost, hunk and all — and both builds either side of #59 print
+  `review-desk 0.1.0`. The worker omits the field and says so once, loud and never blocking.
+- **At the post, the commit stays the head and `threads[].line_sha` becomes the check before the
+  call.** GitHub takes one `commit_id` for the whole review and a `comments[]` entry carries no
+  commit of its own, so a thread's own commit cannot be that comment's commit. Step 4's recipe
+  now lists the threads whose line was counted elsewhere and the ones whose commit nobody
+  recorded, and **refuses to build the call** while a listed thread is neither moved nor dropped
+  — so the block cannot be run straight through, which is how its first version still posted
+  earlier-commit line numbers against the head. The only file the worker writes is `edits.json`,
+  which holds a line number and a list of findings to leave out and never a path or a body, so
+  every comment goes up byte for byte by construction rather than by instruction. A dropped
+  thread is named twice, because the approved body still carries that finding's index row and
+  the harvester never harvests a thread with no comment id.
+
 ### Fixed
 
 - **`doctor` reports a `config.json` it cannot read instead of dying on it.** `cmd_doctor`'s

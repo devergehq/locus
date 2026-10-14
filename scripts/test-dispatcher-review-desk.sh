@@ -190,6 +190,19 @@ PART_WITH_ONE_LINE = ["title", "summary", "one_line", "fixes", "files"]
 # a leak every time the brief grows a field.
 SERVED = ("problem", "how_it_works_today", "flow_before_caption", "flow_before", "problems")
 VERDICTS = {"fixed", "partly", "stays", "not_assessed"}
+# `finding add`'s own accepted list, read off the refusal a binary built from review-desk
+# master `e37d64a` prints, verbatim and in DECLARATION order for the reason PART_ACCEPTED is:
+# serde names the members in the order the struct declares them, and the order is half of what
+# a worker reads the message for. `$RDWORK/rd.pre978` is an install from before DEV-978 (#59),
+# which has every name here but `line_sha` -- measured against a binary built from `91ecfcb`,
+# the commit before it. Both print `review-desk 0.1.0`, which is why the brief probes the help
+# and not the version.
+FINDING_ACCEPTED = [
+    "lens", "severity", "file", "line", "line_sha", "claim", "title", "evidence",
+    "disposition", "disposition_reason", "rule_id", "hunk", "flagged_line", "inline_comment",
+    "why_it_matters", "proof", "proof_note", "verification", "suggested_fix", "fix_references",
+    "introduced_by_commit", "introduced_by_seq",
+]
 
 work = pathlib.Path(os.environ["RDWORK"])
 
@@ -353,11 +366,23 @@ def problem_statement(argv, review):
 
 
 def finding_add(argv, review):
+    source = opt(argv, "--file")
+    raw = sys.stdin.read() if source == "-" else pathlib.Path(source).read_text()
+    # The one thing this validates, because it is the one thing that loses a whole finding:
+    # `NewFinding` carries `deny_unknown_fields`, so a field the install has never heard of is
+    # refused rather than dropped. Everything else about a finding is the store's business and
+    # this stand-in allocates a number for it.
+    doc = json.loads(raw) if raw.strip() else {}
+    pre978 = (work / "rd.pre978").exists()
+    members = [m for m in FINDING_ACCEPTED if not (pre978 and m == "line_sha")]
+    unknown = [key for key in doc if key not in members]
+    if unknown:
+        refuse("cannot use the JSON: unknown field `%s`, expected one of %s"
+               % (unknown[0], ", ".join("`%s`" % m for m in members)))
     counter = work / ("rd.findings.%s" % review)
     seq = (int(counter.read_text()) if counter.exists() else 0) + 1
     counter.write_text(str(seq))
-    if opt(argv, "--file") == "-":
-        sys.stdin.read()
+    (work / ("rd.finding.%s.%s.json" % (review, seq))).write_text(json.dumps(doc))
     print(seq)
 
 
@@ -5854,6 +5879,62 @@ ok "the only \`review\` writes are open, out-of-play and in-play" \
    '"review", "find" "review", "in-play" "review", "open" "review", "out-of-play" "review", "show" '
 ok "  and nothing dismisses, deletes, restores or approves" \
    "$(grep -cE '"(dismiss|delete|restore|approve)"' "$disp")" 0
+
+# =============================================================================================
+printf '\nDEV-981 -- the commit each finding line was read on\n'
+# The brief's own worked document, sent to a stand-in that refuses what `NewFinding` refuses.
+# What is under test is the DOCUMENT `workers/review.md` tells a worker to write, against an
+# install either side of DEV-978 -- the arrangement `parts[].one_line` is already kept under,
+# and for the same reason: a worker has to write against both, and the refusal for the field
+# IS the behaviour.
+python3 - "$worker_md" "$work/finding981.json" <<'FINDING'
+import json, pathlib, re, sys
+doc = pathlib.Path(sys.argv[1]).read_text()
+block = re.search(r"\*\*The JSON, for one finding, complete:\*\*\n\n```json\n(.*?)\n```", doc,
+                  re.S)
+pathlib.Path(sys.argv[2]).write_text(block.group(1) if block else "{}")
+FINDING
+has () { python3 -c "
+import json
+print(json.load(open('$work/finding981.json')).get('$1', 'none'))"; }
+ok "the brief gives one complete finding document"   "$(python3 -c "
+import json
+print(len(json.load(open('$work/finding981.json'))) > 3)")" True
+ok "  carrying the commit its line was read on"      "$(has line_sha)" a1b2c3d
+ok "  the same commit its evidence names"            "$(python3 -c "
+import json
+doc = json.load(open('$work/finding981.json'))
+print(doc['evidence'].startswith('read at ' + doc['line_sha']))")" True
+ok "a Review Desk with DEV-978 takes it"             "$(desk_rc finding add --review 981 --file "$work/finding981.json")" 0
+ok "  and stores the field it was given"             "$(python3 -c "
+import json
+print(json.load(open('$work/rd.finding.981.1.json'))['line_sha'])")" a1b2c3d
+
+# The older build, which is the whole of the version tolerance: the field is not dropped, the
+# finding is lost. Measured on a binary built from review-desk `91ecfcb`, the commit before
+# DEV-978 -- `error.code` bad_input, exit 1, and the message names every field it does take.
+echo pre978 > "$work/rd.pre978"
+ok "one without it refuses the whole finding"        "$(desk_rc finding add --review 981 --file "$work/finding981.json")" 1
+ok "  as an unknown field, not a dropped one"        "$(grep -c 'unknown field .line_sha.' "$work/err")" 1
+ok "  naming the fields it does take"                "$(grep -c 'expected one of .lens., .severity.' "$work/err")" 1
+ok "  and the hunk goes with it: nothing is stored"  "$(test -f "$work/rd.finding.981.2.json" && echo stored || echo none)" none
+python3 -c "
+import json, pathlib
+doc = json.loads(pathlib.Path('$work/finding981.json').read_text())
+doc.pop('line_sha')
+pathlib.Path('$work/finding981-omitted.json').write_text(json.dumps(doc))"
+ok "the same document without the field is taken"    "$(desk_rc finding add --review 981 --file "$work/finding981-omitted.json")" 0
+ok "  with the hunk and the flagged line intact"     "$(python3 -c "
+import json
+doc = json.load(open('$work/rd.finding.981.2.json'))
+print(len(doc['hunk']['lines']), doc['flagged_line'], 'line_sha' in doc)")" "8 16 False"
+rm -f "$work/rd.pre978"
+
+ok "which is why the brief probes the command"       "$(grep -c 'review-desk finding add --help' "$worker_md")" 1
+ok "  and never the version, which is the same"      "$(grep -c 'Both builds print .review-desk 0.1.0.' "$worker_md")" 1
+ok "the brief says to omit it and say so once"       "$(grep -c 'leave the field out of every finding document and say so once' "$worker_md")" 1
+ok "  loud, once, and never blocking"                "$(grep -c 'Loud, once, never blocking' "$worker_md")" 1
+ok "  never filled from the head unread"             "$(grep -c "Never fill it from the review's head without having read" "$worker_md")" 1
 
 # =============================================================================================
 printf '\nNegative controls -- reverse each guard and require these tests to fail\n'

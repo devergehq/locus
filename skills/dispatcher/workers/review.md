@@ -165,6 +165,10 @@ API can approve a draft, and reaching for it would be signing off in your princi
    **Read the previous round before you touch it**, on `head_moved` as much as on `created`:
    `review-desk review show --review <id> --json`, and say in your draft what moved.
 
+   **A moved head does not move a finding's `line_sha`, and neither does re-reading it.** That
+   field is written once and cannot be rewritten; a re-read at the new head is recorded as the
+   status's commit instead. "The commit a line was read on" is the whole of it.
+
    **`created: false` no longer tells you which of three things happened.** It is false for a
    head that moved and false for a head that did not, and those ask opposite things of you. On a
    Review Desk too old to answer with an `action` at all, `head_moved_from` being present is the
@@ -638,11 +642,110 @@ be said to have been cited, or to have gone stale, and the whole feedback loop r
 one field.
 
 `review-desk finding add --review <id> --file -` for **every** finding, printing its sequence
-number. `lens`, `severity` and `claim` are required; `file`, `line`, `evidence`, `disposition`
-and `disposition_reason` are the rest. Record the ones you are **holding back for a ticket** and
-the ones you **suppressed**, each with its reason — `--disposition held_back` or `suppressed`
+number. `lens`, `severity` and `claim` are required; `file`, `line`, `line_sha`, `evidence`,
+`disposition` and `disposition_reason` are the rest — and a finding with a line carries
+`line_sha` too, which is the next section. Record the ones you are **holding back for a
+ticket** and the ones you **suppressed**, each with its reason — `--disposition held_back` or `suppressed`
 through `finding set`, or the fields on the way in. A finding you dropped silently is a finding
 the next round will raise again, which is the repetition this whole project exists to stop.
+
+### The commit a line was read on
+
+**`line_sha` is the commit whose file you read the line from, and you are the only thing in
+this loop that knows what it was.** A line number is an address only against a commit: line
+16 of one commit is a different line of a different file at the next. Review Desk composes a
+finding's permalink from this field, and a finding written without it is stored null, reads
+as unmeasured and links from the review's head as it did before DEV-978.
+
+**Never fill it from the review's head without having read the line there.** The head is
+where the review *is*, not where the line was counted, and the two come apart on their own: a
+carried finding keeps the earlier round's numbering, and since DEV-962 an unposted round's
+head moves while you are still reading the diff. A commit taken from the head afterwards is a
+confident wrong answer in a record that is allowed to have none, and it is the defect DEV-978
+was opened for.
+
+| Where you read the line | `line_sha` |
+|---|---|
+| the head you were briefed on — the ordinary case | that head |
+| a new head after a push, for a finding you are raising there for the first time | the new head |
+| anything you re-read, for a finding that already exists | **unchanged — it cannot be rewritten** |
+| nowhere: the finding has no file and no line | **leave the field out** |
+
+**The third row is the shape of the field and not a preference: `line_sha` is written once, by
+`finding add`, and nothing changes it afterwards.** Measured on review-desk master `e37d64a`:
+no statement anywhere in the store updates that column, and `finding carry`'s conflict clause
+writes only `continues_review_id` and the five `round_status_*` columns. The dashboard says the
+same thing in as many words — "nothing can rewrite `line_sha`", in `web/app/utils/findings.ts`.
+
+**So a re-read is recorded as the status's commit, and the measurement stays where it was.**
+Confirming a finding's line at a new head, in the round it is already on:
+
+```sh
+review-desk review show --review <id> --json     # read findings[].round_status for <n>
+review-desk finding became --review <id> --finding <n> \
+  --status <the status it already carries> --by agent --checked "re-read at <sha>" --commit <sha>
+```
+
+**`--status` is required and it is not yours to change here.** Re-pass what the finding already
+carries: a re-read says where you looked, not what became of the finding. `still_open` is
+Review Desk's word for a finding that survived an earlier round — "the status that makes a
+round go in a circle" — and `standing()` composes it into the posted index row and into the
+inline comment's title, with no guard for whether the finding was ever carried. On a
+`head_moved` wake in round 1 every finding is `new`, so writing `still_open` would put "Still
+open" on the pull request, under your principal's name, about findings nobody has seen once.
+Measured on review-desk master `e37d64a`: `--status new` records the identical
+`round_status_commit` and leaves the row reading "Open".
+
+`finding carry` takes the same `--commit` into a later round; both write
+`round_status_commit` in place, and it is the only commit on a finding that ever moves. The
+record then holds the two facts it can honestly hold: where the line was counted, and the
+commit the finding's standing rests on. **`agent` and not `developer`**, for the reason
+`finding carry` gives: the record must never say the developer checked something nobody showed
+them.
+
+**Do not add the finding again to give it a newer commit.** `finding add` allocates the next
+number unused on the pull request, so you would get a second finding beside the first — the
+original still in the round's index and draft, carrying the original commit, and the number
+that is a finding's identity across rounds split in two. There is no re-anchor command because
+there is no re-anchoring: a line counted at one commit was counted at that commit for ever.
+
+The fourth row is yours to keep and not the store's: measured on the same build, a document
+with `line_sha` and no `line` is **accepted**. It keys on the **file**, not on the line — a
+finding with a file and no line is still measured somewhere, and its link is
+`blob/<sha>/<path>` with no line fragment, which `composeRow` composes from this field. Only a
+finding with neither leaves it out, because a commit attached to no place at all says a
+measurement nobody made.
+
+One field covers `line`, `flagged_line` and the hunk, because all three are counted against
+the one commit. Abbreviated or full, as git writes it: measured on the same build, the store
+takes 7 to 40 hexadecimal characters and refuses the rest as `invalid_value` naming `line_sha`.
+
+**After a `head_moved` wake, then, no finding on the round changes its commit.** The delta
+names the files the push touched; what you re-read there you record as a status commit, and
+what you raise there for the first time carries the new head because that is where you read
+it. Stamping the new head across the round would say the whole review had been re-read at it,
+which is the one statement this field exists to prevent — and the store would not take the
+write in any case.
+
+**Send it only where the installed `review-desk` names it, and probe the command rather than
+the version number:**
+
+```sh
+review-desk finding add --help     # does it name `line_sha`?
+```
+
+**If it does not, leave the field out of every finding document and say so once** — to the
+Dispatcher and in your provenance, naming the field — and carry straight on. This one is
+worth more care than a flag an older build refuses, because `finding add` refuses an unknown
+field instead of dropping it. Measured on `91ecfcb`, the commit before DEV-978 landed:
+`error.code` `bad_input`, exit 1, and a message naming every field it *does* accept — so one
+`line_sha` sent to a build that has never heard of it loses the whole finding, hunk and all,
+while the same document without the field is taken. Loud, once, never blocking: a review must
+never fail to be prepared over a field this install has never heard of — the same rule the
+step facts are probed under, one field further down.
+
+**Both builds print `review-desk 0.1.0`**, measured against each other on 14 October 2026,
+which is why the probe above reads the help and not `--version`.
 
 ### The code a finding is about
 
@@ -710,6 +813,7 @@ Two more rules the store enforces, both worth knowing before a write is refused:
   "claim": "the response is returned without checking its status",
   "file": "jobs/DeliverWebhook.php",
   "line": 16,
+  "line_sha": "a1b2c3d",
   "evidence": "read at a1b2c3d, jobs/DeliverWebhook.php:16",
   "verification": "read_not_run",
   "hunk": {
@@ -1043,6 +1147,7 @@ post again, on somebody's pull request, under your principal's name.
    | `body` | the body the developer signed off, composed in the house style's shape. Posted **verbatim** |
    | `threads[]` | one entry per finding with a line inside the diff — `path`, `line`, `side`, and the comment as it will post |
    | `threads[].finding_seq` | that finding's own number, for `finding link` once GitHub has answered |
+   | `threads[].line_sha` | the commit that thread's line was counted on, or absent where nobody recorded one. Step 4 says what to do where it is not the head |
    | `review.head_sha` | the commit to post at |
    | `draft.event` | the event the developer chose, upper-cased for GitHub |
 
@@ -1130,11 +1235,99 @@ post again, on somebody's pull request, under your principal's name.
    ```sh
    review-desk draft handover --review "$REVIEW" --json > handover.json   # step 2
    jq -r .body handover.json > body.md                                    # step 3's body.md
-   jq '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
-        body: .body, comments: [.threads[] | {path, line, side, body}]}' \
-     handover.json > review.json
+
+   # 1. The anchors that are NOT addresses at the commit you are about to post at.
+   jq -r '(.review.head_sha | ascii_downcase) as $h | .threads[]
+          | ((.line_sha // "") | ascii_downcase) as $s
+          | select($s != "" and ($h | startswith($s)) == false
+                             and ($s | startswith($h)) == false)
+          | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' \
+     handover.json > reread.txt && cat reread.txt
+
+   # 2. The ones whose commit nobody recorded. Say this once, for the review.
+   jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
+     handover.json
+
+   # 3. Re-read each file in reread.txt at the head, then answer for every line of it:
+   #    a thread you placed goes in `moved` under its finding's number, one you could not
+   #    goes in `dropped`. Nothing else about a thread is yours to change.
+   echo '{"moved": {}, "dropped": []}' > edits.json      # e.g. {"moved":{"3":41},"dropped":[7]}
+
+   # 4. The call. It REFUSES to build while a line of reread.txt is neither moved nor
+   #    dropped, so this block cannot be run straight through.
+   jq --slurpfile e edits.json --rawfile todo reread.txt '
+     ($e[0].moved // {}) as $moved | ($e[0].dropped // []) as $dropped
+     | [$todo | split("\n")[] | select(startswith("F")) | ltrimstr("F") | split(" ")[0]
+        | tonumber] as $owed
+     | [$owed[] | . as $n
+        | select(($moved | has($n | tostring)) == false and ($dropped | index($n)) == null)]
+       as $unanswered
+     | if ($unanswered | length) > 0
+       then error("re-read or drop these findings first: \($unanswered)")
+       else {commit_id: .review.head_sha, event: (.draft.event | ascii_upcase), body: .body,
+             comments: [.threads[] | . as $t
+               | select($dropped | index($t.finding_seq) | not)
+               | {path, line: ($moved[$t.finding_seq | tostring] // .line), side, body}]}
+       end' handover.json > review.json
    gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
    ```
+
+   **`edits.json` is the only file you write, and it holds numbers.** A line and a list of
+   findings to leave out — never a `path`, never a `body`. The call composes the comments from
+   the hand-over itself, so every body goes up byte for byte and the marker `finding link`
+   joins on survives whatever you decided about the anchor. The earlier version of this recipe
+   read `.threads[]` straight into `comments`, which posted an earlier commit's line numbers
+   against the head: the exact harm this step exists to prevent, run by a worker doing as it
+   was told.
+
+   **A re-read here is not a `finding became`**, and that is the one place the rule above does
+   not reach. The draft is approved by now, and `finding became` on an approved draft is
+   refused `draft_status` — measured. So the corrected line goes to GitHub and not to the
+   record, which keeps the line it was given; say which threads you moved and from what, and
+   the next round's read is what puts it right.
+
+   **The commit you post at is `review.head_sha`, and a thread's own commit is a check rather
+   than a second answer.** GitHub takes **one** `commit_id` for the whole review: read off its
+   REST documentation for `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` on 14
+   October 2026, where a `comments[]` entry takes `path`, `position`, `body`, `line`, `side`,
+   `start_line` and `start_side` and **no commit of its own**. So "post this comment at the
+   commit its line was counted on" is not a thing the call can say. Nor is posting the whole
+   review at an older commit the way round it: GitHub's own wording for an older `commit_id` is
+   that it **may** render a comment outdated, *"if a subsequent commit modifies the line you
+   specify as the position"* — so the review would land with some threads current and some
+   collapsed, chosen by what the author happened to touch, and you would not know which until
+   it was posted.
+
+   What `threads[].line_sha` is for here is the one question that matters before the call:
+   **is this anchor still an address at the commit I am about to post at?** Compare each one
+   with `review.head_sha` on the **shorter of the two**, which is what Review Desk itself
+   does — a head is stored full or abbreviated and a finding's commit is 7 to 40 characters,
+   so `=` would report a move that never happened.
+
+   | The thread's `line_sha` | What it says | What you do |
+   |---|---|---|
+   | the head, or a prefix of it | the line was counted where you are posting | post it as handed |
+   | a different commit | the line was counted somewhere else, and that number may be a different line at the head | **re-read that file at the head first** |
+   | absent | the record does not say where it was counted | post it as handed, and say once that the commit was not recorded |
+
+   **Re-reading moves the `line` and nothing else.** The body is the text the developer
+   decided on and the marker in it is what `finding link` joins on, so it goes up byte for
+   byte; what changes is the number the comment hangs on. Say which threads you moved and from
+   what. **If you cannot place one at the head, leave that comment out of `comments[]` and say
+   so loudly, naming the finding** — a comment on the wrong line is on the record under your
+   principal's name and nothing in the thread says it is misplaced, which is worse than a
+   comment that is missing.
+
+   **Say it twice, because nothing else will.** The approved body still carries that finding's
+   row in the index, so the review reads as having a thread that is not there; `review_lint`'s
+   `threads.exist` passes on any one thread and will not name it; and a finding with no
+   `github_comment_id` is skipped by the harvester for replies and resolution, this round and
+   every later one. So name the finding to your principal **and** in your report, and carry it
+   into the next round's draft rather than treating it as posted.
+
+   A Review Desk older than DEV-978 hands over no `line_sha` at all and every thread reads as
+   the third row: say it once for the review rather than once per thread, which is what the
+   hand-over's own plain output does.
 
    **The threads are no longer yours to write.** They were, for as long as the draft held no
    thread text. Review Desk now composes each one from the same block the developer decided on,
@@ -1286,8 +1479,10 @@ what it names and do not edit the body to suit it; step 7 governs this too.
   moved. **This is the same round until you have posted** (DEV-962): `review open` on the new
   head MOVES your round, so revise the findings and draft blocks the delta reaches and leave the
   rest alone. Do not open a round, do not start the review again, and do not write a second
-  draft. If the Dispatcher relays the same push to you as a message, it is the same push — act
-  on whichever reached you first and say so once.
+  draft. A finding you re-read at the new head records that as its status commit and keeps the
+  `line_sha` it had; only a finding you raise there for the first time carries the new head. If
+  the Dispatcher relays the same push to you as a message, it is the same push — act on
+  whichever reached you first and say so once.
 
   **If the push only brought the base branch in, say so and change nothing.** The pull request's
   own diff against its base is what you reviewed; a merge of the base that leaves it identical
