@@ -89,9 +89,9 @@ refuses to build when they disagree.
   about findings nobody has seen once. The brief also warns against adding the finding a second
   time to give it a newer commit — `finding add` allocates the next unused number on the pull
   request, so that splits the identity a finding carries across rounds. A finding with a file
-  and no line still carries the field, because the permalink keys on the file; only one leaves
-  it out, which is the brief's rule and not the store's — a document with a commit and no place
-  is accepted, measured.
+  and no line still carries the field, because the permalink keys on the file; only one with
+  neither leaves it out, which is the brief's rule and not the store's — a document with a
+  commit and no place is accepted, measured.
 - **Version tolerance is a probe of `finding add --help` and never of `--version`.** `NewFinding`
   carries `deny_unknown_fields`, so against a build without the column the field is not dropped —
   the whole finding is lost, hunk and all — and both builds either side of #59 print

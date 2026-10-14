@@ -508,7 +508,11 @@ cat > "$work/handover.json" <<'HANDOVER'
 HANDOVER
 ask "d['line_sha_selector']" > "$work/selector.txt"
 ask "d['line_sha_unrecorded']" > "$work/unrecorded.txt"
-ok "the brief's selector came out of the brief"      "$(grep -c 'startswith' "$work/selector.txt")" 2
+# Occurrences and not matching LINES, which is `grep -c`: the brief wraps the condition over
+# two lines today and reflowing it onto one would fail a check that is about the comparison,
+# not about the wrap -- the same fault the `badselector` control below is flattened to avoid.
+ok "the brief's selector came out of the brief"      "$(grep -o 'startswith' "$work/selector.txt" \
+    | wc -l | tr -d ' ')" 2
 run_selector () { jq -r -f "$work/selector.txt" "$work/handover.json"; }
 run_unrecorded () { jq -r -f "$work/unrecorded.txt" "$work/handover.json"; }
 ok "it names the thread counted somewhere else"      "$(run_selector | wc -l | tr -d ' ')" 1
@@ -972,7 +976,15 @@ import json, pathlib, sys
 
 spec = json.loads(pathlib.Path(sys.argv[1]).read_text())
 source, out, new_head = pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[3]), sys.argv[4]
-reread = set(sys.argv[5:])
+# What `review show --review <id> --json` reports for each finding, which is where the brief
+# tells a worker to read the status back from. A fixture rather than a flag because it has to
+# hold MORE THAN ONE value: with every finding on `new`, "re-pass the status it carries" and
+# "write `new`" are the same program and the assertion below would pin neither.
+#
+# `round_status` is not a field of `finding add`'s document -- `NewFinding` would refuse it --
+# so it cannot live in `findings.json` beside the rest. It is the store's, read back.
+statuses = json.loads(pathlib.Path(sys.argv[5]).read_text())
+reread = set(sys.argv[6:])
 field, rule = spec["line_sha_field"], spec["line_sha"]
 immutable = rule.get("existing") == "immutable"
 
@@ -1001,7 +1013,7 @@ if immutable and spec.get("line_sha_reread_call"):
         finding = json.loads(path.read_text())
         if finding.get("file") in reread:
             print("became %s --status %s --by %s --commit %s"
-                  % (path.stem, finding.get("round_status", "new"), by, new_head))
+                  % (path.stem, statuses.get(path.stem, "new"), by, new_head))
 
 # And the one document that does carry the new head: a finding raised there for the first
 # time, by the same rule row the ordinary pass reads.
@@ -1014,9 +1026,15 @@ if rule.get("first_raised") == "new_head":
     print("raised f99 %s %s" % (raised["file"], raised[field]))
 MOVED
 
+# The statuses `review show` would report. F3 was carried from an earlier round and F6 was
+# raised in this one, which is the pair that makes "re-pass what it carries" checkable: a
+# builder that wrote one word for both would get F3 wrong.
+cat > "$work/statuses.json" <<'STATUSES'
+{"f3": "still_open", "f6": "new"}
+STATUSES
 mkdir -p "$work/moved"
-python3 "$work/moved.py" "$work/spec.json" "$work/add" "$work/moved" "$moved" jobs/Backoff.php \
-    > "$work/moved.txt"
+python3 "$work/moved.py" "$work/spec.json" "$work/add" "$work/moved" "$moved" \
+    "$work/statuses.json" jobs/Backoff.php > "$work/moved.txt"
 ok "no finding on the round changes its commit"      "$(grep -c ' new$' "$work/moved.txt")" 0
 ok "  not f3, whose file the push moved"             "$(carries "$work/moved/f3.json")" "$head"
 ok "  nor f1, which it never reached"                "$(carries "$work/moved/f1.json")" "$head"
@@ -1035,7 +1053,8 @@ ok "  as an agent, which is who checked it"          "$(grep -c -- '--by agent' 
 # The status is the finding's own, not the brief's placeholder and not a word this harness
 # picked: `still_open` on a round-1 finding posts "Still open" about a finding nobody carried.
 ok "  re-passing the status each finding carries"    "$(grep '^became ' "$work/moved.txt" \
-    | sed 's/.*--status \([a-z_]*\) .*/\1/' | sort -u)" new
+    | sed 's/^became \(f[0-9]*\) --status \([a-z_]*\) .*/\1=\2/' | sort | tr '\n' ' ')" \
+    "f3=still_open f6=new "
 ok "  never the brief's placeholder, read as one"    "$(ask "d['line_sha_reread_call'][0]")" "the status it already carries"
 ok "only a finding raised there carries the new head" "$(sed -n 's/^raised f99 [^ ]* //p' "$work/moved.txt")" "$moved"
 ok "  and it is the only document that does"         "$(grep -lF "$moved" "$work"/moved/f*.json \
@@ -1509,7 +1528,7 @@ ok "the already-exists reversal changed one line"     "$(ask "d['line_sha']['exi
 python3 "$work/hunkspec.py" "$work/stampround.md" > "$work/roundspec.json"
 mkdir -p "$work/stampedround"
 python3 "$work/moved.py" "$work/roundspec.json" "$work/add" "$work/stampedround" "$moved" \
-    jobs/Backoff.php > "$work/stampedround.txt"
+    "$work/statuses.json" jobs/Backoff.php > "$work/stampedround.txt"
 ok "the push then moves the findings it re-read"      "$(grep -c ' new$' "$work/stampedround.txt")" 2
 ok "  claiming a measurement at a commit"             "$(carries "$work/stampedround/f3.json")" "$moved"
 # Which is the defect in two lines: the record would claim a line was counted at a commit the
