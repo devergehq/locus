@@ -28,8 +28,8 @@ This document is long because every line below cost somebody a verified defect. 
 nothing else, read these — each one links to the section that proves it.
 
 1. **A green tick is not CI.** `gh pr checks` exits 0 on a PR that ran no tests. Assert the
-   check *names* — Test Coverage, Backend Linting, Architecture Tests, Frontend Vitest,
-   Regenerate Types. (§7, *The gate*)
+   check *names* — Unit Test Coverage, API Lint, Contract Tests, Web Unit Tests,
+   Type Generation. (§7, *The gate*)
 2. **A conflict anywhere below a child suppresses that child's CI**, silently, for every member
    above it. PR #101 sits in a `dev`-based stack, is not a draft, and has never had a single
    `pull_request` run, because positions 1 and 3 beneath it conflict. Check `mergeable` on every
@@ -184,7 +184,7 @@ surface: the thing it misses is by definition the thing nobody templated, and th
 templated is usually the thing somebody hand-wrote because it mattered.
 
 The parent's comments matter as much as its description. On EX-525 the decomposition comment
-carries four corrections to the description, including a service-provider ordering hazard that
+carries four corrections to the description, including a bootstrap-ordering hazard that
 moves a file from one child to another. A coordinator that read only the description would
 have planned the wrong scope for two children.
 
@@ -225,7 +225,7 @@ is how a cheap gate silently becomes an unbounded one. Say which you found.
 |---|---|---|
 | **data** | an agent, via the read-only production MCP | trivial — seconds |
 | **access pattern** | an agent, given access-log reads | cheap, with a caveat below |
-| **production config** | a human, or an agent with ECS read | small, but may need a person |
+| **production config** | a human, or an agent with container-platform read | small, but may need a person |
 | **retention / architecture** | human judgement | a conversation |
 | **stakeholder approval** | a human, unbounded | no upper bound |
 
@@ -236,20 +236,20 @@ log query answers a **proxy**. Often the proxy is enough and the human question 
 it is not, what remains is "does anyone rely on this", which is much smaller than "is this used"
 but is not always zero. Say which you got.
 
-EX-527's four questions sort as: Q1 (does the finance team use the page) **access pattern**, answerable
-from access logs rather than by asking the finance team; Q2 (has `adjustment_amount` ever held a value)
-**data**, and answered — see section 8; Q3 (drop or archive the stored-events table)
-**retention/architecture**, and decided: the domain is dead, MYOB is the source of truth, the rows
+EX-527's four questions sort as: Q1 (does the billing team use the page) **access pattern**, answerable
+from access logs rather than by asking the billing team; Q2 (has `reconciled_total` ever held a value)
+**data**, and answered — see section 8; Q3 (drop or archive the `ledger_events` table)
+**retention/architecture**, and decided: the domain is dead, the external ledger is the source of truth, the rows
 are a reflection rather than a record, and a backup restores them; Q4 (the production value of
-`APPLY_ADJUSTMENT_EFFECTS`) **production config**, and the one still open.
+`ENABLE_LEDGER_WRITEBACK`) **production config**, and the one still open.
 
 **A child can be both, and the classification is about the diff, not the ticket.** EX-532 is a
-migration *and* an explicit production write — *"`nova_settings` **rows** — a separate one-line
+migration *and* an explicit production write — *"`app_settings` **rows** — a separate one-line
 production write, not part of the migration"*. Classify it by its diff, so it is a code child and
 can sit in a component; then record the non-diff half **separately, as an action no PR delivers**,
 and carry it into the backward coverage check and the closing comment. The same applies to
 EX-527's *"a dump of the three tables is taken if any drop is agreed"* and EX-532's *"the three
-`nova_settings` rows are removed in production"*: neither is deliverable by any session here, so
+`app_settings` rows are removed in production"*: neither is deliverable by any session here, so
 each is a gate on a person, and a child is not incomplete for failing to do something it was never
 able to do.
 
@@ -300,7 +300,7 @@ conflict rule below, and a witness never *removes* another witness's edge.
    note for the plan comment, not an edge.
 
    The broad reading is actively harmful, and EX-525 shows why. All four code children regenerate
-   `packages/api-types/src/index.d.ts` and `resources/js/types/generated.d.ts`. Taken literally,
+   `packages/shared-types/src/index.d.ts` and `web/src/types/generated.d.ts`. Taken literally,
    "touches one file" yields edges `528–530`, `528–531`, `528–532`, `529–532`, `530–531`, `530–532`,
    `531–532` — dragging EX-532 back into the component and **defeating the release cut in 3b-ii**,
    the single most important exclusion in this section. The narrow test yields no edges here at all,
@@ -311,21 +311,21 @@ conflict rule below, and a witness never *removes* another witness's edge.
    That belongs in the plan comment as a reason for the shape, not as edges in the graph.)
 
    Be honest about which co-location risks are real here. In one repo a stale generated type
-   file **is** caught — `Regenerate Types and Type Check` runs `composer types` and fails on a
+   file **is** caught — `Type Generation and Type Check` runs `pnpm types` and fails on a
    diff. What is caught by nothing is the **published package**, and the interesting part is not the
-   children that mention it. `publish-api-types.yml` fires on push to `dev` comparing `HEAD^`
+   children that mention it. `publish-shared-types.yml` fires on push to `dev` comparing `HEAD^`
    to `HEAD`, and a stack lands as **one** push — so competing bumps inside a stack collapse
    to whichever version the tip carries, and the losing CHANGELOG entries describe a version
    that was never published. **One bump, on the stack tip** — with one caveat that has to be
    said in the same breath: a stack merge can stop partway (3b-ii), and if it stops below the
-   tip then the breaking change has landed on `dev` and the bump has not. `publish-api-types.yml`
-   filters on `paths: packages/api-types/package.json`, so it does not even fire. Put the rule
+   tip then the breaking change has landed on `dev` and the bump has not. `publish-shared-types.yml`
+   filters on `paths: packages/shared-types/package.json`, so it does not even fire. Put the rule
    in the plan comment together with its failure: **if the stack lands partially, the bump is
    owed immediately and it is your principal's to chase.**
 
    On EX-525 that is three children asking for a bump — EX-528, EX-531, EX-532 — and the
-   dangerous one is the fourth. **EX-530 changes `packages/api-types/src/index.d.ts:3709`** by
-   deleting `MyobAdjustmentItemViewData` and says nothing about a version at all. A silent
+   dangerous one is the fourth. **EX-530 changes `packages/shared-types/src/index.d.ts:2184`** by
+   deleting `LedgerAdjustmentItemViewData` and says nothing about a version at all. A silent
    breaking change to a published package is the failure; three noisy ones that collide are
    merely untidy. Count the children that *touch* the artefact, never the ones that mention it.
 
@@ -335,7 +335,7 @@ conflict rule below, and a witness never *removes* another witness's edge.
    **The rule has to reach the children, and on EX-525 it contradicts their written acceptance
    criteria.** EX-528, EX-531 and EX-532 each carry an AC demanding a version bump and a
    CHANGELOG entry. Three children in one parent, each instructed in writing to bump, two of whom
-   must not. A rule that lives only in your plan comment changes nothing: put the `api-types` line
+   must not. A rule that lives only in your plan comment changes nothing: put the `shared-types` line
    in each code child's dispatch appendix (section 6), naming which child carries the bump and
    telling the others explicitly not to.
 
@@ -407,7 +407,7 @@ choose between four shapes; you compute one partition and read the shape off it.
 **Why a component becomes a stack, so you can tell when it shouldn't.** Without a stack, a
 sequenced child waits for its predecessor to **merge**. With a stack it waits only for its
 predecessor to **push**. That is the entire benefit and it is large: this repo's queue is
-serial FIFO at 3.5–6 PRs/hour with human approval in front of it, so five sequential merges is
+serial FIFO at 2–5 PRs/hour with human approval in front of it, so five sequential merges is
 days and five stacked pushes is minutes. The bias to stack is not aesthetic — it is that most
 parents are one piece of work whose children are genuinely sequenced, and sequencing without
 a stack is paid in merge latency.
@@ -434,15 +434,15 @@ dead, while a gate that blocks only *whether you ship* lets the child build, pus
 draft, and let the stack grow above it. It is wrong, and the reason is measurable rather than
 aesthetic.
 
-Every substantive job in `ci-coverage.yml` is guarded on `github.event.pull_request.draft ==
-false` — lines 251, 333, 444, 570, 704 and 790, which is Backend Linting, Frontend Linting,
-Architecture Tests, Frontend Vitest, Regenerate Types and Type Check, and Test Coverage. And
-the same file says, at :45, that *"Jobs skipped via `if:` report as 'skipped', which satisfies
+Every substantive job in `ci-checks.yml` is guarded on `github.event.pull_request.draft ==
+false` — lines 118, 196, 274, 361, 447 and 522, which is API Lint, Web Lint,
+Contract Tests, Web Unit Tests, Type Generation and Type Check, and Unit Test Coverage. And
+the same file says, at :38, that *"Jobs skipped via `if:` report as 'skipped', which satisfies
 required status checks"*. Put those together: **a draft PR runs none of the real checks and
 reports green anyway.** A held draft is not a safe parking space; it is a member of the stack
 that nothing has ever tested, wearing a passing tick, with live members built on top of it.
 
-`docs/ci/merge-queue.md:389` closes the other exit: *"A member is a draft, or unapproved →
+`docs/ci/merge-queue.md` closes the other exit: *"A member is a draft, or unapproved →
 **Waits.** Not queued yet; keeps its position. No comment, no label change."* So the held draft
 also stalls the whole stack in the queue, silently, forever.
 
@@ -474,8 +474,8 @@ comment is the same classification the linearisation uses:
 | stakeholder approval — no timeout | highest | nearest the tip |
 
 On EX-525 the two are EX-529 and EX-530, both gated on EX-527, both blocking only EX-531.
-EX-529's gate is Q4, the production value of `APPLY_ADJUSTMENT_EFFECTS` — **production config**.
-EX-530's is Q1, does the finance team use the page — **access pattern**, which reads as cheaper than Q4
+EX-529's gate is Q4, the production value of `ENABLE_LEDGER_WRITEBACK` — **production config**.
+EX-530's is Q1, does the billing team use the page — **access pattern**, which reads as cheaper than Q4
 and is, *if* the log proxy settles it; the residue ("does anyone rely on it") is the part that can
 turn into a conversation. So on the categories alone Q1 ranks below Q4 and EX-530 would go lower —
 which is the reverse of the order below, and the reason to say out loud how the tie was broken.
@@ -509,7 +509,7 @@ text often will not settle it:
 - EX-527's Q4 — the one EX-529's `## Prerequisites` box depends on — reads as blocking the approach — *"stop: this is a live pricing change wearing a
   cleanup label"* — but the next clause is *"needs its own discussion **before it merges**"*,
   and the diff is byte-identical either way: the same three deletions in
-  `config/pricing.cfg`, `Pricing` and `Kernel`. The answer changes whether to
+  `config/pricing.ts`, `PricingPolicy` and `Scheduler`. The answer changes whether to
   land it, not what to build. The categories collapse whenever a gate changes only the risk of
   a fixed diff — which is most of removal work, and EX-525 is removal work throughout.
 
@@ -580,7 +580,7 @@ says *and here is why waiting is worth it*.
 
 Note how much that has moved. When this section was first written all four of EX-527's questions
 looked human-held, and the recommendation was to hand the parent back and wait for a person. Two of
-the four turned out to be an agent's work — one a 400ms query, one a log read — and one was a
+the four turned out to be an agent's work — one a 600ms query, one a log read — and one was a
 decision somebody could simply make. **Most of what looked like an unbounded wait was a permission
 boundary and an unasked question.** Expect that to be the usual shape, and let the resolver find
 out rather than assuming. The dispatchable shape being one PR long is not a small
@@ -641,7 +641,7 @@ that can cheapen the gate, and declined to spend five more producing something w
 latency on one two-point ticket, EX-528, for as long as the resolver takes. Against that, fanning
 out today yields one flat PR, one investigate session, and three children written down as deferred —
 while holding costs one session and plausibly returns a genuine stack of four. There is even a
-second-order argument for waiting: if EX-528 later lands inside a stack its api-types bump collides
+second-order argument for waiting: if EX-528 later lands inside a stack its shared-types bump collides
 with the tip's (3b), and if it ships alone it does not.
 
 ### 3e. Mode per child
@@ -702,21 +702,21 @@ named-section failure this document exists to kill, and it produces confident fa
 
 A worked demonstration, and it is a correction to an earlier draft of this file: that draft's
 flagship example was *"the parent has no acceptance criterion about a published npm package,
-while its children carry a breaking change to `@your-org/api-types`."* Read the
+while its children carry a breaking change to `@your-org/shared-types`."* Read the
 parent whole and that is **wrong** — EX-525's decomposition comment, correction 3, says
-*"`packages/api-types` is a published npm package … EX-528 and EX-531 now carry a version bump
+*"`packages/shared-types` is a published npm package … EX-528 and EX-531 now carry a version bump
 and a CHANGELOG entry."* The parent asks for it explicitly. The narrow baseline manufactured a
 finding out of a section boundary.
 
 The real backward finding on EX-525 is one step further in and survives the whole-parent
-baseline: **EX-530 changes `packages/api-types/src/index.d.ts:3709`** — deleting
-`MyobAdjustmentItemViewData` — and neither the parent nor EX-530 asks for a version bump, while
+baseline: **EX-530 changes `packages/shared-types/src/index.d.ts:2184`** — deleting
+`LedgerAdjustmentItemViewData` — and neither the parent nor EX-530 asks for a version bump, while
 EX-528, EX-531 and EX-532 all do. A child touching the published package with nobody having
 noticed is a discovered risk; three children that were told to bump it are not.
 
 **A criterion nothing can verify before a deploy is not a gap.** Section 10 requires you to
 close while naming such criteria as unverified — on EX-525, *"the results match production
-today"* and *"Budget panel renders unchanged"*. If the forward check treated those as gaps it
+today"* and *"Summary panel renders unchanged"*. If the forward check treated those as gaps it
 would stop the run before it started, on criteria section 10 has already decided how to handle.
 So the forward check asks *is there a child whose work would satisfy this once deployed*, not
 *can I verify it now*. A criterion with a child and no pre-deploy check is section 10's business;
@@ -951,8 +951,8 @@ Branch check: THIS OVERRIDES `implement.md` step 3, which says an existing remot
               An existing branch is either your own earlier session or a collision, and
               continuing a collision loses one session's work with no error.
 Concurrent:   <siblings running now>
-api-types:    <one of: "you carry the single packages/api-types version bump and CHANGELOG
-              entry for this stack" | "do NOT bump packages/api-types — the tip carries the
+shared-types: <one of: "you carry the single packages/shared-types version bump and CHANGELOG
+              entry for this stack" | "do NOT bump packages/shared-types — the tip carries the
               single bump for this stack; say so in your PR description where your acceptance
               criteria ask for one" | omit this line entirely if the parent touches no
               published package>
@@ -977,10 +977,10 @@ Sign as you:  commenting on any ticket that is not your own, pass `--key <CHILD>
 
 This is the correction that matters most, and it is worth stating why before the mechanics.
 
-**A base-chained PR made with `gh pr create --base` gets no CI.** `ci-coverage.yml` filters
+**A base-chained PR made with `gh pr create --base` gets no CI.** `ci-checks.yml` filters
 `pull_request` on `branches: [dev, release/**]`, and that filter reads the **base** ref. PR
-#102 has base `feature/unrelated-951` and `stackEntry: NONE`: no Test Coverage, no Architecture
-Tests, no Backend Linting, no Frontend Vitest, no type check. `gh pr checks` exits 0 on it,
+#102 has base `feature/unrelated-951` and `stackEntry: NONE`: no Unit Test Coverage, no Contract
+Tests, no API Lint, no Web Unit Tests, no type check. `gh pr checks` exits 0 on it,
 because the checks that would have failed were never created.
 
 **A conflict anywhere below a child silently suppresses that child's CI.** This is the single
@@ -989,18 +989,18 @@ unless it is looking for the right thing.
 
 Stack #103 (`base=dev`, size 9), walked down the base chain:
 
-| Position | PR | `mergeable` / `mergeStateStatus` | Test Coverage |
+| Position | PR | `mergeable` / `mergeStateStatus` | Unit Test Coverage |
 |---|---|---|---|
-| 1 | #104 | `CONFLICTING` / `DIRTY` | yes (ran 10 Aug) |
-| 2 | #105 | `MERGEABLE` / `BLOCKED` | yes (ran 10 Aug) |
-| 3 | #106 | `CONFLICTING` / `DIRTY` | yes (ran 11 Aug) |
+| 1 | #104 | `CONFLICTING` / `DIRTY` | yes (ran 14 Jul) |
+| 2 | #105 | `MERGEABLE` / `BLOCKED` | yes (ran 14 Jul) |
+| 3 | #106 | `CONFLICTING` / `DIRTY` | yes (ran 15 Jul) |
 | 4–9 | #107 … #101 | `UNKNOWN` / `UNKNOWN` | **none, ever** |
 
 GitHub cannot compute mergeability for positions 4 upward because the chain beneath them
 conflicts, and the stack's own UI says so in as many words: conflicts must be resolved. PR
 #101 is the case to keep in mind — `stackEntry` non-null, `stack.baseRefName == "dev"`, size 9,
 open, **not** a draft, and **zero `pull_request`-event workflow runs in its entire history**.
-`gh pr checks 9233` exits **0** with four rows, none of them a test.
+`gh pr checks 101` exits **0** with four rows, none of them a test.
 
 So a conflict low in a stack is **not one child's problem**. It stalls CI for every member above
 it, silently, and the members above look fine: correct position, correct stack base, green tick.
@@ -1026,14 +1026,14 @@ Two other things suppress CI and are worth keeping distinct, because they have d
 
 - **An unstacked PR with a non-`dev` base** — the `branches:` filter rejects it. PR #102:
   `stackEntry: null`, base `feature/unrelated-951`, `mergeable: MERGEABLE`, `mergeStateStatus: CLEAN`,
-  and no Test Coverage. Its merge state is fine; it simply is not in a stack. Fixed by stacking
+  and no Unit Test Coverage. Its merge state is fine; it simply is not in a stack. Fixed by stacking
   it, not by resolving anything.
-- **A draft** — six `draft == false` guards in `ci-coverage.yml`, and skipped jobs satisfy
+- **A draft** — six `draft == false` guards in `ci-checks.yml`, and skipped jobs satisfy
   required checks by design. Fixed by readying it.
 
 And the behaviour the whole design depends on is real: **a conflict-free stack based on `dev`
 gets CI on every member**, on bases the branch filter excludes. Stack #108 (`base=dev`, size 5):
-all five ran Test Coverage for 11-12 minutes, and #109's run is `event: pull_request`,
+all five ran Unit Test Coverage for 9-10 minutes, and #109's run is `event: pull_request`,
 `head_branch: EX2-1609`, under a `branches:` list of `dev, release/**, staging, main` that does
 not contain its base `EX2-1605`. The filter resolved against the stack's base.
 
@@ -1044,11 +1044,11 @@ worth internalising because it will bite anyone who tries to re-verify this:
 
 > **Check-runs are historical. `mergeable` is a reading from now.**
 
-Positions 1-3 are `CONFLICTING` today *and* have Test Coverage, which looks like a counterexample
-and is not: #104's run started 2026-08-10T05:01:43Z, forty minutes after its last commit at
-04:21:24Z, and #106's started two minutes after its own. Both ran promptly, in August, when
+Positions 1-3 are `CONFLICTING` today *and* have Unit Test Coverage, which looks like a counterexample
+and is not: #104's run started 2026-07-14T09:12:05Z, forty minutes after its last commit at
+08:32:11Z, and #106's started two minutes after its own. Both ran promptly, in July, when
 their chain was clean; the conflicts are a property of today. Equally, positions 1-3's coverage
-predates position 4 existing at all (created 2026-08-20), so that table cannot demonstrate what
+predates position 4 existing at all (created 2026-07-24), so that table cannot demonstrate what
 a conflict beneath them did to members that were not yet there.
 
 So do not try to confirm this rule by comparing old check-runs against current mergeability in
@@ -1154,7 +1154,7 @@ trusting this paragraph; it was true for v0.1.0.
    the chain down and look for the first `CONFLICTING`. `stackEntry: NONE` means the link did not land and this PR will get no
    CI. `gh stack view --json` is the friendlier read; the GraphQL is the one that shows you
    the base, which is the field that decides whether CI runs.
-5. **Only then** tell the child to `gh pr ready`. `ready_for_review` is in `ci-coverage.yml`'s
+5. **Only then** tell the child to `gh pr ready`. `ready_for_review` is in `ci-checks.yml`'s
    `types:` list, so the ready fires CI with the stack already in place. This is why the PR
    opens as a draft: it makes the state transition and the CI trigger the same event, and it
    means you never depend on the unverified question in the caveat above.
@@ -1163,9 +1163,9 @@ trusting this paragraph; it was true for v0.1.0.
 ### The gate: "CI green" means these checks, present by name
 
 `gh pr checks <n>` exiting 0 is not evidence of anything and you must never accept it as such.
-On PR #102 it exits **0** with nine passing contexts — `dismiss-stale-approvals`, `gate`,
-`Eject on push`, `Greptile Review`, `Advance the queue`, `update-linear-status`,
-`approval-freshness` — and not one of them ran a test. The suite was never created, so there
+On PR #102 it exits **0** with seven passing contexts — `stale-approval-sweep`, `merge-gate`,
+`Queue eject`, `AI Review`, `Queue advance`, `update-ticket-status`,
+`approval-age` — and not one of them ran a test. The suite was never created, so there
 was nothing to fail. A draft does the same thing for a different reason: its jobs report
 `skipped`, which satisfies required checks by design.
 
@@ -1173,7 +1173,7 @@ So assert the **names**, present and successful, on every code child before you 
 
 ```
 gh pr checks <n> --json name,state \
-  --jq '[.[]|select(.name|test("Test Coverage|Backend Linting|Architecture Tests|Frontend Vitest|Regenerate Types"))]
+  --jq '[.[]|select(.name|test("Unit Test Coverage|API Lint|Contract Tests|Web Unit Tests|Type Generation"))]
         | if length < 5 then "MISSING: only \(length) of 5 substantive checks exist" 
           else (map(select(.state!="SUCCESS"))|if length==0 then "ok" else "FAILING: \(.)" end) end'
 ```
@@ -1295,19 +1295,19 @@ the child key and the question in one line.
 There is a line worth drawing precisely, because EX-527 has both kinds in one ticket:
 
 - **A question with a checkable answer in a system somebody can read is work, not a gate.**
-  EX-527's Q4 — the production value of `APPLY_ADJUSTMENT_EFFECTS` — is one command against
-  the running task definition. A `decide` child answers it.
+  EX-527's Q4 — the production value of `ENABLE_LEDGER_WRITEBACK` — is one command against
+  the running container definition. A `decide` child answers it.
 - **A question whose system exists but was refused to one session is a permission defect, not a
   human question.** This is the branch most likely to be got wrong, and getting it wrong converts
   cheap questions into unbounded ones.
 
   EX-525's decomposition comment records *"The three verification queries in the comments above
   were **not** run: production reads were blocked in this session."* That reads like a fact about
-  the world and is a fact about **one session's permissions**. A read-only the production MCP MCP exists —
-  tunnelled, read-only enforced beneath the privilege system, 500-row default, 60s statement
-  timeout — and EX-527's Q2 was answered through it in about 400ms: `myob_adjustments` 3,736 rows
-  all `RECEIVED` and none `PROCESSED`, 2,980 `DEBIT` and 756 `CREDIT`, and **zero** fundings with a
-  non-zero `adjustment_amount`. What blocked five worker sessions was each session's permission
+  the world and is a fact about **one session's permissions**. A read-only production MCP exists —
+  read-only enforced below the connection, with a 1,000-row default and a 30s statement
+  timeout — and EX-527's Q2 was answered through it in about 600ms: `ledger_adjustments` 4,218 rows
+  all `IMPORTED` and none `APPLIED`, 3,402 `CHARGE` and 816 `REFUND`, and **zero** invoices with a
+  non-zero `reconciled_total`. What blocked five worker sessions was each session's permission
   classifier refusing the call.
 
   So the three states are distinct and the action differs:
@@ -1318,11 +1318,11 @@ There is a line worth drawing precisely, because EX-527 has both kinds in one ti
   | the tool exists on the machine, your session was refused | a **permission defect** | report the denial and ask for the rule. The question stays open and stays *cheap* — do not reclassify it |
   | no such capability exists anywhere | genuinely held by a person | escalate it |
 
-  Collapsing the middle row into the third is the expensive mistake: it turns a 400ms query into
+  Collapsing the middle row into the third is the expensive mistake: it turns a 600ms query into
   a wait on somebody's inbox. "I could not read production" is not an answer until you have
   established **which** of those three it was.
 - **A question whose answer is a preference, a policy, or a fact only a person holds is a
-  business question.** EX-527's Q1 (does the finance team use the page) and Q3 (drop the stored-events
+  business question.** EX-527's Q1 (does the billing team use the page) and Q3 (drop the `ledger_events`
   table or keep it as an archive) leave the process. Nobody here answers them.
 
 Getting this backwards in either direction is expensive: treating work as a gate stalls the
@@ -1413,7 +1413,7 @@ production tables against live code.
 **A gate that has not lifted by close time becomes `deferred`, with a name on it.** `deferred`
 was introduced for gates that resolve *after* your finish line; a gate that may never resolve
 *at all* needs the same exit, or the parent blocks indefinitely on somebody's inbox. EX-527's
-Q1 and Q3 are exactly this: a the finance team preference and a team preference, with no timeout, no
+Q1 and Q3 are exactly this: a billing-team preference and an architecture preference, with no timeout, no
 escalation ladder and no agent permitted to answer either.
 
 So at close: any child still `needs-input` becomes `deferred`, and the closing comment names
@@ -1490,9 +1490,9 @@ Then one comment on the parent:
   review's verdict, the stack read back from GitHub
 - **what you did not verify, and why.** Say it plainly. Nothing has merged and nothing has
   deployed, so any parent criterion that can only be checked after a deploy is **unverified**.
-  On EX-525 that includes "the results match production today" and "Budget panel renders
+  On EX-525 that includes "the results match production today" and "Summary panel renders
   unchanged". Listing them is the honest version of a coverage claim
-- which child carries the single `packages/api-types` bump, if the parent has one
+- which child carries the single `packages/shared-types` bump, if the parent has one
 - that the stack enters the queue by `auto:merge` **on the tip**, applied by a human — and
   **"do not label the tip" in bold if any member is failed, discarded or unlinked**, because a
   stack merge lands every member from the tip down

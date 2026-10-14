@@ -322,7 +322,7 @@ the squash commit — and is covered under "A diagram in a PR body costs its sou
 wider than that is squeezed, not scrolled.** Once the cells can't fit, it breaks words between
 letters. In one live review the index carried a sentence of prose in each Finding cell and full
 paths in each Where cell, and every column came out as fragments: the header read "Que stio n" and
-"Disp ositi on", the path read "Process InvoiceU pdatesAc tion.php". The diagrams sat below the
+"Disp ositi on", the path read "Recon cileInv oiceAct ion.php". The diagrams sat below the
 table with nothing tying them to a finding.
 
 **A table cell holds only something short enough to scan**: a severity, an id, a one-line claim, a
@@ -334,7 +334,7 @@ a long identifier or a URL as text. When a finding needs more than a line, write
 ```markdown
 | | Where | Finding |
 |---|---|---|
-| 🟠 Should | [`app/Http/Actions/Invoices/ProcessInvoiceUpdatesAction.php:212`](…) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw strands the invoice OPEN |
+| 🟠 Should | [`app/Actions/Invoices/ReconcileInvoiceAction.php:212`](…) | The preflight refuses the known bad inputs before the reopen, but the real correction still runs after it, so a throw strands the invoice OPEN |
 ```
 
 **After**:
@@ -345,7 +345,7 @@ a long identifier or a URL as text. When a finding needs more than a line, write
 **in diff** · `Open — needs a decision`
 
 The real correction still runs after the reopen, in
-[`ProcessInvoiceUpdatesAction.php:212`](…). If it throws for a reason the dry run missed, the
+[`ReconcileInvoiceAction.php:212`](…). If it throws for a reason the dry run missed, the
 invoice is left OPEN — the red path below.
 
 ```mermaid

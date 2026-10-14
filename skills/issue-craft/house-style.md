@@ -66,13 +66,13 @@ Good  pr_seen evicts the newest entries first
 Bad   Fix argStr handling
 Bad   Investigate performance issue
 Bad   Improve the poller
-Bad   `app:populate-bill-paid-events` with no bill id zeroes every `monthly_fees` row and re-fires
-      `BillMarkedAsPaidEvent` for every paid bill in history; the bulk path is to be removed
+Bad   `app:backfill-charge-paid-events` with no charge id zeroes every `monthly_totals` row and re-fires
+      `ChargeMarkedAsPaidEvent` for every paid charge in history; the bulk path is to be removed
 ```
 
 The three good ones are real, and they are good because you can act on the title alone: you know
 what is broken, roughly where, and how much of it there is. The first three bad ones are topics
-wearing a title's clothes. The last is a real title this style produced: a claim, with numbers,
+wearing a title's clothes. The last is a title this style produced in practice: a claim, with numbers,
 and thirty words long. It is the summary paragraph moved into the title field, and it wraps to
 three lines in the backlog. **Aim for under fifteen words.** The claim goes in the title; the
 sentence that explains it goes in the summary; the decision goes in the ask.
@@ -123,9 +123,9 @@ The form is a heading and a blockquote, immediately after the summary:
 ```markdown
 ## Decision needed — Patrick
 
-> **Does the bulk path stay?** It has run once in production (5 Jan 2026, 113,977 events).
+> **Does the bulk path stay?** It has run once in production (5 Jan 2026, 86,412 events).
 > If it stays, the reset is scoped to the fees the rebuild repopulates. If it goes, the
-> `billId` argument becomes required and the bulk branch is deleted.
+> `chargeId` argument becomes required and the bulk branch is deleted.
 >
 > Until this is answered the ticket is not ready. The readiness label is off.
 ```
@@ -161,9 +161,9 @@ fold it.** If it is long, keep the answer visible and fold the workings under it
 ```markdown
 ## Why it matters
 
-`GenerateClaimInvoiceItems:86` builds the Services Australia claim from the bill item, not the
-consumption, so wherever the two disagree the claim follows the stale figure. **1,504 bill items,
-$40,907.73 gross, 733 of them already claimed.**
+`ClaimBuilder:86` builds the clearing-house claim from the bill item, not the recorded
+usage, so wherever the two disagree the claim follows the stale figure. **1,218 bill items,
+$32,614.08 gross, 596 of them already claimed.**
 
 +++ The census query and the per-stage split
 ...forty rows...
@@ -194,9 +194,9 @@ none of them is a wall of prose with collapsible sections, and the eye cannot te
 ````markdown
 ```mermaid
 flowchart LR
-  A[BillApprovedEvent] --> B[FeeProjector]
-  A --> C[FundingConsumptionProjector]
-  D[BillItemServiceTypesCorrectedEvent] --> C
+  A[ItemApprovedEvent] --> B[SnapshotWriter]
+  A --> C[AllocationProjector]
+  D[CategoryCorrectedEvent] --> C
   D -. never .-> B
 ```
 ````
@@ -217,7 +217,7 @@ question:
 ```markdown
 ## Decision needed — Patrick
 
-> **Decided, 16 Sep 2026, Patrick:** the bulk path goes. `billId` becomes required.
+> **Decided, 16 Sep 2026, Patrick:** the bulk path goes. `chargeId` becomes required.
 >
 > ~~**Does the bulk path stay?** ...~~
 ```
@@ -268,7 +268,7 @@ A ticket is consulted long after it was written, and agent-authored tickets rot 
 human ones because they are denser with specifics.
 
 - No bare "currently", "now", "recently", "at the moment", "the latest".
-- Production facts carry the date they were read and the environment: *"3,412 rows on prod,
+- Production facts carry the date they were read and the environment: *"2,780 rows on prod,
   read 15 Sep 2026"*.
 - Version-dependent claims name the version.
 - A claim about a file names the file, so a reader can check whether it still says that.
@@ -281,10 +281,10 @@ The only hard rule is that a criterion must be **observable and falsifiable**. A
 cannot test is a wish.
 
 - **Gherkin where something executes it.** If QA reads the scenarios verbatim as the test plan,
-  Gherkin earns its cost and you should use it. Team FUE works this way.
+  Gherkin earns its cost and you should use it.
 - **Checkboxes everywhere else.** For a copy change, a config flip or a refactor, a Gherkin
   scenario is ceremony that costs words and buys nothing.
-- **Include the negative space.** "Retrying does not create a second bill." "With the flag off,
+- **Include the negative space.** "Retrying does not create a second charge." "With the flag off,
   nothing changes." The guard cases are where implementations diverge from intent, and they are
   what an agent will otherwise decide for itself.
 - **Every criterion has something in the plan that delivers it, and every step exists because of

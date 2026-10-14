@@ -18,7 +18,7 @@ What to notice, in the order a reader meets it:
 
 ---
 
-**Title:** `SnapshotWriter` skips the fee recompute on 3 of 4 correction paths, leaving 1,504 items stale
+**Title:** `SnapshotWriter` skips the fee recompute on 3 of 4 correction paths, leaving 1,218 items stale
 
 `SnapshotWriter` takes the fee figure once, at approval, and only `ApprovalHandler` triggers it.
 The three correction handlers rebuild the allocation but never call it, so `line_items.fee_amount`
@@ -27,10 +27,10 @@ make every correction path recompute the snapshot, then backfill the rows that a
 
 ## Decision needed — Finance lead
 
-> **Which figure is correct for the 1,504 diverged rows: the item snapshot or the allocation?**
+> **Which figure is correct for the 1,218 diverged rows: the item snapshot or the allocation?**
 > On the flat-fee subset the item matches the expected 10% about four times as often as the
-> allocation does (406 vs 106 of 919), so the earlier assumption that the allocation was
-> authoritative is recorded here as wrong. 404 rows match neither, which suggests a third defect
+> allocation does (352 vs 88 of 741), so the earlier assumption that the allocation was
+> authoritative is recorded here as wrong. 301 rows match neither, which suggests a third defect
 > underneath.
 >
 > Until this is answered, no backfill runs in either direction. The readiness label is off.
@@ -41,7 +41,7 @@ make every correction path recompute the snapshot, then backfill the rows that a
 
 ```
 app/Handlers/ApprovalHandler.php:88        SnapshotWriter::write($item)   <- the only caller
-app/Handlers/ServiceTypeCorrection.php     (no call)
+app/Handlers/CategoryCorrection.php        (no call)
 app/Handlers/ServiceDateCorrection.php     (no call)
 app/Handlers/QuantityCorrection.php        (no call)
 ```
@@ -54,7 +54,7 @@ listening.**
 flowchart LR
   A[ItemApprovedEvent] --> S[SnapshotWriter]
   A --> P[AllocationProjector]
-  C[ServiceTypeCorrectedEvent] --> P
+  C[CategoryCorrectedEvent] --> P
   C -. never .-> S
 ```
 
@@ -65,12 +65,12 @@ wherever the two disagree the claim follows the stale figure.
 
 | Stage | Claimed externally? | Items | Net delta | Gross delta |
 |---|---|---|---|---|
-| PAID | yes | 733 | +$20,006.71 | $20,317.61 |
-| PAID | no | 624 | −$7,239.89 | $16,623.07 |
-| APPROVED | no | 139 | −$3,756.16 | $3,770.56 |
-| PAYING | no | 8 | −$196.49 | $196.49 |
+| PAID | yes | 596 | +$15,972.18 | $16,284.40 |
+| PAID | no | 482 | −$5,804.33 | $13,109.55 |
+| APPROVED | no | 118 | −$2,971.05 | $2,988.71 |
+| PAYING | no | 22 | −$231.42 | $231.42 |
 
-**733 rows are already claimed and would need an external adjustment; 771 are not and can be fixed
+**596 rows are already claimed and would need an external adjustment; 622 are not and can be fixed
 at source.** Production, read 14 Sep 2026. The claimed/not-claimed split uses
 `bills.external_invoice_id` as a proxy and has not been confirmed row by row.
 
@@ -93,12 +93,12 @@ like a clean result; the real key is `allocations.line_item_id`. Verified agains
 
 Call `SnapshotWriter::write()` from each correction handler after the projector has run, through
 the same `CalculateAllocations` path `ApprovalHandler` uses, so the two figures cannot diverge on
-a future correction. Backfill the 771 unclaimed rows once the ask above is answered. The 733
+a future correction. Backfill the 622 unclaimed rows once the ask above is answered. The 596
 claimed rows are a Finance conversation and their own ticket.
 
 ## Acceptance criteria
 
-- [ ] After a service-type correction, `line_items.fee_amount` equals `allocations.fee_amount` for that item
+- [ ] After a category correction, `line_items.fee_amount` equals `allocations.fee_amount` for that item
 - [ ] After a service-date correction, the same
 - [ ] After a quantity correction, the same
 - [ ] An approval with no subsequent correction writes the snapshot exactly once
@@ -107,11 +107,11 @@ claimed rows are a Finance conversation and their own ticket.
 
 ## Deliberately out of scope
 
-The 733 externally claimed rows — needs Finance and an adjustment run, tracked separately. The
+The 596 externally claimed rows — needs Finance and an adjustment run, tracked separately. The
 even-split defect in `ClaimBuilder:92`, which allocates a claim across allocations by count rather
 than by amount; confirmed on live data and worth its own ticket. Any change to the fee model itself.
 
 ## Found via
 
 Remediating two bills by hand for an unrelated GST correction. Those seven lines sit inside the
-1,504 and were each verified individually, so they are not affected by the open question.
+1,218 and were each verified individually, so they are not affected by the open question.
