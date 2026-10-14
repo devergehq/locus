@@ -81,11 +81,15 @@ refuses to build when they disagree.
   statement in the store updates `line_sha`; `finding carry`'s conflict clause writes only
   `continues_review_id` and the five `round_status_*` columns; and the dashboard says in as many
   words that "nothing can rewrite `line_sha`". So a re-read at a new head is recorded as
-  `finding became --status still_open --by agent --commit <sha>`, which writes
-  `round_status_commit` in place, and the brief warns against adding the finding a second time to
-  give it a newer commit — `finding add` allocates the next unused number on the pull request, so
-  that splits the identity a finding carries across rounds. A finding with a file and no line
-  still carries the field, because the permalink keys on the file; only one with neither leaves
+  `finding became --commit <sha>`, which writes `round_status_commit` in place — **re-passing
+  the status the finding already carries**, because
+  `still_open` is Review Desk's word for a finding that survived an earlier round and
+  `standing()` composes it into the posted index row and the inline comment's title with no
+  carried guard, so writing it on a round-1 re-read would put "Still open" on the pull request
+  about findings nobody has seen once. The brief also warns against adding the finding a second
+  time to give it a newer commit — `finding add` allocates the next unused number on the pull
+  request, so that splits the identity a finding carries across rounds. A finding with a file
+  and no line still carries the field, because the permalink keys on the file; only one leaves
   it out, which is the brief's rule and not the store's — a document with a commit and no place
   is accepted, measured.
 - **Version tolerance is a probe of `finding add --help` and never of `--version`.** `NewFinding`
@@ -96,10 +100,13 @@ refuses to build when they disagree.
   call.** GitHub takes one `commit_id` for the whole review and a `comments[]` entry carries no
   commit of its own, so a thread's own commit cannot be that comment's commit. Step 4's recipe
   now lists the threads whose line was counted elsewhere and the ones whose commit nobody
-  recorded, and builds the call from the threads as the worker has them: a line it corrected by
-  re-reading at the head, and a thread it could not place left out of `comments[]` and named
-  loudly — twice, because the approved body still carries that finding's index row and the
-  harvester skips a finding with no comment id for ever.
+  recorded, and **refuses to build the call** while a listed thread is neither moved nor dropped
+  — so the block cannot be run straight through, which is how its first version still posted
+  earlier-commit line numbers against the head. The only file the worker writes is `edits.json`,
+  which holds a line number and a list of findings to leave out and never a path or a body, so
+  every comment goes up byte for byte by construction rather than by instruction. A dropped
+  thread is named twice, because the approved body still carries that finding's index row and
+  the harvester never harvests a thread with no comment id.
 
 ### Fixed
 

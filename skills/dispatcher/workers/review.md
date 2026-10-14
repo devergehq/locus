@@ -681,9 +681,20 @@ same thing in as many words — "nothing can rewrite `line_sha`", in `web/app/ut
 Confirming a finding's line at a new head, in the round it is already on:
 
 ```sh
+review-desk review show --review <id> --json     # read findings[].round_status for <n>
 review-desk finding became --review <id> --finding <n> \
-  --status still_open --by agent --checked "re-read at <sha>" --commit <sha>
+  --status <the status it already carries> --by agent --checked "re-read at <sha>" --commit <sha>
 ```
+
+**`--status` is required and it is not yours to change here.** Re-pass what the finding already
+carries: a re-read says where you looked, not what became of the finding. `still_open` is
+Review Desk's word for a finding that survived an earlier round — "the status that makes a
+round go in a circle" — and `standing()` composes it into the posted index row and into the
+inline comment's title, with no guard for whether the finding was ever carried. On a
+`head_moved` wake in round 1 every finding is `new`, so writing `still_open` would put "Still
+open" on the pull request, under your principal's name, about findings nobody has seen once.
+Measured on review-desk master `e37d64a`: `--status new` records the identical
+`round_status_commit` and leaves the row reading "Open".
 
 `finding carry` takes the same `--commit` into a later round; both write
 `round_status_commit` in place, and it is the only commit on a finding that ever moves. The
@@ -1225,31 +1236,55 @@ post again, on somebody's pull request, under your principal's name.
    review-desk draft handover --review "$REVIEW" --json > handover.json   # step 2
    jq -r .body handover.json > body.md                                    # step 3's body.md
 
-   # Which anchors are NOT addresses at the commit you are about to post at. Each one is
-   # re-read before you go on; the table below says what to do when you cannot place one.
+   # 1. The anchors that are NOT addresses at the commit you are about to post at.
    jq -r '(.review.head_sha | ascii_downcase) as $h | .threads[]
           | ((.line_sha // "") | ascii_downcase) as $s
           | select($s != "" and ($h | startswith($s)) == false
                              and ($s | startswith($h)) == false)
-          | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' handover.json
-   jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
-     handover.json      # the ones whose commit nobody recorded: say this once
+          | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' \
+     handover.json > reread.txt && cat reread.txt
 
-   # Then the call, from the threads AS YOU HAVE THEM: a line you corrected is corrected
-   # here, and a thread you could not place is not in this file.
-   jq '.threads' handover.json > threads.json
-   jq --slurpfile threads threads.json \
-      '{commit_id: .review.head_sha, event: (.draft.event | ascii_upcase),
-        body: .body, comments: [$threads[0][] | {path, line, side, body}]}' \
-     handover.json > review.json
+   # 2. The ones whose commit nobody recorded. Say this once, for the review.
+   jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
+     handover.json
+
+   # 3. Re-read each file in reread.txt at the head, then answer for every line of it:
+   #    a thread you placed goes in `moved` under its finding's number, one you could not
+   #    goes in `dropped`. Nothing else about a thread is yours to change.
+   echo '{"moved": {}, "dropped": []}' > edits.json      # e.g. {"moved":{"3":41},"dropped":[7]}
+
+   # 4. The call. It REFUSES to build while a line of reread.txt is neither moved nor
+   #    dropped, so this block cannot be run straight through.
+   jq --slurpfile e edits.json --rawfile todo reread.txt '
+     ($e[0].moved // {}) as $moved | ($e[0].dropped // []) as $dropped
+     | [$todo | split("\n")[] | select(startswith("F")) | ltrimstr("F") | split(" ")[0]
+        | tonumber] as $owed
+     | [$owed[] | . as $n
+        | select(($moved | has($n | tostring)) == false and ($dropped | index($n)) == null)]
+       as $unanswered
+     | if ($unanswered | length) > 0
+       then error("re-read or drop these findings first: \($unanswered)")
+       else {commit_id: .review.head_sha, event: (.draft.event | ascii_upcase), body: .body,
+             comments: [.threads[] | . as $t
+               | select($dropped | index($t.finding_seq) | not)
+               | {path, line: ($moved[$t.finding_seq | tostring] // .line), side, body}]}
+       end' handover.json > review.json
    gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
    ```
 
-   **The second and third commands are the posting rule, not decoration.** The first lists the
-   threads you have to re-read, the second the ones whose commit nobody recorded; `threads.json`
-   between them is the one file you edit, and the call is built from it rather than from the
-   hand-over directly. A recipe that read `.threads[]` straight into `comments` would post
-   earlier-commit line numbers against the head, which is the harm this step was written for.
+   **`edits.json` is the only file you write, and it holds numbers.** A line and a list of
+   findings to leave out — never a `path`, never a `body`. The call composes the comments from
+   the hand-over itself, so every body goes up byte for byte and the marker `finding link`
+   joins on survives whatever you decided about the anchor. The earlier version of this recipe
+   read `.threads[]` straight into `comments`, which posted an earlier commit's line numbers
+   against the head: the exact harm this step exists to prevent, run by a worker doing as it
+   was told.
+
+   **A re-read here is not a `finding became`**, and that is the one place the rule above does
+   not reach. The draft is approved by now, and `finding became` on an approved draft is
+   refused `draft_status` — measured. So the corrected line goes to GitHub and not to the
+   record, which keeps the line it was given; say which threads you moved and from what, and
+   the next round's read is what puts it right.
 
    **The commit you post at is `review.head_sha`, and a thread's own commit is a check rather
    than a second answer.** GitHub takes **one** `commit_id` for the whole review: read off its

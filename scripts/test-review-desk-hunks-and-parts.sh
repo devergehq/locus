@@ -133,11 +133,22 @@ reread_column = re.search(r"a re-read is recorded as the status's commit", flat)
 # worker cannot run, and matching only the parts it does carry would report PASS about that.
 reread_call = re.search(
     r"review-desk finding became\s+--review <id>\s+--finding <n>\s*\\?\s*"
-    r"--status (\w+)\s+--by (\w+)\s+--checked \"[^\"]*\"\s+--commit <sha>", flat)
+    r"--status <([^>]+)>\s+--by (\w+)\s+--checked \"[^\"]*\"\s+--commit <sha>", flat)
 # The selector the brief hands a worker at the post. Pulled out whole and RUN later in this
 # file: a recipe that contradicts the prose beneath it is the defect this reads it for.
-selector = re.search(r"# Which anchors are NOT addresses[^\n]*\n(?:\s*#[^\n]*\n)*"
-                     r"(\s*jq -r '.*?handover\.json)\n", doc, re.S)
+# The PROGRAM between the quotes, not the command line around it: what is run below has to be
+# the brief's own jq and not a copy of it, and a program is what `jq -f` takes.
+selector = re.search(r"# 1\. The anchors that are NOT addresses[^\n]*\n\s*jq -r '(.*?)'",
+                     doc, re.S)
+# The second one as well, for the threads nobody recorded a commit for. Both are read out of
+# the brief and RUN, because a harness that typed its own copy of either would report PASS
+# about a command the brief no longer carries -- which is what the first version of this did.
+unrecorded = re.search(r"# 2\. The ones whose commit nobody recorded[^\n]*\n\s*jq -r '(.*?)'",
+                       doc, re.S)
+# And the call itself, which must REFUSE while a thread is owed an answer.
+builder = re.search(r"# 4\. The call\.[^\n]*\n(?:\s*#[^\n]*\n)*"
+                    r"\s*jq --slurpfile e edits\.json --rawfile todo reread\.txt '(.*?)'"
+                    r" handover\.json", doc, re.S)
 
 print(json.dumps({
     "context": int(context.group(1)) if context else None,
@@ -166,7 +177,9 @@ print(json.dumps({
     "line_sha_immutable": "nothing changes it afterwards" in flat,
     "line_sha_reread_recorded": reread_column is not None,
     "line_sha_reread_call": list(reread_call.groups()) if reread_call else None,
-    "line_sha_selector": " ".join(selector.group(1).split()) if selector else None,
+    "line_sha_selector": selector.group(1) if selector else None,
+    "line_sha_unrecorded": unrecorded.group(1) if unrecorded else None,
+    "line_sha_builder": builder.group(1) if builder else None,
 }, sort_keys=True))
 SPEC
 
@@ -439,7 +452,11 @@ ok "  and a finding with no place at all carries none" "$(ask "d['line_sha']['no
 # and what a re-read records instead. Without this, a reader meets "unchanged" as advice.
 ok "the brief says the field is written once"       "$(ask "d['line_sha_immutable']")" True
 ok "  and what a re-read records instead"           "$(ask "d['line_sha_reread_recorded']")" True
-ok "  naming the whole call, review and finding too" "$(ask "d['line_sha_reread_call']")" "['still_open', 'agent']"
+ok "  naming the whole call, review and finding too" "$(ask "d['line_sha_reread_call'][1]")" agent
+# **The status is a placeholder and not a word.** A brief that named one would name the wrong
+# one: `still_open` posts "Still open" about a round-1 finding nobody carried.
+ok "  leaving the status to the finding itself"     "$(ask "d['line_sha_reread_call'][0]")" "the status it already carries"
+ok "  and saying what the wrong one would post"     "$(grep -c 'about findings nobody has seen once' "$brief")" 1
 ok "  recorded by the agent, never the developer"   "$(grep -c 'never say the developer checked something nobody showed' "$brief")" 1
 ok "  and warns against adding the finding again"   "$(grep -c 'Do not add the finding again' "$brief")" 1
 ok "the fourth row keys on the file, not the line"  "$(grep -c 'It keys on the \*\*file\*\*, not on the line' "$brief")" 1
@@ -489,10 +506,11 @@ cat > "$work/handover.json" <<'HANDOVER'
   {"finding_seq": 4, "path": "jobs/Queue.php", "line": 4, "side": "RIGHT",
    "line_sha": "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0", "body": "the head in full"}]}
 HANDOVER
-ask "d['line_sha_selector']" | sed 's/ handover.json$//' > "$work/selector.jq"
-ok "the brief's selector is one jq command"          "$(head -c 5 "$work/selector.jq")" "jq -r"
-sed 's/^jq -r //' "$work/selector.jq" | tr -d "'" > "$work/selector.txt"
-run_selector () { jq -r -f /dev/stdin "$work/handover.json" < "$work/selector.txt"; }
+ask "d['line_sha_selector']" > "$work/selector.txt"
+ask "d['line_sha_unrecorded']" > "$work/unrecorded.txt"
+ok "the brief's selector came out of the brief"      "$(grep -c 'startswith' "$work/selector.txt")" 2
+run_selector () { jq -r -f "$work/selector.txt" "$work/handover.json"; }
+run_unrecorded () { jq -r -f "$work/unrecorded.txt" "$work/handover.json"; }
 ok "it names the thread counted somewhere else"      "$(run_selector | wc -l | tr -d ' ')" 1
 ok "  which one, and the commit it was counted on"   "$(run_selector)" "F2 jobs/Backoff.php:26 measured at a1b2c3d"
 # The two that must NOT be named, and they are the two an equality would get wrong: a head
@@ -500,8 +518,43 @@ ok "  which one, and the commit it was counted on"   "$(run_selector)" "F2 jobs/
 ok "  never the one abbreviated from the head"       "$(run_selector | grep -c 'F1' || true)" 0
 ok "  nor the one carrying the head in full"         "$(run_selector | grep -c 'F4' || true)" 0
 ok "  nor the one nobody recorded"                   "$(run_selector | grep -c 'F3' || true)" 0
-ok "which the brief lists with a second command"     "$(jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
-    "$work/handover.json")" F3
+# The second command, run the same way: typing a copy of it here would say nothing about the
+# brief, and deleting it from the brief would still have passed.
+ok "the brief's second command names that one"       "$(run_unrecorded)" F3
+ok "  and it, too, came out of the brief"            "$(grep -c 'line_sha' "$work/unrecorded.txt")" 1
+
+# The call the brief builds, RUN, because the fault this replaced was a runnable block that
+# did not do what the paragraph under it said. Three states: nothing answered, the thread
+# moved, the thread dropped.
+ask "d['line_sha_builder']" > "$work/builder.jq"
+ok "the call came out of the brief as well"          "$(grep -c 'error("re-read or drop' \
+    "$work/builder.jq")" 1
+build_call () {
+  printf '%s\n' "$1" > "$work/edits.json"
+  set +e
+  jq --slurpfile e "$work/edits.json" --rawfile todo "$work/reread.txt" -f "$work/builder.jq" \
+     "$work/handover.json" > "$work/review.json" 2>"$work/builderr"
+  c=$?
+  set -e
+  echo $c
+}
+run_selector > "$work/reread.txt"
+ok "it refuses while a thread is owed an answer"     "$(build_call '{"moved":{},"dropped":[]}')" 5
+ok "  naming the finding it is waiting on"           "$(grep -c 're-read or drop these findings first: \[2\]' "$work/builderr")" 1
+ok "  and writes no call to post"                    "$(test -s "$work/review.json" && echo some || echo none)" none
+ok "a moved thread posts on the line it moved to"    "$(build_call '{"moved":{"2":41},"dropped":[]}')" 0
+ok "  which is the only line that changed"           "$(jq -c '[.comments[].line]' "$work/review.json")" "[16,41,10,4]"
+ok "  with the body it was handed, byte for byte"    "$(jq -r '.comments[1].body' "$work/review.json")" "counted somewhere else"
+jq -r .body "$work/review.json" > "$work/posted-body.md"
+jq -r .body "$work/handover.json" > "$work/handed-body.md"
+ok "  and the approved body untouched"               "$(cmp -s "$work/posted-body.md" \
+    "$work/handed-body.md" && echo same || echo differs)" same
+ok "  posting at the head, which is the one commit"  "$(jq -r .commit_id "$work/review.json")" c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0
+ok "a dropped thread is not in the call at all"      "$(build_call '{"moved":{},"dropped":[2]}')" 0
+ok "  leaving the other three"                       "$(jq -c '[.comments[].path]' "$work/review.json")" '["jobs/DeliverWebhook.php","docs/webhooks.md","jobs/Queue.php"]'
+# The brief's claim about `edits.json`, which is what makes the body un-editable by
+# construction rather than by instruction.
+ok "edits.json holds numbers, and the brief says so" "$(grep -c 'never a .path., never a .body.' "$brief")" 1
 
 printf '\n  the draft, in parts\n'
 ok "the draft is written with --sections"            "$(grep -c 'draft put --review <id> --sections draft.json' "$brief")" 1
@@ -938,13 +991,17 @@ for path in sorted(source.glob("f*.json"), key=lambda p: int(p.stem[1:])):
 
 # What the re-read does record. One call per existing finding whose file the push touched,
 # naming the commit the status rests on and never the one the line was counted on.
+# **The status is the one the finding already carries, never the brief's placeholder.** The
+# brief writes `--status <the status it already carries>`; a builder that passed that string
+# through, or picked one, would be the defect the brief now warns about -- `still_open` reads
+# "Still open" on the posted row, about a round-1 finding nobody has seen once.
 if immutable and spec.get("line_sha_reread_call"):
-    status, by = spec["line_sha_reread_call"]
+    placeholder, by = spec["line_sha_reread_call"]
     for path in sorted(source.glob("f*.json"), key=lambda p: int(p.stem[1:])):
         finding = json.loads(path.read_text())
         if finding.get("file") in reread:
             print("became %s --status %s --by %s --commit %s"
-                  % (path.stem, status, by, new_head))
+                  % (path.stem, finding.get("round_status", "new"), by, new_head))
 
 # And the one document that does carry the new head: a finding raised there for the first
 # time, by the same rule row the ordinary pass reads.
@@ -965,9 +1022,21 @@ ok "  not f3, whose file the push moved"             "$(carries "$work/moved/f3.
 ok "  nor f1, which it never reached"                "$(carries "$work/moved/f1.json")" "$head"
 ok "  and the one with no place still carries none"  "$(carries "$work/moved/f7.json")" none
 ok "the re-read is recorded as the status's commit"  "$(grep -c '^became ' "$work/moved.txt")" 2
-ok "  naming the new head, on f3 and f6"             "$(grep '^became ' "$work/moved.txt" \
+# **Which findings, by name.** A count and a unique set of commits would both pass if the
+# calls named the two findings the push never touched, which is the one way this builder can
+# be wrong and look right.
+ok "  on f3 and f6, the two in the pushed file"      "$(sed -n 's/^became \(f[0-9]*\) .*/\1/p' \
+    "$work/moved.txt" | sort | tr '\n' ' ')" "f3 f6 "
+ok "  and on nothing in a file it never reached"     "$(grep -cE '^became f(1|2|4|5|7|8) ' \
+    "$work/moved.txt" || true)" 0
+ok "  each naming the new head as its commit"        "$(grep '^became ' "$work/moved.txt" \
     | sed "s/.*--commit //" | sort -u)" "$moved"
 ok "  as an agent, which is who checked it"          "$(grep -c -- '--by agent' "$work/moved.txt")" 2
+# The status is the finding's own, not the brief's placeholder and not a word this harness
+# picked: `still_open` on a round-1 finding posts "Still open" about a finding nobody carried.
+ok "  re-passing the status each finding carries"    "$(grep '^became ' "$work/moved.txt" \
+    | sed 's/.*--status \([a-z_]*\) .*/\1/' | sort -u)" new
+ok "  never the brief's placeholder, read as one"    "$(ask "d['line_sha_reread_call'][0]")" "the status it already carries"
 ok "only a finding raised there carries the new head" "$(sed -n 's/^raised f99 [^ ]* //p' "$work/moved.txt")" "$moved"
 ok "  and it is the only document that does"         "$(grep -lF "$moved" "$work"/moved/f*.json \
     | wc -l | tr -d ' ')" 1
@@ -1462,8 +1531,12 @@ ok "  and not one finding records a commit"           "$(grep -l 'line_sha' "$wo
 
 # The selector, reversed to the equality it was written against. Without this, "the brief's
 # selector tells an abbreviation from a move" is a claim about a jq expression nobody failed.
-sed 's/($h | startswith($s)) == false and ($s | startswith($h)) == false/$s != $h/' \
-    "$work/selector.txt" > "$work/badselector.txt"
+# Flattened first, because the brief wraps the condition across two lines and a rule spelled
+# over a line break is the same rule -- a control that pinned the wrap would fail on a reflow
+# and say nothing about the comparison.
+tr '\n' ' ' < "$work/selector.txt" | sed 's/  */ /g' \
+  | sed 's/($h | startswith($s)) == false and ($s | startswith($h)) == false/$s != $h/' \
+  > "$work/badselector.txt"
 ok "the comparison reversal changed one line"         "$(grep -c '\$s != \$h' "$work/badselector.txt")" 1
 bad_selector () { jq -r -f /dev/stdin "$work/handover.json" < "$work/badselector.txt"; }
 ok "an equality calls the abbreviation a move"        "$(bad_selector | grep -c 'F1')" 1
