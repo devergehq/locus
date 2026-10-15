@@ -1194,6 +1194,167 @@ query($q: String!) {
   }
 }""" % REVIEW_PAGE
 
+# One pull request's review-requested events, for the question `prs_present` cannot answer: WHEN
+# GitHub asked. Two readers, and the second is the reason it exists at all:
+#
+#   * `--requested-at` on `review requested`, so Review Desk draws "requested 3h ago" off
+#     GitHub's clock rather than off whenever this poller first happened to look.
+#   * The second half of DEV-996's definition of a NEW request — "the GitHub request event is
+#     dated after the ledger's last update" — which is the only way to see a request that was
+#     withdrawn and made again while the poller was down. `prs_present` carries the key straight
+#     across such a gap, so `returned` is false and the first half says nothing at all.
+#
+# `last: 50` because the newest event is the one both readers want, GitHub's timeline is ordered
+# oldest-first, and asking for the last page is one call whatever the pull request's history.
+#
+# **Filtered to the principal's own login by the caller, and that filter is load-bearing.** A
+# review requested of SOMEBODY ELSE after this instance's ledger said `done` would otherwise read
+# as a new request of the principal's and re-dispatch a review that is finished. A Team request
+# carries no `login` and is therefore ignored — `review-requested:@me` matches a team the
+# principal is in, so that is a real gap, and it fails in the direction of not re-dispatching.
+REQUESTED_Q = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) {
+        nodes { ... on ReviewRequestedEvent {
+          createdAt
+          requestedReviewer { ... on User { login } ... on Team { slug } }
+        } }
+      }
+    }
+  }
+}"""
+
+# The ledger status a NEW review request re-dispatches, and the whole of it. DEV-996, Patrick's
+# decision of 15 October 2026: "If GitHub requests a review on a pull request the dispatcher has
+# marked done, that starts a new round." #9404 is the report it came from — ledger `done, round
+# 2`, GitHub asking again, nothing dispatched and nothing said.
+#
+# A set of one, because the absences are the behaviour and belong written down beside it rather
+# than implied by a `== "done"`:
+#
+#   WORKING statuses  a session is ON the review, so a new request is a `review_rerequested` to
+#                     that session. Two sessions on one review is the harm this file is arranged
+#                     around, and it is the one this ticket could most easily buy.
+#   `stopped`         a worker that stopped and is WAITING. `_common.md` has it write the status
+#                     and wait for a re-label or a comment, which reach it through its own
+#                     watcher; a second session strands it.
+#   `skipped`         already handled, by the branch this one is modelled on — the principal said
+#                     skip, and a withdrawn-and-remade request re-offers it automatically.
+#   `deferred`        DECIDED. This file defines both as "never dispatched again", and a request
+#   `merged`          arriving afterwards is not a second opinion about that.
+#   REDISPATCHABLE    offered every `reemit_after_secs` already. Nothing here to add.
+REDISPATCH_ON_REQUEST = {"done"}
+
+# **There is deliberately NO guard band on the comparison below, and this is the second
+# decision about it.** A band was added for clock skew — `at` is GitHub's clock and the ledger
+# stamp is this machine's — and a red team of this branch then measured what it cost, which is
+# the ticket's own bug:
+#
+#   10:00:00  the worker posts the review; GitHub drops the request
+#   10:00:05  the ledger is written `done`
+#   10:00:40  the author pushes a fix and asks again, so the row never leaves the page
+#
+# At the shipped `poll_interval_secs` of 300 no tick lands inside that 35-second gap, so the
+# first test sees nothing — it is measured against the COMMITTED `prs_present`, which only moves
+# between ticks — and a 120-second band made the second test say no as well. Nothing dispatched
+# and nothing said: #9404 verbatim, and reachable about seven times in eight at that cadence.
+#
+# The claim the band rested on was that "what the margin hides, the other test sees". That is
+# true only when a tick lands in the gap, and the band's own window is wider than its name
+# suggests: `was` is the LEDGER write, which postdates the review by however long the Dispatcher
+# took to mark it, so the masked interval is [review posted, ledger write + band].
+#
+# What is given up by removing it is a machine whose clock runs minutes behind GitHub's turning
+# a request that PRECEDED the ledger write into one that follows it. NTP keeps a machine within
+# milliseconds; a clock minutes out is a machine whose ledger stamps are not to be reasoned
+# about at all. `new_request`'s docstring states that as a limit rather than guarding it.
+
+# How long a recorded withdrawal is worth keeping. It is the first test's only evidence, and the
+# ledger prune beside it bounds the dict by the number of FINISHED reviews whose request was
+# withdrawn and never made again — which is one entry per completed review, for ever, and "a dict
+# that only grows is a file that only grows" is this file's own rule about exactly that.
+#
+# **What a bound costs is small and worth naming.** A request withdrawn longer ago than this and
+# then made again is not seen by the first test — but a request made that long after the ledger
+# write is seen by the SECOND test, which needs no record at all. So the window only has to cover
+# the case where GitHub cannot be asked for the date: a team's request, an instance with no
+# `github.login`, a `gh` that is failing. Thirty days is far longer than any of those outages.
+WITHDRAWN_KEEP_SECS = 30 * 24 * 3600
+
+# How often a failing review-requested query says so. Its own mark rather than
+# `reemit_after_secs`, because the fault is install-shaped — a scope, a host, a rate limit — and
+# a line an hour is enough to find it while being quiet enough that a single flake is not noise.
+REQUESTED_AT_LOUD_SECS = 3600
+
+# The clearance reasons that mean GitHub is no longer asking the principal for this review, so the
+# REQUEST recorded in Review Desk is withdrawn. Matched as a prefix, because `why_cleared` spells
+# the second one with the review's own state after it ("you submitted a review (approved)").
+#
+# Every other reason `why_cleared` can give is deliberately absent, and each absence carries
+# behaviour:
+#
+#   `PR merged` / `PR closed`     GitHub goes on listing the request after a merge — this file
+#                                 says so twice already — so nothing disappeared. The finished
+#                                 state is `request_closed`'s and the harvest's, and Review Desk
+#                                 holds a round for such a pull request either way.
+#   `PR converted to draft`       the request is still on GitHub; what removed the row is
+#                                 `skip_drafts`. DEV-962 writes `out_of_play: draft` for it.
+#   `CANNOT_READ_PR`              a `gh pr view` that did not answer. Nothing is written on the
+#                                 strength of a call that failed.
+#   `CANNOT_TELL`                 it answered and could not be attributed — a team's request.
+#                                 A guess that writes is what DEV-996's blocker was.
+#   `STILL_REQUESTED`             GitHub is still asking. The row left the search page for some
+#                                 other reason, so there is nothing to withdraw.
+WITHDRAWN_WHY = ("review request removed", "you submitted a review")
+
+# The three `why_cleared` answers that establish NOTHING about the request, named because three
+# places have to agree about them: the withdrawal above must not fire, DEV-996's record of a
+# withdrawal must not be written, and `settle_requests` must ask again later.
+#
+#   CANNOT_READ_PR   the one `gh pr view` did not answer at all.
+#   CANNOT_TELL      it answered, and the requested-reviewer list cannot be attributed to the
+#                    principal — a team's request, or a `gh` that did not serve the field.
+#   STILL_REQUESTED  it answered, and GitHub is STILL asking the principal for this review. The
+#                    row left the search page for some other reason: a stale index, or a query
+#                    this instance narrowed. Nothing was withdrawn, so the row coming back is
+#                    not a new request — which is the whole of DEV-996's blocker.
+CANNOT_READ_PR = "no longer requested (could not read PR)"
+CANNOT_TELL = "no longer requested (could not tell whether it still is)"
+STILL_REQUESTED = "still requested (not on the search page)"
+UNSETTLED_WHY = (CANNOT_READ_PR, CANNOT_TELL)
+
+
+def still_requested(info: dict, login: str) -> bool | None:
+    """Is the principal still on GitHub's requested-reviewer list for this pull request?
+
+    True, False, or **None for "cannot tell", which the caller must not read as either.** The
+    three Nones are the field missing from the answer (a `gh` or a stand-in that did not serve
+    it), a row in it this function cannot read, and a TEAM — `review-requested:@me` matches a
+    team the principal is in, and `reviewRequests` names the team rather than its members, so a
+    list carrying one cannot say the principal is not being asked.
+
+    **False is the only answer that licenses a write**, and it is the narrow one: the list was
+    read, every row in it was attributable, and the principal is not among them. Everything else
+    leaves the record where it is. That asymmetry is the lesson of DEV-996's blocker — the answer
+    this replaces was reached by elimination from a row's absence and then written down.
+    """
+    rows = info.get("reviewRequests")
+    if not isinstance(rows, list) or not login:
+        return None
+    teams = False
+    for row in rows:
+        if not isinstance(row, dict):
+            return None
+        who = row.get("login")
+        if who is None:
+            teams = True
+            continue
+        if str(who).strip().lower() == login:
+            return True
+    return None if teams else False
+
 
 class Poller:
     def __init__(self) -> None:
@@ -1207,6 +1368,58 @@ class Poller:
         # the pull request, against the commit the recording was of. See `record_request` for why
         # it is remembered at all, and `review_requests` for where it is pruned.
         self.state.setdefault("recorded", {})
+        # What Review Desk has been TOLD about each open review request, keyed by ledger key:
+        # `{"at": <unix seconds>, "repo": …, "number": …, "withdraw": true?}`. DEV-996's half of
+        # this file: a request is on the Reviews list from the moment GitHub shows it, rather than
+        # from whenever a session gets round to opening a round on it.
+        #
+        # **`at` is remembered rather than recomputed, and that is what makes the pair idempotent.**
+        # The withdrawal carries the same `--requested-at` as the sighting did, so the two calls
+        # name one request — and a store keyed on (repo, pr) cannot read the second as a different
+        # one. See `told_request` for the first call and `withdraw_request` for the second.
+        #
+        # **`withdraw` is a debt, not a state.** It is set when the withdrawal could not be
+        # delivered, and the entry is kept until it can be — because `prs_present` is overwritten
+        # every trusted tick, so the clearance sweep passes a key exactly once and a Review Desk
+        # that was down for that one tick would leave the request drawn for ever. See
+        # `settle_requests`, which is the only thing that collects it.
+        self.state.setdefault("requests", {})
+        # Which keys this poller has already offered again for the request GitHub is showing NOW.
+        # DEV-996's second acceptance criterion — "the same request seen on two ticks dispatches
+        # once" — and the only thing standing between a `done` ledger entry and a `review_request`
+        # every `reemit_after_secs` for ever.
+        #
+        # **Pruned when the key leaves GitHub's list, which is exactly the right moment and not a
+        # convenience.** A request that goes away and comes back is a NEW request by Patrick's own
+        # definition, so forgetting the mark on the tick the old request ends is what makes the
+        # next one dispatchable. See the prune beside `recorded`'s.
+        #
+        # **What it costs, said plainly: a re-dispatch the Dispatcher never acted on is not
+        # offered again** until the request goes away and comes back. That is the deliberate side
+        # of "dispatches once" — the alternative is a finished review re-offered every
+        # `reemit_after_secs` for ever, which is what this ticket's own report would become — and
+        # a human has a one-line way back in: `D ledger put <KEY> status=lost` puts the key in
+        # REDISPATCHABLE, where the ordinary branch offers it on its own cadence.
+        self.state.setdefault("redispatched", {})
+        # The keys GitHub has actually STOPPED asking about, with the reason read live when they
+        # left: `{key: {"at": iso, "why": reason}}`. DEV-996's first test of a new request is
+        # "it went away and came back", and this is the "went away" — written only for a reason
+        # in `WITHDRAWN_WHY`, which is to say only when `why_cleared`'s live read established
+        # that the principal is no longer being asked.
+        #
+        # **A key leaving `prs_present` is NOT that fact, and conflating the two was this
+        # ticket's blocker.** Three things take a row off the search page with the request still
+        # live on GitHub: a conversion to draft (which `skip_drafts` filters), a stale search
+        # index, and a closed pull request that is later reopened. Each of them made a finished
+        # review dispatch again, measured against this branch before this bucket existed. The
+        # reason is the discriminator, and it is read at the moment the row leaves — the only
+        # moment the live answer is still about this request.
+        #
+        # Consumed by the prune on the tick the key comes back, which is the tick
+        # `new_request` reads it. Kept, otherwise, for a key whose ledger entry could still use
+        # it — the cost is one small entry per finished review whose request was withdrawn and
+        # not made again, which the prune bounds by the ledger rather than by time.
+        self.state.setdefault("withdrawn", {})
         # Keyed on THIS PROCESS, and never on the state file. `started` is persisted, so reading
         # it made `backlog` true once per instance LIFETIME instead of once per session: one
         # live instance carried "2026-09-11T13:18:11+00:00" for 19 days, and SKILL.md step 4's
@@ -1323,6 +1536,28 @@ class Poller:
         # `review out-of-play` refuses every one of them. Separate from `record_stopped` for the
         # same reason `read_stopped` is — such a build records and reads perfectly well.
         self.out_of_play_stopped = False
+        # Whether telling Review Desk about review REQUESTS has been given up on for this tick.
+        # One install answers for every request, so an absent, broken or too-old one is asked
+        # once — and on a page of fifty requests that is the difference between one subprocess
+        # and fifty, at a 30-second timeout each. Separate from `record_stopped` because the two
+        # are different commands with different ages: a build can have `review open` and have
+        # never heard of `review requested`, which is every build there is until DEV-996's other
+        # half ships. See `tell_requested`.
+        self.tell_stopped = False
+        # And whether asking GITHUB when a review was requested has been given up on. Same shape
+        # as `diff_stopped` and for the same reason: one `gh` that is failing or rate-limited
+        # answers for every request on the page. Every refusal answers None, which costs the
+        # accuracy of `--requested-at` (the sighting time is used instead) and one half of the
+        # test for a new request (which then says no). See `requested_at`.
+        self.date_stopped = False
+        # Whether THIS tick's date read failed at the transport, as against answering with no
+        # attributable event. Read by `told_request`, which must not spend its one-ask-per-window
+        # bound on a `gh` that was simply down — see the mark there.
+        self.date_failed = False
+        # One pull request's review-requested date, per tick. Keyed `(repo, number)` exactly as
+        # `pr_states` and `pr_diffs` are, and for the same reason: the answer cannot change inside
+        # a tick, and both readers must not each pay for the call.
+        self.request_dates: dict = {}
 
     # Rate-limited emission: the same marker fires at most once per `every` seconds.
     def due(self, mark: str, every: int) -> bool:
@@ -1499,6 +1734,10 @@ class Poller:
         self.allele_live = None
         self.diff_stopped = False
         self.out_of_play_stopped = False
+        self.tell_stopped = False
+        self.date_stopped = False
+        self.request_dates = {}
+        self.date_failed = False
         # `review_requests` runs BEFORE `review_desk`, and since DEV-945 that order carries
         # behaviour rather than habit. The GitHub pass records each request it sees in Review
         # Desk, which puts it on `work list` as `review_requested` — so the Review Desk pass has
@@ -1709,6 +1948,19 @@ class Poller:
             returned = previous is not None and key not in previous
             if backlog:
                 self.state["review_backlog"].append(key)
+            # **Told as the request enters the backlog, and before anything else is asked of
+            # Review Desk.** DEV-996: the queue could not show a request until a session opened a
+            # round on it, so a request waiting for a slot — hours, or for ever with the poller
+            # down — was on GitHub and in this poller and nowhere a developer looks. Everything
+            # below this line can decide to say nothing about this key; none of those decisions is
+            # a reason for the request to be invisible.
+            #
+            # First, deliberately: a `review open` that refuses, a probe that stops the recording
+            # path, a dismissal read that hangs — none of them may cost the one call whose whole
+            # purpose is to be made before any of that matters. `told_request` is its own gate and
+            # makes at most one call per request in the life of that request.
+            if recording:
+                self.told_request(rd, cfg, key, repo, pr["number"], every)
             # **Recorded before the request is emitted, which is the whole of DEV-945's first
             # gap.** Review Desk could not say how many requests had come in or which were never
             # started, because it heard nothing until a session ran `review open`. Now the
@@ -1823,6 +2075,13 @@ class Poller:
                           author=(pr.get("author") or {}).get("login"), head_sha=pr["headRefOid"],
                           opened=(pr.get("createdAt") or "")[:10],
                           ledger_status=status, session_id=entry.get("session_id"))
+            # **A new request on a ledger entry this instance has finished. (DEV-996)** Computed
+            # here rather than in the chain below because it decides which branch is taken: `done`
+            # is ALIVE, so without it a re-request on a finished review falls into
+            # `review_rerequested` — a message to a session that posted its review and has very
+            # likely been discarded, which is #9404 exactly. `new_request` is where Patrick's
+            # definition of "new" lives, and it answers None for every status but `done`.
+            new = self.new_request(cfg, key, repo, pr["number"], entry)
             if status == "skipped":
                 # The principal said skip. It stays quiet until the request is withdrawn and made again.
                 if returned:
@@ -1832,6 +2091,34 @@ class Poller:
                     # Backlog-ness sticks until the PR is claimed or skipped, so a 15-minute
                     # re-emission of a start-up item still reads as "ask first", not "dispatch".
                     emit("review_request", backlog=key in self.state["review_backlog"], **common)
+            elif new:
+                # **Dispatched, not relayed, and flagged exactly as a re-made request on a
+                # `skipped` key is.** That branch is the precedent in both directions: the
+                # principal had decided about the key, the decision was spent when the request
+                # was withdrawn, and a fresh request re-offers it automatically — SKILL.md says
+                # "and is automatic" of it in so many words. Patrick's decision here is the same
+                # sentence about `done`, so the event is the same event.
+                #
+                # `backlog: false` for that reason and not by omission. A re-request is something
+                # that HAPPENED, which is the opposite of the start-up backlog's "work nobody has
+                # decided on yet" — and under the per-tick host, where every tick is a first
+                # tick, treating it as backlog would mean no new request ever dispatched itself.
+                #
+                # **Marked before the emit, so that a crash between them re-offers rather than
+                # swallows.** The mark is what makes the same request dispatch once; it is
+                # forgotten when the key leaves GitHub's list, which is when this request ends.
+                self.state["redispatched"][key] = {"at": now_iso(), "why": new}
+                # **Review Desk hears about the new request too, and this is the only place that
+                # can tell it.** Their verb is called on first sight and when a NEW request
+                # appears; a request made while the row never left the page is the second case,
+                # and the record this poller holds still carries the OLD timestamp. Passing it
+                # on is what lets their store decide satisfaction against the request that is
+                # actually open. It costs no GitHub call — `requested_at` answered for this key
+                # a few lines above and is cached per tick — and no Review Desk call either when
+                # the stamp turns out not to have moved.
+                if recording:
+                    self.told_request(rd, cfg, key, repo, pr["number"], every, renew=True)
+                emit("review_request", backlog=False, rerequested=True, new_request=new, **common)
             elif returned and status in ALIVE:
                 emit("review_rerequested", **common)
         # Said here rather than after the commit below, because the commit is the thing a
@@ -1910,6 +2197,27 @@ class Poller:
                 reason = self.why_cleared(cfg, where) if recording or alive_here else ""
                 left = self.out_of_play(rd, key, where, reason, entry, every) if recording \
                     else None
+                # **The request is withdrawn on the live REASON, never on the key leaving the
+                # list. (DEV-996)** `WITHDRAWN_WHY` holds the two reasons that mean GitHub has
+                # stopped asking, and every absence from it is behaviour: a merged pull request's
+                # request is still listed by GitHub, a draft's is still made and was filtered out
+                # by `skip_drafts`, and a `gh pr view` that did not answer establishes nothing.
+                #
+                # Inside the trusted block, like everything else here, so the one thing that
+                # could withdraw a live request — GitHub's list looking empty when it is not —
+                # cannot reach it. `source_empty` is what such a tick says instead.
+                #
+                # **The same reason is what records a withdrawal for DEV-996's first test of a
+                # new request, and it is recorded whether or not Review Desk is installed.** The
+                # live read is made for a `done` key regardless — `done` is ALIVE — so the fact
+                # is available on every instance. `withdrawn`'s own comment carries the three
+                # ways a row leaves this page without a withdrawal, each of which dispatched a
+                # finished review again before this line existed.
+                if reason.startswith(WITHDRAWN_WHY) \
+                        and entry.get("status") in REDISPATCH_ON_REQUEST:
+                    self.state["withdrawn"][key] = {"at": now_iso(), "why": reason}
+                if recording:
+                    self.request_left(rd, key, where, reason, every)
                 if not alive_here:
                     # Nobody to discard, so no `review_cleared` — but the record moved, and a row
                     # leaving Patrick's queue with a reason is the whole of what he asked for.
@@ -1926,11 +2234,18 @@ class Poller:
                     continue
                 emit("review_cleared", key=key, reason=reason, out_of_play=left,
                      session_id=entry.get("session_id"), session_name=entry.get("session_name"))
+        # Withdrawals that an earlier tick could not deliver, collected before the second
+        # `record_unreachable` below so that a failure here is reported in the same breath as one
+        # from the sweep. The sweep passes a key exactly once — `prs_present` is overwritten a few
+        # lines down — so this loop is the only thing that ever retries one.
+        if recording:
+            self.settle_requests(rd, cfg, ledger, present, every)
         # **Said a second time, because the clearance sweep writes AFTER the first call.** The
-        # out-of-play writes live in that sweep, and `record_unreachable` runs before the
-        # untrusted early return — so a broken `review out-of-play` or `review in-play` was
-        # noted into `record_broken` and then never said, which breaks "broken is loud in every
-        # mode but off" for the two newest commands in the file. Measured by a test that asked
+        # out-of-play writes live in that sweep, and so do DEV-996's withdrawals, and
+        # `record_unreachable` runs before the untrusted early return — so a broken
+        # `review out-of-play`, `review in-play` or `review requested` was noted into
+        # `record_broken` and then never said, which breaks "broken is loud in every
+        # mode but off" for the newest commands in the file. Measured by a test that asked
         # for the notice and got none.
         #
         # **Calling it twice costs nothing and the `due` gate is why.** Every line it emits is
@@ -1981,7 +2296,9 @@ class Poller:
         # would be dropped on every tick with no symptom but a rate limit that never holds.
         # Naming the invariant beside the tuple is what a reader adding a mark needs; the hazard
         # was raised by a review of this branch rather than imagined.
-        swept = ("review_desk|head_moved|", "review_desk|in_play|")
+        # `review_desk|undated|` joins them, and the invariant holds for it: field 3 is the
+        # LEDGER KEY, and a key this trusted tick did not name has no open request to date.
+        swept = ("review_desk|head_moved|", "review_desk|in_play|", "review_desk|undated|")
         for mark in [m for m in self.state["emitted"] if m.startswith(swept)]:
             if mark.split("|")[2] not in present:
                 del self.state["emitted"][mark]
@@ -2011,6 +2328,45 @@ class Poller:
         self.state["recorded"] = {k: v for k, v in self.state["recorded"].items()
                                   if k in present or v.get("dismissed") or v.get("closed")
                                   or v.get("out_of_play")}
+        # **Pruned on the same evidence, with two exemptions. (DEV-996)** A trusted tick is
+        # trusted to say what is requested, so a key it does not name has no open request and
+        # needs no record of one — and the next request for that pull request should be told about
+        # with its own timestamp rather than read as the old one.
+        #
+        # The first exemption is a withdrawal this file still owes. **The second is a key whose
+        # reason could not be ESTABLISHED, and it was found by a red team of this branch**: the
+        # sweep passes a key exactly once, so a `gh pr view` that failed on that single tick
+        # dropped the only address a withdrawal could ever be sent to — measured, with three
+        # further clean ticks and no call, against a request that really had been withdrawn.
+        # `settle_requests` asks again; until it answers, the record is the question.
+        #
+        # Dropped through `forget_request`, so the retry marks go with the record rather than
+        # outliving it in `emitted`.
+        for gone in [k for k, v in self.state["requests"].items()
+                     if not (k in present or (isinstance(v, dict)
+                                              and (v.get("withdraw") or v.get("unresolved"))))]:
+            self.forget_request(gone)
+        # **And the re-dispatch marks, where the prune IS the behaviour rather than housekeeping.**
+        # A request that left GitHub's list has ended, so the next one is new by Patrick's own
+        # definition and must be dispatchable. Keeping the mark would make a review re-dispatchable
+        # exactly once in the life of the instance; dropping it on a tick that is trusted to say
+        # the request is gone is what makes the second withdrawal-and-remake behave like the first.
+        self.state["redispatched"] = {k: v for k, v in self.state["redispatched"].items()
+                                      if k in present}
+        # **And the withdrawal records, consumed on the tick their key comes back.** That tick is
+        # the one `new_request` reads them on, so dropping them here is what makes one withdrawal
+        # answer for one return. A record whose ledger entry has moved off `done` is dropped too:
+        # the Dispatcher claimed it, or a human decided, and either way the first test can no
+        # longer fire for it. That is what bounds this dict by the ledger rather than by time.
+        # **No presence test, because the record is spent where it is READ** — `new_request` pops
+        # it — and a red team showed that dropping it on presence alone discards it unread on any
+        # tick that returns early. What is left here are the two bounds that have nothing to do
+        # with reading it: a ledger entry that has moved off `done` can never use it again, and a
+        # record older than `WITHDRAWN_KEEP_SECS` is no longer evidence of anything.
+        self.state["withdrawn"] = {
+            k: v for k, v in self.state["withdrawn"].items()
+            if (ledger.get(k) or {}).get("status") in REDISPATCH_ON_REQUEST
+            and self.withdrawal_fresh(v)}
 
     def record_unreachable(self, rd: dict, every: int) -> None:
         """Say that Review Desk could not be reached while recording a request.
@@ -3244,7 +3600,28 @@ class Poller:
         to bound — or Review Desk saying who recorded a review, which is its side of the line.
         The retry is the ticket's own instruction, so this is a stated limit rather than a
         choice reopened here.
+
+          5. **The GitHub pass dispatched it again on this very tick. (DEV-996)** A `done` entry
+             with a new request is offered for dispatch by that pass — and `done` is ALIVE, so
+             shape 1's own REDISPATCHABLE test cannot see it, which is precisely the condition
+             that comment calls "not decoration". Without this, the one tick a finished review is
+             re-offered on is the tick it could be offered TWICE: once by GitHub's pass and once
+             by this one, which is two sessions on one review.
+
+             Read through `requested_key` like shapes 1 and 4, because the set is filled from
+             GitHub's `nameWithOwner` and the question can arrive from `review_desk_item`'s
+             lower-cased fallback.
+
+             **Read from the PERSISTED mark, and a per-tick set is what this was first written
+             as.** The red team of this branch measured the difference: with a tick-scoped set,
+             tick 3 emitted the `review_request` and tick 4 emitted a `review_desk_requested`
+             for the same key — one request offered by both sources, a `reemit_after_secs`
+             apart instead of at once. The mark stands for as long as the request is open, so
+             reading it closes both. The two facts were never different facts; one of them was
+             just scoped to the wrong thing.
         """
+        if self.redispatched_mark(key):
+            return True
         if requested_key(key) in self.requested and entry.get("status") in REDISPATCHABLE:
             return True
         if entry.get("status") in DECIDED:
@@ -3278,6 +3655,39 @@ class Poller:
                    if isinstance(v, dict) and requested_key(k) == want)
 
     @staticmethod
+    def withdrawal_fresh(held) -> bool:
+        """Is this recorded withdrawal recent enough to be evidence? See `WITHDRAWN_KEEP_SECS`.
+
+        **An unreadable or missing stamp answers False**, which drops the record. That is the
+        safe direction here and it is the opposite of how this file usually treats a value it
+        cannot read: the record exists only to LICENSE a dispatch, so losing one costs a
+        re-dispatch the second test will very likely make anyway, where keeping one forever costs
+        a licence nobody can account for.
+        """
+        if not isinstance(held, dict):
+            return False
+        try:
+            return time.time() - parse_iso(str(held.get("at"))) < WITHDRAWN_KEEP_SECS
+        except (ValueError, TypeError):
+            return False
+
+    def redispatched_mark(self, key: str) -> bool:
+        """Has this poller offered `key` again for the request GitHub is showing now?
+
+        **Compared through `requested_key`, for the reason `recorded_closed` has a paragraph
+        about**: the mark is written from GitHub's `nameWithOwner` as the repository is
+        registered (`gh-Locus-86`) and the question arrives from `review_desk_item`'s
+        lower-cased fallback (`gh-locus-86`). A direct `.get` answers False for exactly the row
+        the fifth shape exists to protect, and that build — one too old for `review open
+        --ledger` — is the one most likely to ask.
+
+        A scan rather than a second index, like `recorded_closed`'s and bounded the same way: by
+        the open requests this poller has re-offered, which is a handful.
+        """
+        want = requested_key(key)
+        return any(requested_key(k) == want for k in self.state["redispatched"])
+
+    @staticmethod
     def why_cleared(cfg: dict, where: dict) -> str:
         """Why a review request this poller was watching is no longer on GitHub's list.
 
@@ -3296,9 +3706,9 @@ class Poller:
         """
         try:
             info = gh("pr", "view", str(where["number"]), "-R", where["repo"],
-                      "--json", "state,isDraft,latestReviews")
+                      "--json", "state,isDraft,latestReviews,reviewRequests")
         except Exception:
-            return "no longer requested (could not read PR)"
+            return CANNOT_READ_PR
         if info["state"] != "OPEN":
             return f"PR {info['state'].lower()}"
         if info.get("isDraft"):
@@ -3306,8 +3716,45 @@ class Poller:
             # principal's on it is still a draft: the thing that took it off the list is the
             # conversion, and the conversion is what comes back.
             return "PR converted to draft"
+        # **`reviewRequests` is DEV-996's addition, and it turns the last branch from an
+        # inference into a reading.** Before it, "review request removed" was what this function
+        # returned when nothing else matched — reached by ELIMINATION from a row's absence, with
+        # the one call it makes never asking about the request at all. Three things leave the
+        # search page without a withdrawal: a conversion to draft (caught above), a stale search
+        # index (caught by nothing), and a row this instance's own query stopped matching. On
+        # such a tick the old answer wrote `out_of_play: withdrawn` against a live request, and
+        # DEV-996 would have read the row's return as a new request and dispatched a second
+        # session onto a finished review. One extra field on a call already being made.
+        still = still_requested(info, (cfg["github"].get("login") or "").strip().lower())
+        if still:
+            # Positive evidence that nothing was withdrawn: GitHub is still asking. Deliberately
+            # before the submitted-review branch, because a review submitted on a pull request
+            # the principal is STILL requested on has not answered the request that is open.
+            return STILL_REQUESTED
+        if still is None:
+            # The list could not be attributed — a team's request, which the principal may be a
+            # member of, or a `gh` or stand-in that did not answer the field. Not a withdrawal
+            # and not a denial of one: nothing is written and nothing is marked, and
+            # `settle_requests` asks again. **This is narrower than the answer it replaces**, so
+            # a pull request whose only request is a team's no longer reaches `review
+            # out-of-play` as `withdrawn`. That is the conservative direction and it is the whole
+            # point: the old answer was a guess that wrote.
+            #
+            # **BEFORE the submitted-review branch, and a red team of this branch is why.** It
+            # sat after, and "you submitted a review (…)" is in `WITHDRAWN_WHY` — so for a `done`
+            # key, whose latest review is the principal's own BY DEFINITION, every one of
+            # `still_requested`'s three Nones fell straight through to a withdrawal. Executed: a
+            # request held by a team, the row dropped by a stale search index, and this function
+            # answered "you submitted a review" — which recorded a withdrawal of a request GitHub
+            # was still making, took it off the Reviews list, and re-dispatched a finished review
+            # when the index served the row again. The blocker this branch had already fixed
+            # once, reached through the other door. The `still: True` comment above makes the
+            # argument; it simply was not applied to the case where this file does not know.
+            return CANNOT_TELL
         mine = [r for r in info.get("latestReviews") or [] if (r.get("author") or {}).get("login") == cfg["github"]["login"]]
         if mine:
+            # Positively not requested any more, and the principal's review says why. Both this
+            # and the line below are withdrawals; the distinction is for the person reading it.
             return f"you submitted a review ({mine[-1].get('state', '').lower()})"
         return "review request removed"
 
@@ -3635,6 +4082,504 @@ class Poller:
                  review_desk_id=review_id((self.state["recorded"].get(key) or {}).get("review")),
                  review=review_desk_link(rd, review_id(
                      (self.state["recorded"].get(key) or {}).get("review"))))
+
+    def requested_at(self, cfg: dict, repo: str, number: int) -> int | None:
+        """When GitHub last asked the PRINCIPAL for a review of this pull request, in unix seconds.
+
+        None whenever that cannot be established: a `gh` that failed, a timeline carrying nobody's
+        request but a team's, an instance whose `github.login` is unset, or a repository slug this
+        file cannot split. **Both callers read None as "not established" rather than as a value,
+        and they read it in opposite directions**, which is the asymmetry worth stating:
+
+          `told_request`  falls back to the sighting time. The cost is a slightly optimistic
+                          "requested N ago" on the Reviews list — a row that is newer than the
+                          truth, never one that is missing.
+          `new_request`   declines to call the request new. The cost of the other direction is a
+                          review that is finished being dispatched again, which is the one thing
+                          Patrick's definition of "new" was written to prevent.
+
+        **The login filter is the whole of the correctness here**; `REQUESTED_Q`'s own comment
+        carries the argument, and what belongs on this side is the shape it reads. A
+        `requestedReviewer` is a union, so a Team's node has `slug` and no `login` and falls out of
+        the comparison by having nothing to compare with. Compared case-insensitively, because
+        GitHub logins are, and because `cmd_review_posted` already lower-cases this same config
+        value for this same reason.
+
+        **One unparseable `createdAt` skips that event and nothing else.** It is a fact about one
+        node, where `date_stopped` is a fact about the transport — and setting the install-wide
+        flag from a bad timestamp would cancel the date for every other request on the page.
+
+        One call per pull request per tick at most, cached beside `pr_states` and `pr_diffs` and
+        for the same reason, and not made at all once `date_stopped` is set.
+        """
+        if (repo, number) in self.request_dates:
+            return self.request_dates[(repo, number)]
+        login = str((cfg.get("github") or {}).get("login") or "").strip().lower()
+        owner, _, name = repo.partition("/")
+        at = None
+        if login and owner and name and not self.date_stopped:
+            try:
+                data = gh("api", "graphql", "-f", f"query={REQUESTED_Q}", "-f", f"owner={owner}",
+                          "-f", f"name={name}", "-F", f"number={number}")
+                pull = ((((data or {}).get("data") or {}).get("repository")
+                         or {}).get("pullRequest") or {})
+                nodes = ((pull.get("timelineItems") or {}).get("nodes")) or []
+            except Exception as exc:
+                # One `gh` that is failing or rate-limited answers for every request on the page,
+                # and asking once per request would be a subprocess per request per tick at a
+                # 60-second timeout each. The fallbacks are in the docstring above.
+                #
+                # **Said out loud, once a tick, and a red team of this branch is why.** This
+                # `except` used to swallow everything: no event, no record in
+                # `runtime/poller-errors.jsonl`, nothing in `doctor`. Since a request this file
+                # cannot date is not recorded at all, a timeline query that fails for a REASON
+                # THAT PERSISTS — a token without the scope, an enterprise host, a sustained
+                # secondary rate limit — means no review request is ever recorded in Review Desk
+                # again, and the only symptom is the one DEV-996 was opened about: the queue
+                # showing fewer pull requests than GitHub. Every other broken call in this file
+                # is loud; this one is now too.
+                self.date_stopped = True
+                self.date_failed = True
+                nodes = []
+                if self.due("github|requested_at", REQUESTED_AT_LOUD_SECS):
+                    emit("review_request_undated", repo=repo, number=number,
+                         detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                who = (node.get("requestedReviewer") or {}).get("login")
+                if str(who or "").strip().lower() != login:
+                    continue
+                try:
+                    when = int(parse_iso(str(node.get("createdAt") or "")))
+                except (ValueError, TypeError):
+                    continue
+                at = when if at is None else max(at, when)
+        self.request_dates[(repo, number)] = at
+        return at
+
+    def new_request(self, cfg: dict, key: str, repo: str, number: int,
+                    entry: dict) -> str | None:
+        """Is GitHub making a NEW request for a review this instance's ledger says is finished?
+
+        Returns the evidence, for the event to carry, or None. DEV-996, Patrick's decision of
+        15 October 2026, and the two halves below are his words rather than this file's reading
+        of them:
+
+          1. **It went away and came back.** GitHub drops a review request when the review is
+             posted, so a recorded withdrawal plus a row GitHub is showing again is a second
+             asking. The record is written in the clearance sweep, inside the trusted block, so
+             an empty page or a rotated first-50 cannot manufacture it — and it is written only
+             on a live reason that says the principal is no longer being asked.
+          2. **The request postdates the ledger.** `requested_at` against the entry's own
+             `updated_at`, for the case the first half cannot see: a withdrawal and a fresh
+             request that both happened while the poller was down. `prs_present` carries the key
+             straight across that gap, so nothing returned.
+
+        **"A request that never went away is not new", which is the whole of why this is two
+        tests and not one.** A present key whose request predates the ledger write is the
+        ordinary state of every finished review on a pull request GitHub still lists, and
+        dispatching on it would put a second session on every one of them, for ever.
+
+        **The comparison is across TWO CLOCKS, and that is a stated limit rather than a solved
+        problem.** `at` is GitHub's and `updated_at` is this machine's, so a local clock running
+        behind GitHub's can make a request event that PRECEDED the ledger write read as following
+        it. **A guard band was tried for it and taken back out**, because a red team measured the
+        band masking a re-request made seconds after a ledger write — which at a 300-second
+        cadence the first test does not see either, since it is measured against a snapshot that
+        only moves between ticks. The argument in full is beside the removed constant; what is
+        accepted here is a machine with a broken clock, over a missed re-dispatch on a machine
+        with a working one.
+
+        **`updated_at` is the comparison, and it moves on every ledger write — including writes
+        that are not about the review being finished.** So a note typed after the new request
+        arrived makes this half say no. That is the conservative direction and it is the cheap
+        failure: the next withdrawal-and-remake is seen by the first half, which needs nothing
+        from GitHub. An entry with no readable stamp at all answers no for the same reason.
+
+        **The mark is read here and written by the caller.** Once per request, which is DEV-996's
+        second acceptance criterion; `redispatched`'s own comment says why the prune that forgets
+        it is where it is.
+
+        **The cost, stated rather than hidden: one GraphQL query per `done` key GitHub is still
+        requesting, per tick.** It is asked for that status alone, and only when the first half
+        said nothing — so an instance with no finished-and-still-requested review pays nothing,
+        and `date_stopped` bounds a failing `gh` to one attempt a tick. That is the same order as
+        `pr_state`'s own per-row read and an order less than `pr_diff_digest`'s page walk, both of
+        which this file already makes on every tick.
+        """
+        if entry.get("status") not in REDISPATCH_ON_REQUEST or key in self.state["redispatched"]:
+            return None
+        if key in self.state["withdrawn"]:
+            # **`returned` is deliberately NOT part of this test, and removing it is the other
+            # half of the same red-team finding.** It is true only on the single tick a key comes
+            # back, so a tick that returns early — a wake on a moved head — consumed the one
+            # chance to read the record, and the record surviving bought nothing. The two facts
+            # this test is made of are "GitHub stopped asking", which is the record, and "GitHub
+            # is asking now", which is this key being in `present` at all; `returned` only said
+            # that the second became true on THIS tick. The record is written when the row left
+            # and popped when it is read, so the conjunction cannot fire twice and cannot fire
+            # for a request that never went away.
+            #
+            # **Spent here, where it is read, and not by the prune.** The prune used to drop
+            # every record whose key was present again, which a red team showed can discard the
+            # evidence unread: the head-moved `continue` a few lines above the caller's own call
+            # to this function returns before the test is ever made, and on that tick the key is
+            # in `present`. One wake then swallowed the only thing the first test had — for a
+            # tick in the ordinary case, and for good where the request cannot be dated.
+            self.state["withdrawn"].pop(key, None)
+            # **`returned` alone was the blocker.** It says the row left this poller's page, and
+            # three things do that with the request still live on GitHub — see `withdrawn`. The
+            # record is the live reason read at the moment the row left, so this is "GitHub
+            # stopped asking, and is asking again" rather than "the row flickered".
+            return "the request was withdrawn and made again"
+        at = self.requested_at(cfg, repo, number)
+        if at is None:
+            return None
+        stamp = entry.get("updated_at") or entry.get("created_at")
+        try:
+            was = parse_iso(str(stamp)) if stamp else None
+        except (ValueError, TypeError):
+            was = None
+        if was is None or at <= was:
+            return None
+        return f"requested at {datetime.fromtimestamp(at, timezone.utc).isoformat()}"
+
+    def told_request(self, rd: dict, cfg: dict, key: str, repo: str, number: int, every: int,
+                     renew: bool = False) -> None:
+        """Tell Review Desk a review has been requested, once per request. (DEV-996)
+
+        **This is the whole of the ticket's report.** Review Desk only knew of a pull request once
+        a session opened a round on it, so a request that sat in `review_backlog` for hours — or
+        for ever, with the poller down — was on GitHub and in this poller and nowhere on the
+        queue. On 15 October 2026 the queue showed 7 pull requests against 9 requests on GitHub.
+
+        **Told about every open request, whatever its ledger says, and that is deliberate.** A
+        request a session is already working is still a request GitHub made, and which rows to
+        DRAW is Review Desk's side of the line — the ticket gives it "a pull request already in
+        another group is not drawn twice" and "satisfied once a round opens after `requested_at`".
+        This file's job is to say what GitHub asked for, once, and not to decide what is worth
+        showing.
+
+        **One consequence of that is worth naming rather than leaving to be discovered: a review
+        the developer DISMISSED has its request recorded too.** The dismissal is read later in the
+        same tick, by the recording path, so the first sighting cannot know about it — and the
+        ticket's own drawing rules are where a dismissed review's row is decided, as they are for
+        a merged one. What this file will not do is let a dismissal turn into a dispatch, which is
+        `dismissed_request`'s gate a few lines below the call site and is untouched.
+
+        **A closed pull request is never told about here**, because the call site is past
+        `request_closed` — the row never joins `present`. That case already has its own narrow
+        recording (a first review for a pull request Review Desk has never held one of, which is
+        DEV-959 as Patrick amended it) and its own event, and a request row drawn as "requested,
+        not started" against a pull request that shipped would be the one row on that list nobody
+        can act on.
+
+        **Not recorded unless the call succeeded**, which is what keeps "an install you fix is
+        used on the very next poll" true of this path as well. `tell_stopped` is what stops the
+        retry costing a subprocess per request per tick in the meantime.
+
+        **`renew` is the second half of Review Desk's own rule** — first sight, and a new request
+        — and it is passed by the one place that has established one: the re-dispatch branch,
+        which by then holds GitHub's own timestamp for the newer request in this tick's cache. A
+        stamp that has not moved makes no call at all, so a renewal that turns out to be the same
+        request costs nothing on the wire.
+        """
+        if self.tell_stopped:
+            return
+        held = self.state["requests"].get(key)
+        if isinstance(held, dict) and not renew \
+                and not held.get("withdraw") and not held.get("unresolved"):
+            # Told about this request, and Review Desk's own rule is that the verb is called
+            # when a request is first seen and when a NEW one appears — never once a tick. So
+            # this path does not even ASK GitHub for the date again: the question costs a
+            # GraphQL query, and `renew` is how the one caller that has established a new
+            # request says so.
+            return
+        # **The ask is bounded for the key GitHub will not date, and NOT through `due`.** Without
+        # a bound it is one GraphQL query per tick for ever on a team's request; with `due` it
+        # would also rate-limit a key whose TELL failed, because `due` marks the moment it is
+        # evaluated — and that would put "an install you fix is used on the very next poll" a
+        # quarter of an hour away for the one path this file added. So the mark is set on the
+        # undatable OUTCOME rather than on the attempt, which is the one thing `due` cannot
+        # express. Read and written here, swept with the other `review_desk|` marks keyed on a
+        # ledger key, and popped by `forget_request` when the key is finally dated.
+        mark = f"review_desk|undated|{key}"
+        last = self.state["emitted"].get(mark)
+        if last and time.time() - last < every:
+            return
+        at = self.requested_at(cfg, repo, number)
+        if at is None:
+            # **The bound is for an UNDATABLE request, never for a call that failed**, and the
+            # difference was found by a red team of this branch: `date_stopped` makes
+            # `requested_at` answer None for every remaining key on the page, so one 502 took a
+            # whole page's first recording out for a full `reemit_after_secs` after `gh` had
+            # recovered. A transport failure is already said out loud by `requested_at` and
+            # retried on the very next tick, which is this file's promise everywhere else.
+            if not self.date_failed:
+                self.state["emitted"][mark] = time.time()
+            # **Review Desk's first rule: `--requested-at` is when GITHUB made the request, never
+            # this machine's clock.** Their store is last-write-wins on (repo, pr), and a later
+            # timestamp sets `satisfied_by_review_id` back to null — so a sighting time stood in
+            # for a request made hours earlier would tell them a reviewed pull request is waiting
+            # again. This file sent `int(time.time())` as a fallback until review-desk#63 pinned
+            # the field; the fallback is gone, and the cost is stated rather than hidden: a
+            # request whose date GitHub will not give — a team's, an instance with no
+            # `github.login`, a `gh` that is failing — is NOT recorded at all. It is still
+            # dispatched, still queued and still withdrawn; only the Reviews list does not get
+            # its row, which is the state the ticket describes rather than a new harm.
+            return
+        if isinstance(held, dict) and held.get("at") == at:
+            # GitHub's stamp has not moved, so this is the same request Review Desk already
+            # holds. Nothing is written — a repeat write moves `last_activity_at` on a row
+            # nothing has happened to — and the flags that brought us here are cleared: the
+            # request is plainly open, so neither the withdrawal nor the unsettled reason is
+            # still a question about it.
+            held.pop("unresolved", None)
+            if held.pop("withdraw", None):
+                self.state["emitted"].pop(f"review_desk|withdraw|{key}", None)
+            return
+        if self.tell_requested(rd, key, repo, number, at, every):
+            self.forget_request(key)
+            self.state["requests"][key] = {"at": at, "repo": repo, "number": number}
+            # **The last request's retry bound is cleared with it.** `withdraw_request` is gated
+            # on one mark per key per `reemit_after_secs`, and this is a DIFFERENT request with
+            # its own timestamp — so a mark left over from the one before it would rate-limit the
+            # withdrawal of a request it knows nothing about. Symmetric with `back_in_play`'s own
+            # clearing, and for the same reason — `forget_request` above is what drops it.
+
+    def withdraw_request(self, rd: dict, key: str, where: dict, every: int) -> None:
+        """GitHub is no longer asking for this review: withdraw the request. (DEV-996)
+
+        **Called on `why_cleared`'s live reason and not on the key leaving the list**, and
+        `WITHDRAWN_WHY` carries the reasons and every absence. The one worth repeating here is the
+        merge: GitHub goes on listing a merged pull request's review request, so nothing was
+        withdrawn, and the finished state belongs to `request_closed` and the harvest.
+
+        **The same `--requested-at` the sighting carried**, read back out of the record. The two
+        calls then name one request, which is what lets a store keyed on (repo, pr) read the
+        second as the first one ending rather than as something new.
+
+        **A failure leaves a debt rather than being lost.** `prs_present` is overwritten every
+        trusted tick, so the clearance sweep passes a key exactly once — a Review Desk that was
+        down for that single tick would otherwise leave the request drawn for ever, which is this
+        ticket's own harm with the arrow reversed. `settle_requests` is what collects it.
+
+        **One attempt per `reemit_after_secs` per key, and the gate is shared with the retry** so
+        that both paths are bounded by one mark. The mark is popped on success, because a mark
+        that no longer means anything is one the `emitted` sweep never has to see.
+        """
+        held = self.state["requests"].get(key)
+        if not isinstance(held, dict):
+            self.forget_request(key)
+            return
+        if self.tell_stopped:
+            # **The per-tick bound covers this path too, and a red team found that it did not.**
+            # `tell_requested`'s own docstring promises one attempt per tick for the whole page;
+            # `told_request` and `settle_requests` honoured it and the clearance sweep did not,
+            # so a page of clearances against a hung install was one 30-second timeout each — a
+            # twenty-five minute tick — with every one of them burning its `due` mark, so the
+            # real retry was a window away as well. The debt is taken instead.
+            held["withdraw"] = True
+            return
+        repo = str(held.get("repo") or where.get("repo") or "")
+        number, at = held.get("number", where.get("number")), held.get("at")
+        try:
+            number, at = int(number), int(at)
+        except (TypeError, ValueError):
+            # Nothing a withdrawal can be addressed to — a record written by another version of
+            # this file, or one whose pull request this file never knew. Dropped rather than
+            # retried for ever against an address it does not have.
+            self.forget_request(key)
+            return
+        if not repo:
+            # Owed to nowhere. Dropped on the same argument as the unparseable record above: a
+            # debt with no address cannot be collected, and keeping it is a dict entry that
+            # `settle_requests` walks past for the life of the instance.
+            self.forget_request(key)
+            return
+        if not self.due(f"review_desk|withdraw|{key}", every):
+            held["withdraw"] = True
+            return
+        if self.tell_requested(rd, key, repo, number, at, every, withdrawn=True):
+            self.forget_request(key)
+        else:
+            held["withdraw"] = True
+
+    def request_left(self, rd: dict, key: str, where: dict, reason: str, every: int) -> None:
+        """A request left GitHub's page: withdraw it, or keep the record until the reason is known.
+
+        **Three answers and three behaviours, and the middle one is the red team's finding 2.**
+
+          a withdrawal       `review requested --withdrawn`, now, through `withdraw_request`.
+          not established    the record is KEPT, flagged, and asked about again. `CANNOT_READ_PR`
+                             and `CANNOT_TELL` are both "this file does not know", and the sweep
+                             passes a key exactly once — so dropping the record on such a tick
+                             threw away the only address a withdrawal could ever be sent to.
+                             Measured on this branch: a request genuinely withdrawn while one
+                             `gh pr view` failed was never withdrawn in Review Desk, through
+                             three further clean ticks, and the row stayed on the Reviews list.
+          anything else      nothing. Merged and closed are `request_closed`'s and the harvest's,
+                             a draft's request is still being made, and `STILL_REQUESTED` says so
+                             in as many words. The record is pruned and the next sighting tells
+                             Review Desk again, with its own timestamp.
+        """
+        if reason.startswith(WITHDRAWN_WHY):
+            self.withdraw_request(rd, key, where, every)
+            return
+        if reason.startswith(UNSETTLED_WHY):
+            held = self.state["requests"].get(key)
+            if isinstance(held, dict):
+                held["unresolved"] = True
+
+    def settle_requests(self, rd: dict, cfg: dict, ledger: dict, present: dict,
+                        every: int) -> None:
+        """Finish the business of requests that have left the page: the owed, and the unknown.
+
+        Bounded four ways, because this is the one loop in the file that reads a persisted dict
+        rather than this tick's page: `tell_stopped` ends it the moment the install answers badly
+        once, `due` allows one attempt per key per `reemit_after_secs`, a key that is present
+        again is left to `told_request` — it is being asked for, so withdrawing it would be a lie
+        this file would then have to take back — and every record it cannot act on is forgotten
+        rather than walked past for ever.
+
+        **The cost, stated rather than hidden: one small dict entry per request that could never
+        be withdrawn or placed, for as long as the instance lives.** That is the same bargain
+        `recorded` takes for a dismissal, and it is taken for the same reason — the fact is held
+        nowhere else, and dropping it leaves a row on Patrick's queue that nothing will clear.
+        """
+        for key in sorted(self.state["requests"]):
+            if self.tell_stopped:
+                return
+            held = self.state["requests"].get(key)
+            if key in present or not isinstance(held, dict):
+                continue
+            if held.get("withdraw"):
+                self.withdraw_request(rd, key, {}, every)
+            elif held.get("unresolved"):
+                self.resolve_left(rd, cfg, ledger, key, held, every)
+
+    def resolve_left(self, rd: dict, cfg: dict, ledger: dict, key: str, held: dict,
+                     every: int) -> None:
+        """Ask again why a request left, for a key the answer could not be read for.
+
+        One `gh pr view` per unsettled key per `reemit_after_secs`, and the set is the keys whose
+        live read failed or could not be attributed — which is small, and empty on a healthy
+        instance. An answer that is still unsettled changes nothing and is asked again; any other
+        answer settles the record one way or the other.
+
+        **It writes DEV-996's withdrawal record too, and only here does that depend on Review
+        Desk.** The sweep's own write does not — the live read is made for every `done` key
+        whatever `review_desk.mode` says — but this path exists only for a key that HAS a request
+        record, which is to say only on an instance that records them. So on an instance with
+        Review Desk off, a withdrawal whose live read failed is simply never marked, and the
+        first test of a new request stays silent for that key until the next one. That is the
+        conservative direction and it is stated rather than papered over.
+        """
+        repo, number = held.get("repo"), held.get("number")
+        if not repo or not isinstance(number, int):
+            self.forget_request(key)
+            return
+        if not self.due(f"review_desk|settle|{key}", every):
+            return
+        reason = self.why_cleared(cfg, {"repo": repo, "number": number})
+        if reason.startswith(UNSETTLED_WHY):
+            return
+        held.pop("unresolved", None)
+        if not reason.startswith(WITHDRAWN_WHY):
+            # Merged, closed, draft, or still requested. Nothing to withdraw, and the record has
+            # served its purpose: the next sighting tells Review Desk again.
+            self.forget_request(key)
+            return
+        if (ledger.get(key) or {}).get("status") in REDISPATCH_ON_REQUEST:
+            self.state["withdrawn"][key] = {"at": now_iso(), "why": reason}
+        self.withdraw_request(rd, key, {"repo": repo, "number": number}, every)
+
+    def forget_request(self, key: str) -> None:
+        """Drop one request record, and the retry marks that only meant something beside it.
+
+        **The marks go with the record**, which the red team's finding 6 is about: they are keyed
+        on a ledger key in `emitted`, which is persisted, and the `review_requests` prune sweeps
+        two other prefixes but deliberately not these — a key owing a withdrawal is by definition
+        not in `present`, so sweeping them there would clear the rate limit on every tick and
+        turn one attempt per window into one per tick. Popping them where the record dies is the
+        version of that fix which keeps the limit working.
+        """
+        self.state["requests"].pop(key, None)
+        self.state["emitted"].pop(f"review_desk|withdraw|{key}", None)
+        self.state["emitted"].pop(f"review_desk|settle|{key}", None)
+        self.state["emitted"].pop(f"review_desk|undated|{key}", None)
+
+    def tell_requested(self, rd: dict, key: str, repo: str, number: int, at: int, every: int,
+                       withdrawn: bool = False) -> bool:
+        """One `review requested` call. Never raises, never blocks, and returns whether it landed.
+
+        The verb is DEV-996's own, and it is a record of a REQUEST rather than of a round:
+
+            review-desk review requested --repo R --pr N --requested-at T [--withdrawn] --json
+
+        It is idempotent and keyed on (repo, pr), so recording the same request twice leaves one
+        record — which is what lets this file call it from a tick rather than from a state machine.
+
+        **The exit code is the whole of what this reads.** No field of the answer is touched,
+        because the document's shape is Review Desk's to define and this half of the ticket shipped
+        second. `--json` is passed all the same: it is what makes a refusal carry a `code` and a
+        `message` that `review_desk_detail` can put in front of a person.
+
+        **It does NOT set `record_stopped`, and that is the load-bearing difference from
+        `out_of_play`.** Until DEV-996's other half ships, every build in the world has `review
+        open` and has never heard of `review requested` — so treating this command's refusal as
+        the install's would stop the poller recording reviews at all, trading a feature nobody has
+        yet for one everybody depends on. The two commands are asked, and give up, separately.
+
+        **Every non-ok answer stops the telling for this tick, which is wider than `out_of_play`'s
+        own rule, and the width is the call site.** That one runs for the keys leaving a page;
+        this one runs for every first sighting on it — up to a full page of fifty on the first
+        tick after an upgrade. A refusal that is really about the argv rather than about one pull
+        request would otherwise be fifty subprocesses, every tick, for ever.
+        """
+        call = "review requested"
+        # **The verb is spelled at the call, not built into a list, and that is not a style
+        # choice.** `test-dispatcher-review-desk.sh` enumerates the first argument of every
+        # `review_desk_run` in this file and pins the set — "the only commands it runs of Review
+        # Desk are these" — so a splat here would hand that guard a `*args` where a command name
+        # belongs, and the one assertion that can see a new write appearing would stop seeing
+        # anything. It failed exactly that way before this line was written out.
+        extra = ("--withdrawn", "--json") if withdrawn else ("--json",)
+        state, _payload, detail = review_desk_run(rd, "review", "requested",
+                                                  "--repo", canonical_repo(repo),
+                                                  "--pr", str(number),
+                                                  "--requested-at", str(at), *extra)
+        if state == "ok":
+            return True
+        self.tell_stopped = True
+        if state in ("absent", "broken"):
+            # Said through the `review_desk` pass's own event and rate-limit signature, so one
+            # install failing one way is one line however many paths meet it. `record_unreachable`
+            # is what reports it, and it is called twice in `review_requests` — the second call is
+            # the one that carries a withdrawal's failure, which happens after the first.
+            self.note_broken(call, state, detail, repo)
+            return False
+        if review_desk_unknown(detail):
+            # **The ordinary answer today**, and it stays ordinary until Review Desk ships the
+            # verb: clap refuses an unknown argument, `review_desk_run` remaps its usage exit to
+            # 1, and this is what that looks like from here. Loud once per `reemit_after_secs`
+            # and blocking nothing — what is lost is the request's row on the Reviews list, which
+            # is the behaviour this file had before DEV-996 and the state the ticket describes.
+            if self.due("review_desk|no_requested", every):
+                emit("review_desk_unavailable", state="broken", mode=rd["mode"],
+                     command=rd["command"], repo=repo, number=number, call=call,
+                     detail=f"{rd.get('command')} has no `review requested`, so a review GitHub "
+                            f"has asked for stays invisible on the Reviews list until a session "
+                            f"opens a round on it: {detail[:120]}")
+            return False
+        # Any other refusal is about this request rather than about the install, said once per
+        # repository exactly as a refused recording is.
+        if self.due(f"review_desk|requested_refused|{repo}", every):
+            emit("review_desk_unavailable", state="refused", mode=rd["mode"],
+                 command=rd["command"], repo=repo, number=number, call=call, detail=detail,
+                 example=True)
+        return False
 
     def liveness(self, cfg: dict, ledger: dict, backlog: bool) -> None:
         live, archived = allele_state(cfg)

@@ -17,6 +17,11 @@
 # test that let it through would hit api.linear.app; and `record_error`'s durability is a
 # statement about WHEN bytes reach disk, which needs an in-process crash, not a subprocess.
 #
+# DEV-996 adds a stand-in `review-desk` in $work/bin and the `runrd` helper that puts it on
+# PATH, because that half of the ticket is a CALL rather than an outcome: what is under test is
+# the argv the poller sends and that nothing it can answer -- absent, exit 2, an unknown
+# subcommand -- reaches the tick's exit code. Every other scenario keeps the narrowed PATH below.
+#
 # What is pinned: that `first_tick` survives a persisted `started`, that the 30 Sep conditions
 # surface all ten review requests as backlog, that the flag drops on a later tick of the same
 # process, that `started` is not deleted, that a thrown section reaches stderr and a runtime
@@ -99,9 +104,79 @@ onerr  () { grep -q -- "$1" "$work/err" && echo yes || echo no; }
 # flagged <true|false>: how many review_request events carry that backlog value
 flagged () { grep -c "\"event\": \"review_request\".*\"backlog\": $1" "$work/out" || true; }
 
+# ---- DEV-996: a stand-in review-desk, and the runs that can reach it -----------------------
+#
+# Off the default PATH, like the real thing: every scenario above this line asserts nothing about
+# Review Desk and must go on seeing it absent. `runrd` is the only way in, and $RDWORK/rd.mode is
+# how each of Review Desk's answers is driven -- `unknown` being the one every build in the world
+# gives until DEV-996's other half ships, since `review requested` does not exist yet.
+mkdir -p "$work/bin"
+export RDWORK="$work"
+cat > "$work/bin/review-desk" <<'STANDIN'
+#!/bin/sh
+printf '%s\n' "$*" >> "$RDWORK/rd.calls"
+case "$(cat "$RDWORK/rd.mode" 2>/dev/null || echo ok)" in
+  unknown)
+    # clap's own refusal. review-desk's main.rs remaps clap's usage exit to 1 and gives the
+    # document `code: usage`, which is what `review_desk_unknown` reads.
+    printf '{"error":{"code":"usage","message":"error: unrecognized subcommand %s"}}\n' \
+      "'requested'"
+    exit 1 ;;
+  broken)
+    echo '{"error":{"code":"cannot_open_database","message":"scripted broken","kind":"broken"}}'
+    exit 2 ;;
+  refused)
+    echo '{"error":{"code":"not_found","message":"no such repository"}}'
+    exit 1 ;;
+esac
+echo '{"request":{"repo":"o/r","pr":1,"withdrawn":false}}'
+exit 0
+STANDIN
+chmod +x "$work/bin/review-desk"
+
+# runrd <source> <scenario> [args]: `run`, with the stand-in reachable. The calls log is reset
+# here rather than per assertion, so "how many calls did this tick make" is a question about one
+# run of the driver.
+runrd () {
+  : > "$work/rd.calls"
+  src=$1; scenario=$2; shift 2
+  set +e
+  PATH="$work/bin:$PATH" RDWORK="$work" DISP="$src" INST="$work/inst" \
+      python3 "$work/driver.py" "$scenario" "$@" >"$work/out" 2>"$work/err"
+  c=$?
+  set -e
+  echo "$c"
+}
+# calls <pattern>: how many review-desk invocations matched. Assertions about argv, not outcomes.
+calls () { grep -c -- "$1" "$work/rd.calls" 2>/dev/null || true; }
+
+# desk <mode> [reemit_after_secs]: give the instance just built a `review_desk` block. Separate
+# from `instance` so that every scenario above this section keeps the config it was written
+# against, and so `mode: off` -- which must make no call at all -- is one word to express.
+desk () {
+  python3 - "$work/inst/config.json" "$1" "${2:-}" <<'DESK'
+import json, sys
+path, mode, every = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(path))
+cfg["review_desk"] = {"mode": mode, "command": "review-desk", "url": "http://127.0.0.1:7777"}
+if every:
+    cfg["limits"]["reemit_after_secs"] = int(every)
+json.dump(cfg, open(path, "w"))
+DESK
+}
+
+# done_entry <key> <updated_at>: a ledger entry marked `done`, with the stamp DEV-996's second
+# test of "new" compares against. `entry` above writes no `updated_at`, and that half of Patrick's
+# definition is a comparison against it -- so an entry without one tests the fallback, not the rule.
+done_entry () {
+  mkdir -p "$work/inst/runtime/ledger"
+  printf '{"key":"%s","mode":"review","status":"done","session_id":"s1","updated_at":"%s"}\n' \
+    "$1" "$2" > "$work/inst/runtime/ledger/$1.json"
+}
+
 cat > "$work/driver.py" <<'EOF'
 """Exercise one Poller scenario against the dispatcher source named in $DISP."""
-import importlib.util, json, os, sys, time
+import importlib.util, json, os, pathlib, sys, time
 
 spec = importlib.util.spec_from_file_location("disp_under_test", os.environ["DISP"])
 m = importlib.util.module_from_spec(spec)
@@ -130,7 +205,11 @@ def offline(review_nodes=PRS, gh_raises=None, live=None, live_raises=False):
         if args[:2] == ("pr", "view"):
             if live_raises:
                 raise RuntimeError("gh pr view: boom")
-            return {"state": (live or {}).get(int(args[2]), "OPEN"), "latestReviews": []}
+            # `reviewRequests` is DEV-996's: `why_cleared` reads it to decide a withdrawal from
+            # EVIDENCE rather than from the row's absence. Empty means the principal is no
+            # longer being asked, which is what every clearance in this file meant before it.
+            return {"state": (live or {}).get(int(args[2]), "OPEN"), "latestReviews": [],
+                    "isDraft": False, "reviewRequests": []}
         if gh_raises:
             raise gh_raises
         return {"data": {"search": {"nodes": review_nodes}}}
@@ -206,7 +285,8 @@ elif scenario == "empty_guard":
         if args[:2] == ("api", "graphql"):
             return {"data": {"search": {"issueCount": matched[0], "nodes": holder["nodes"]}}}
         if args[0] == "pr" and args[1] == "view":
-            return {"state": "OPEN", "latestReviews": []}
+            return {"state": "OPEN", "latestReviews": [], "isDraft": False,
+                    "reviewRequests": []}
         raise AssertionError("unexpected gh call %r" % (args,))
     m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
     m.allele_state = lambda cfg: ({"s2": {"last_known_status": "Idle"}}, set())
@@ -516,7 +596,8 @@ elif scenario == "merged_rerequest":
     m.allele_state = lambda cfg: ({"s9": {"last_known_status": "Idle"}}, set())
     def gh_rr(*args):
         if args[:2] == ("pr", "view"):
-            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
+            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": [],
+                    "isDraft": False, "reviewRequests": []}
         return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
     m.gh = gh_rr
     m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
@@ -546,7 +627,8 @@ elif scenario == "merged_clears":
     m.allele_state = lambda cfg: ({"s1": {"last_known_status": "Idle"}}, set())
     def gh_mc(*args):
         if args[:2] == ("pr", "view"):
-            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": []}
+            return {"state": live.get(int(args[2]), "OPEN"), "latestReviews": [],
+                    "isDraft": False, "reviewRequests": []}
         return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
     m.gh = gh_mc
     m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
@@ -569,6 +651,350 @@ elif scenario == "status_sources":
     m.Poller().tick()
     class A: all = False
     m.cmd_status(A())
+
+elif scenario.startswith("redispatch"):
+    # DEV-996 part 1. The fixtures all share one page shape and one `gh`, because what differs
+    # between them is only which half of Patrick's definition of "new" is in play.
+    #
+    # 9999 is the control and it NEVER leaves the page. Without it the withdrawal tick would be an
+    # empty search, `trust_empty` would refuse to believe it, and the key would never leave
+    # `prs_present` -- so the scenario would pass while testing nothing it claims to.
+    def row(n, state=None):
+        r = {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/r/pull/{n}",
+             "isDraft": False, "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z",
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        if state:
+            r["state"] = state
+        return r
+    mode = sys.argv[2] if len(sys.argv) > 2 else "returned"
+    # One review-requested event per pull request, as GitHub's timeline carries them: the stamp
+    # and who was asked. `tester` is this instance's `github.login`.
+    EVENTS = {9801: ("2026-10-14T00:00:00Z", "tester"),      # after the ledger: a new request
+              9802: ("2026-10-12T00:00:00Z", "tester"),      # before it: not new
+              9803: ("2026-10-14T00:00:00Z", "somebody"),    # after it, but not of the principal
+              9804: ("2026-10-14T00:00:00Z", None),          # after it, but of a TEAM
+              # BEFORE the ledger stamp of the `returned` fixture, deliberately: that mode is
+              # about the first test of "new", and an event after the ledger would hand it the
+              # second one and prove nothing. A date is needed at all because Review Desk is
+              # never told about a request this file cannot date.
+              9404: ("2026-09-20T00:00:00Z", "tester"),
+              9999: ("2026-09-20T00:00:00Z", "tester"),
+              # Sixty seconds after the ledger write, which is the author pushing a fix and
+              # asking again. A guard band on the comparison masked exactly this, and at a
+              # 300-second poll no tick lands in the gap for the other test to see.
+              9805: ("2026-10-13T00:01:00Z", "tester")}
+    page = {"nodes": []}
+    # What the live `gh pr view` says while a key is leaving the page. `why_cleared` reads it to
+    # decide WHY, and since the red team of this branch that reason is what licenses a
+    # re-dispatch: `reviewRequests: []` is a genuine withdrawal, a `login` in it is GitHub still
+    # asking, and `isDraft` or a non-OPEN state is the row leaving for some other reason.
+    view = {"state": "OPEN", "isDraft": False, "latestReviews": [], "reviewRequests": []}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({"s1": {"last_known_status": "Idle"}}, set())
+    def gh_rd(*args):
+        if args[:2] == ("pr", "view"):
+            return dict(view)
+        if any("timelineItems" in a for a in args):
+            if mode == "broken":
+                raise RuntimeError("gh api graphql: boom")
+            number = next((int(a.split("=", 1)[1]) for a in args if a.startswith("number=")), 0)
+            stamp, who = EVENTS.get(number, (None, None))
+            nodes = [] if not stamp else [{
+                "createdAt": stamp,
+                "requestedReviewer": {"login": who} if who else {"slug": "reviewers"}}]
+            return {"data": {"repository": {"pullRequest": {"timelineItems": {"nodes": nodes}}}}}
+        return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
+    m.gh = gh_rd
+    p = m.Poller()
+    if mode == "returned":
+        # The #9404 shape: present, present, withdrawn, requested again, and again.
+        page["nodes"] = [row(9404), row(9999)]
+        p.tick(); print(json.dumps({"phase": "present_1"}))
+        p.tick(); print(json.dumps({"phase": "present_2"}))
+        page["nodes"] = [row(9999)]
+        p.tick(); print(json.dumps({"phase": "gone", "present": sorted(p.state["prs_present"]),
+                                    "marks": sorted(p.state["redispatched"]),
+                                    "withdrawn": sorted(p.state["withdrawn"])}))
+        page["nodes"] = [row(9404), row(9999)]
+        p.tick(); print(json.dumps({"phase": "again", "marks": sorted(p.state["redispatched"])}))
+        p.tick(); print(json.dumps({"phase": "still", "marks": sorted(p.state["redispatched"])}))
+    elif mode in ("team", "spent"):
+        # `team`: the request is held by a TEAM, so `still_requested` cannot attribute the list,
+        # and the principal's own review IS the latest review -- which is what `done` means. The
+        # answer must be "cannot tell", not "you submitted a review": the second is a withdrawal
+        # and would both take a live request off the Reviews list and re-dispatch the review.
+        #
+        # `spent`: the request is genuinely withdrawn and made again, but the tick it comes back
+        # on returns early on a moved head. The record must survive that tick unread.
+        view["reviewRequests"] = [{"slug": "reviewers"}] if mode == "team" else []
+        view["latestReviews"] = [{"author": {"login": "tester"}, "state": "APPROVED"}]
+        if mode == "spent":
+            m.round_started = lambda held, entry: True
+            m.Poller.head_moved = lambda self, *a, **k: None
+        page["nodes"] = [row(9404), row(9999)]
+        p.tick()
+        page["nodes"] = [row(9999)]
+        p.tick()
+        print(json.dumps({"phase": "left", "withdrawn": sorted(p.state["withdrawn"])}))
+        page["nodes"] = [row(9404), row(9999)]
+        if mode == "spent":
+            # A push landed between the withdrawal and the re-request, so this tick wakes a
+            # session and returns before the test for a new request is ever made.
+            m.Poller.record_request = lambda self, *a, **k: ("head_moved", "shaold")
+        p.tick()
+        print(json.dumps({"phase": "back", "marks": sorted(p.state["redispatched"]),
+                          "withdrawn": sorted(p.state["withdrawn"])}))
+        if mode == "spent":
+            m.Poller.record_request = lambda self, *a, **k: (None, None)
+            p.tick()
+            print(json.dumps({"phase": "later", "marks": sorted(p.state["redispatched"])}))
+    elif mode in ("draft", "index", "reopen"):
+        # THE BLOCKER, three ways. Each of these takes the row off the poller's page with the
+        # request still live on GitHub, and `returned` alone read every one of them as a
+        # withdrawal-and-remake — a second session on a review that is finished, which is #9404's
+        # own harm inverted. The live reason is the discriminator, and each mode drives a
+        # different one.
+        page["nodes"] = [row(9404), row(9999)]
+        p.tick(); p.tick()
+        if mode == "draft":
+            # The author converts to draft. `skip_drafts` filters the row before it can join
+            # `present`, and the live read says so.
+            view["isDraft"] = True
+            page["nodes"] = [row(9999)]
+        elif mode == "index":
+            # GitHub's search index omits the row while `issueCount` agrees with what it
+            # returned, so the tick is TRUSTED and `trust_empty` has nothing to disbelieve. The
+            # live read says the principal is still being asked.
+            view["reviewRequests"] = [{"login": "tester"}]
+            page["nodes"] = [row(9999)]
+        else:
+            # Closed, then reopened. `request_closed` takes the row out of `present` before the
+            # sweep, which the file documents as deliberate.
+            view["state"] = "CLOSED"
+            page["nodes"] = [row(9404, "CLOSED"), row(9999)]
+        p.tick()
+        print(json.dumps({"phase": "left", "present": sorted(p.state["prs_present"]),
+                          "withdrawn": sorted(p.state["withdrawn"])}))
+        view.update({"state": "OPEN", "isDraft": False, "reviewRequests": []})
+        page["nodes"] = [row(9404), row(9999)]
+        p.tick()
+        print(json.dumps({"phase": "back", "marks": sorted(p.state["redispatched"])}))
+    elif mode == "statuses":
+        # One tick each side of a withdrawal, with every status a request can arrive against.
+        page["nodes"] = [row(n) for n in (9811, 9812, 9813, 9814, 9815, 9999)]
+        p.tick()
+        page["nodes"] = [row(9999)]
+        p.tick()
+        page["nodes"] = [row(n) for n in (9811, 9812, 9813, 9814, 9815, 9999)]
+        print(json.dumps({"phase": "back"}))
+        p.tick()
+    else:
+        # The dated half, which needs no withdrawal at all: four requests present from the first
+        # tick, so `returned` is false for every one of them and only the stamp can speak.
+        page["nodes"] = [row(n) for n in (9801, 9802, 9803, 9804, 9805, 9999)]
+        p.tick()
+        print(json.dumps({"phase": "dated_1", "marks": sorted(p.state["redispatched"]),
+                          "date_stopped": p.date_stopped}))
+        # A SECOND tick with nothing changed, which is the only shape that can show what the
+        # mark is for: the stamp still postdates the ledger, so this half of "new" goes on
+        # saying yes for as long as the request is open. `returned` cannot say yes twice -- the
+        # key is in `prs_present` after the first tick -- so the withdrawal scenario above
+        # cannot reach this, and a control written against it passed for the wrong reason.
+        p.tick()
+        print(json.dumps({"phase": "dated", "marks": sorted(p.state["redispatched"]),
+                          "date_stopped": p.date_stopped}))
+
+elif scenario == "stale_withdrawal":
+    # The withdrawal record is the first test's only evidence, and it is kept no longer than
+    # `WITHDRAWN_KEEP_SECS`. A record older than that is dropped rather than licensing a
+    # dispatch nobody can account for -- and an unreadable stamp is dropped too.
+    offline()
+    p = m.Poller()
+    fresh = {"at": m.now_iso(), "why": "review request removed"}
+    old = {"at": "2026-01-01T00:00:00+00:00", "why": "review request removed"}
+    print(json.dumps({"fresh": m.Poller.withdrawal_fresh(fresh),
+                      "old": m.Poller.withdrawal_fresh(old),
+                      "garbage": m.Poller.withdrawal_fresh({"at": "not a date"}),
+                      "missing": m.Poller.withdrawal_fresh({}),
+                      "not_a_dict": m.Poller.withdrawal_fresh("x")}))
+
+elif scenario == "spoken_for":
+    # The fifth shape, driven directly. `done` is ALIVE, so shape 1's REDISPATCHABLE test cannot
+    # see a re-dispatched key -- and the tick that re-dispatches one is the tick the Review Desk
+    # source could offer the same review a second time.
+    offline()
+    p = m.Poller()
+    item = {"kind": "review_requested", "ledger_id": "gh-r-9404", "repo": "o/r", "pr": 9404}
+    done = {"status": "done", "session_id": "s1"}
+    before = p.request_spoken_for("gh-r-9404", done, item)
+    # The PERSISTED mark, which is what the pass writes and what the next tick still carries. A
+    # tick-scoped set closed only the same-tick case: the red team measured the GitHub pass
+    # offering the key on tick 3 and the Review Desk pass offering it on tick 4.
+    p.state["redispatched"]["gh-r-9404"] = {"at": m.now_iso(), "why": "test"}
+    after = p.request_spoken_for("gh-r-9404", done, item)
+    # And the spelling the two sources disagree about, which is the whole reason `requested_key`
+    # exists: GitHub hands back `nameWithOwner` as registered, Review Desk lower-cases it.
+    p.state["redispatched"]["gh-Locus-86"] = {"at": m.now_iso(), "why": "test"}
+    mixed = p.request_spoken_for("gh-locus-86", done, {"ledger_id": "gh-locus-86"})
+    print(json.dumps({"before": before, "after": after, "mixed": mixed}))
+
+elif scenario.startswith("tell"):
+    # DEV-996 part 2: the call itself. The stand-in on PATH is what answers, so `review_desk_run`
+    # -- the real one, with its real argv list and its real exit-code reading -- is under test.
+    def row(n, state=None):
+        r = {"number": n, "title": f"PR {n}", "url": f"https://github.com/o/r/pull/{n}",
+             "isDraft": False, "headRefOid": f"sha{n}", "createdAt": "2026-10-01T00:00:00Z",
+             "author": {"login": "someone"}, "repository": {"nameWithOwner": "o/r"}}
+        if state:
+            r["state"] = state
+        return r
+    mode = sys.argv[2] if len(sys.argv) > 2 else "told"
+    rdwork = pathlib.Path(os.environ["RDWORK"])
+    page = {"nodes": [row(9481), row(9464)]}
+    # One review-requested event per pull request, as GitHub's timeline carries them. 9470 has
+    # NONE, which is Review Desk's first rule: `--requested-at` is when GitHub made the request,
+    # so a request this file cannot date is not recorded at all rather than stamped with the
+    # sighting time. A second event appears on 9481 between two ticks in the `renew` mode.
+    events = {9481: ["2026-10-14T00:00:00Z"], 9464: ["2026-10-13T00:00:00Z"], 9470: []}
+    # How many times GitHub was asked for each pull request's request date. An undated request
+    # has no record to stop the asking, so without a bound it is one GraphQL query per tick for
+    # ever -- and the bound must NOT also rate-limit a key whose Review Desk call failed.
+    asked = {}
+    live = {}
+    # Whether the live `gh pr view` answers at all. `why_cleared` needs it to say WHY a request
+    # left, and a tick where it fails is the one the red team found: the sweep passes a key once,
+    # so the record used to be pruned and the withdrawal lost for ever.
+    boom = {"on": False, "dates": False}
+    m.linear = lambda cfg, q, v=None: {"issues": {"nodes": []}}
+    m.allele_state = lambda cfg: ({}, set())
+    def gh_tell(*args):
+        if args[:2] == ("pr", "view"):
+            if boom["on"]:
+                raise RuntimeError("gh pr view: boom")
+            return {"state": live.get(int(args[2]), "OPEN"), "isDraft": False,
+                    "latestReviews": [], "reviewRequests": []}
+        if any("timelineItems" in a for a in args):
+            if boom["dates"]:
+                raise RuntimeError("gh api graphql: boom")
+            number = next((int(a.split("=", 1)[1]) for a in args if a.startswith("number=")), 0)
+            asked[number] = asked.get(number, 0) + 1
+            nodes = [{"createdAt": at, "requestedReviewer": {"login": "tester"}}
+                     for at in events.get(number, [])]
+            return {"data": {"repository": {"pullRequest": {"timelineItems": {"nodes": nodes}}}}}
+        return {"data": {"search": {"issueCount": len(page["nodes"]), "nodes": page["nodes"]}}}
+    m.gh = gh_tell
+    # The record of a round is NOT what this half is about, and letting it through would put the
+    # stand-in's `review open` calls in the same log as the ones under test.
+    m.Poller.record_request = lambda self, rd, key, *a, **k: (None, None)
+    m.Poller.record_if_never_reviewed = lambda self, rd, recording, key, *a, **k: None
+    if mode == "told":
+        # The third row is the undated one, added here so the other modes' pages are unchanged.
+        page["nodes"] = [row(9481), row(9464), row(9470)]
+    if mode == "date_flake":
+        boom["dates"] = True
+    if mode == "timeout":
+        # What `review_desk_run` hands back when the binary does not answer, which is the one
+        # answer a stand-in cannot produce in under 30 seconds. The DETECTION is that function's
+        # and is pinned where it lives; what is under test here is this file's handling of it.
+        m.review_desk_run = lambda rd, *a, **k: (
+            "broken", None, "review-desk review requested did not answer in 30s")
+    p = m.Poller()
+    if mode != "renew":
+        p.tick()
+    at_9481 = (p.state["requests"].get("gh-r-9481") or {}).get("at")
+    print(json.dumps({"phase": "first", "requests": sorted(p.state["requests"]),
+                      # The stamp Review Desk is given is GitHub's own, and nothing else may
+                      # stand in for it. Asserted as a comparison rather than as a literal,
+                      # because a literal would pin the fixture's date in two files.
+                      "dated_from_github": at_9481 == int(m.parse_iso("2026-10-14T00:00:00Z")),
+                      "at_9481": at_9481}))
+    if mode == "told":
+        p.tick()
+        print(json.dumps({"phase": "asked", "asked_9470": asked.get(9470),
+                          "asked_9481": asked.get(9481)}))
+    if mode in ("told", "timeout"):
+        p.tick()
+        print(json.dumps({"phase": "second", "requests": sorted(p.state["requests"])}))
+    elif mode == "withdrawn":
+        # 9481's request is withdrawn -- GitHub stops listing it, the pull request is still open.
+        # 9464 MERGES, which GitHub goes on listing: it leaves `present` by this file's own merge
+        # guard, and its request is not a withdrawal.
+        page["nodes"] = [row(9464, "MERGED")]
+        live[9464] = "MERGED"
+        p.tick()
+        print(json.dumps({"phase": "withdrawn", "requests": sorted(p.state["requests"])}))
+    elif mode == "renew":
+        # Review Desk's second rule: the verb is called on first sight AND when a new request
+        # appears. A request made while the row never left the page is the second case, and the
+        # record this poller holds still carries the first request's timestamp -- which their
+        # store reads to decide whether a round satisfied it. The ledger's own stamp sits BETWEEN
+        # the two events, so tick 1 records and dispatches nothing and tick 2 does both.
+        p.tick()
+        print(json.dumps({"phase": "renew_1", "requests": sorted(p.state["requests"]),
+                          "at_9481": (p.state["requests"].get("gh-r-9481") or {}).get("at")}))
+        events[9481].append("2026-10-16T00:00:00Z")
+        p.tick()
+        print(json.dumps({"phase": "renew_2",
+                          "at_9481": (p.state["requests"].get("gh-r-9481") or {}).get("at"),
+                          "marks": sorted(p.state["redispatched"])}))
+    elif mode == "date_flake":
+        # One `gh` failure takes the date for every key on the page, and the undated bound must
+        # NOT be spent on it: the next healthy tick records, rather than a window later.
+        print(json.dumps({"phase": "flaked", "requests": sorted(p.state["requests"]),
+                          "undated": sorted(k for k in p.state["emitted"]
+                                            if k.startswith("review_desk|undated|"))}))
+        boom["dates"] = False
+        p.tick()
+        print(json.dumps({"phase": "recovered", "requests": sorted(p.state["requests"])}))
+    elif mode == "stopped_withdraw":
+        # Two requests clear on one tick against a broken store. The per-tick bound covers the
+        # withdrawal path too, so the first one asks and the second takes the debt.
+        page["nodes"] = [row(9470)]
+        (rdwork / "rd.mode").write_text("broken")
+        p.tick()
+        print(json.dumps({"phase": "stopped",
+                          "debts": sorted(k for k, v in p.state["requests"].items()
+                                          if isinstance(v, dict) and v.get("withdraw"))}))
+    elif mode == "unresolved":
+        # The request is genuinely withdrawn on the tick `gh pr view` cannot be reached. The
+        # reason is then `CANNOT_READ_PR`, which is NOT a withdrawal -- nothing may be written on
+        # a call that did not answer -- so the record has to survive until something can ask
+        # again. `settle_requests` is that something.
+        page["nodes"] = [row(9464)]
+        boom["on"] = True
+        p.tick()
+        held = p.state["requests"].get("gh-r-9481") or {}
+        print(json.dumps({"phase": "unresolved", "unresolved": held.get("unresolved"),
+                          "requests": sorted(p.state["requests"])}))
+        boom["on"] = False
+        p.tick()
+        print(json.dumps({"phase": "settled", "requests": sorted(p.state["requests"]),
+                          "withdrawn": sorted(p.state["withdrawn"])}))
+    elif mode == "owed_back":
+        # The debt, and then the request coming BACK before it could be collected. Withdrawing
+        # then would be a lie this file would have to take back, so the request is told again
+        # with its own timestamp and the debt is cleared instead.
+        page["nodes"] = [row(9464)]
+        (rdwork / "rd.mode").write_text("broken")
+        p.tick()
+        print(json.dumps({"phase": "owed",
+                          "withdraw": (p.state["requests"].get("gh-r-9481") or {}).get("withdraw")}))
+        (rdwork / "rd.mode").write_text("ok")
+        page["nodes"] = [row(9481), row(9464)]
+        p.tick()
+        print(json.dumps({"phase": "back", "held": p.state["requests"].get("gh-r-9481")}))
+    elif mode == "owed":
+        # The withdrawal meets a broken store, and the next tick collects the debt. `prs_present`
+        # is overwritten every trusted tick, so without the retry this withdrawal is lost for good.
+        page["nodes"] = [row(9464)]
+        (rdwork / "rd.mode").write_text("broken")
+        p.tick()
+        held = p.state["requests"].get("gh-r-9481") or {}
+        print(json.dumps({"phase": "owed", "withdraw": held.get("withdraw"),
+                          "requests": sorted(p.state["requests"])}))
+        (rdwork / "rd.mode").write_text("ok")
+        p.tick()
+        print(json.dumps({"phase": "collected", "requests": sorted(p.state["requests"])}))
 
 else:
     sys.exit("unknown scenario " + scenario)
@@ -854,6 +1280,400 @@ printf '\n  the query itself must ask for the state\n'
 # because the stand-in `gh` answered the shape I had assumed."
 ok "REVIEWS_Q asks for each row's state"             "$(grep -c 'number title url isDraft state headRefOid' "$disp" || true)" "1"
 
+# ---- DEV-996: a new request re-dispatches, and Review Desk hears about the request -----------
+#
+# #9404 on 15 October 2026: GitHub requested a review again, the ledger said "done, round 2", and
+# nothing was dispatched and nothing said. Patrick's decision on the ticket is that a NEW request
+# starts a new round, and his definition of new is two tests -- it went away and came back, or the
+# request event postdates the ledger. A request that never went away is not new.
+
+printf '\nDEV-996 -- a new request on a `done` entry\n'
+
+# Review Desk OFF, and the stand-in reachable, so this half is proved to need neither: the
+# re-dispatch is a decision about this instance's own ledger, and `mode: off` must make no call.
+instance "2026-09-11T13:18:11+00:00"
+desk off
+done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" redispatch returned)
+ok "the withdrawn-and-remade request is offered"     "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "1"
+ok "  flagged as a re-request, like a skipped one"   "$(grep -c '"rerequested": true.*"key": "gh-r-9404"' "$work/out" || true)" "1"
+ok "  and as something that happened, not backlog"   "$(grep -c '"backlog": false, "rerequested": true.*"key": "gh-r-9404"' "$work/out" || true)" "1"
+ok "  saying which half of \"new\" it was"             "$(says 'the request was withdrawn and made again')" "yes"
+# The pre-fix behaviour, and the whole of #9404: `done` is ALIVE, so a returned request fell into
+# `review_rerequested` -- a message to a session that posted its review and was then discarded.
+ok "  and never as a message to a dead session"      "$(grep -c '"event": "review_rerequested".*9404' "$work/out" || true)" "0"
+# Two ticks with the request present, before it was ever withdrawn. A request that never went
+# away is not new, and dispatching one would put a second session on every finished review.
+ok "a request that never went away is not new"       "$(sed -n '1,/"phase": "present_2"/p' "$work/out" | grep -c '"event": "review_request",.*9404' || true)" "0"
+# The two ticks AFTER it came back. One `review_request`, not one per tick: the count above is
+# over the whole run, so this is what says the second tick added none.
+ok "the same request dispatches once, not per tick"  "$(sed -n '/"phase": "again"/,$p' "$work/out" | grep -c '"event": "review_request",.*9404' || true)" "0"
+ok "the mark is kept while the request is open"      "$(sed -n '/"phase": "still"/p' "$work/out" | grep -c 'gh-r-9404' || true)" "1"
+ok "  and dropped when the request goes away"        "$(sed -n '/"phase": "gone"/p' "$work/out" | grep -c '"marks": \[\]' || true)" "1"
+# The control, in the same run: a request with no ledger entry at all is offered as it always was,
+# so "nothing was emitted" cannot pass by the pass having died.
+ok "an ordinary request is still offered"            "$(grep -c '"event": "review_request",.*9999' "$work/out" || true)" "1"
+ok "\`mode: off\` makes no Review Desk call at all"    "$(calls 'review requested')" "0"
+ok "and the run exits clean"                         "$rc" "0"
+
+# The same scenario with Review Desk ON, so the assertion above cannot pass because the stand-in
+# happened to be unreachable: identical PATH, identical helper, and a non-zero count. Without
+# this pair, `mode: off` and a broken `runrd` are indistinguishable -- which is how an assertion
+# reading 0 passes while testing nothing. It pins the independence in the other direction too:
+# the re-dispatch is the same with Review Desk on as with it off.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" redispatch returned)
+ok "  while \`auto\` on the same PATH does call it"    "$([ "$(calls 'review requested')" -gt 0 ] && echo yes || echo no)" "yes"
+ok "  and the re-dispatch is unchanged by it"        "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "1"
+ok "  and that run exits clean"                      "$rc" "0"
+
+ok "  and the withdrawal itself was recorded"        "$(sed -n '/"phase": "gone"/p' "$work/out" | grep -c '"withdrawn": \["gh-r-9404"\]' || true)" "1"
+
+printf '\n  and a row leaving the page WITHOUT a withdrawal is not a new request\n'
+# The blocker a red team of this branch found and executed. `returned` says the row left this
+# poller's PAGE, and three things do that with the request still live on GitHub: a conversion to
+# draft (filtered by `skip_drafts`), a stale search index on a tick `trust_empty` believes, and a
+# close that is later reopened. Each one dispatched a second session onto a finished review --
+# #9404's own harm inverted. The live reason read as the row leaves is the discriminator, and the
+# reversal at the bottom of this file brings all three back.
+for leaving in draft index reopen; do
+  instance "2026-09-11T13:18:11+00:00"
+  desk off
+  done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+  rc=$(run "$disp" redispatch "$leaving")
+  ok "'$leaving': the return is not a new request"   "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "0"
+  ok "  nothing was recorded as withdrawn"           "$(sed -n '/"phase": "left"/p' "$work/out" | grep -c '"withdrawn": \[\]' || true)" "1"
+  ok "  and nothing is marked re-dispatched"         "$(sed -n '/"phase": "back"/p' "$work/out" | grep -c '"marks": \[\]' || true)" "1"
+  ok "  while the ordinary request is still offered" "$(grep -c '"event": "review_request",.*9999' "$work/out" || true)" "1"
+  ok "  and the run exits clean"                     "$rc" "0"
+done
+
+printf '\n  and a request it cannot attribute is never read as answered\n'
+# A red team of this branch executed this one against the FIX: the request is held by a team, so
+# `still_requested` cannot attribute the list -- and for a `done` key the principal's own review
+# is the latest review by definition. With the submitted-review branch ahead of the cannot-tell
+# one, every one of the three Nones fell through to "you submitted a review", which IS a
+# withdrawal: a live request taken off the Reviews list, and the review re-dispatched.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" redispatch team)
+ok "a team-held request is not read as answered"     "$(grep -c 'could not tell whether it still is' "$work/out" || true)" "1"
+ok "  so nothing is recorded as withdrawn"           "$(sed -n '/"phase": "left"/p' "$work/out" | grep -c '"withdrawn": \[\]' || true)" "1"
+ok "  the return is not a new request"               "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "0"
+ok "  and Review Desk is told of no withdrawal"      "$(calls '--withdrawn')" "0"
+ok "  while the ordinary request is still offered"   "$(grep -c '"event": "review_request",.*9999' "$work/out" || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and the evidence is spent when it is read, not when the row returns\n'
+# The other half of the same red team's finding: the tick a withdrawn-and-remade request comes
+# back on can return early on a moved head, before the test for a new request is made. Dropping
+# the record because the key is present again discards it unread.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" redispatch spent)
+ok "a wake does not dispatch"                        "$(sed -n '/"phase": "left"/,/"phase": "back"/p' "$work/out" | grep -c '"event": "review_request",.*9404' || true)" "0"
+ok "  and the withdrawal survives that tick"         "$(sed -n '/"phase": "back"/p' "$work/out" | grep -c '"withdrawn": \["gh-r-9404"\]' || true)" "1"
+ok "  so the next tick dispatches it"                "$(sed -n '/"phase": "later"/p' "$work/out" | grep -c '"marks": \["gh-r-9404"\]' || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and every other status is left exactly as it was\n'
+instance "2026-09-11T13:18:11+00:00"
+desk off
+entry gh-r-9811 active s1
+entry gh-r-9812 stopped s1
+entry gh-r-9813 deferred s1
+entry gh-r-9814 merged s1
+done_entry gh-r-9815 "2026-10-01T00:00:00+00:00"
+rc=$(run "$disp" redispatch statuses)
+# Everything below reads the tick AFTER the requests came back, which `"phase": "back"` precedes.
+back () { sed -n '/"phase": "back"/,$p' "$work/out"; }
+ok "a done entry is dispatched again"                "$(back | grep -c '"event": "review_request",.*9815' || true)" "1"
+ok "an active one is told, not dispatched"           "$(back | grep -c '"event": "review_rerequested".*9811' || true)" "1"
+ok "  and is not dispatched"                         "$(back | grep -c '"event": "review_request",.*9811' || true)" "0"
+ok "a stopped one is told, not dispatched"           "$(back | grep -c '"event": "review_rerequested".*9812' || true)" "1"
+ok "  and is not dispatched either"                  "$(back | grep -c '"event": "review_request",.*9812' || true)" "0"
+# DECIDED: this file defines both as "never dispatched again", and a request arriving afterwards
+# is not a second opinion about that.
+ok "a deferred one gets nothing"                     "$(back | grep -c '9813' || true)" "0"
+ok "a merged one gets nothing"                       "$(back | grep -c '9814' || true)" "0"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  the second half of "new": the request event postdates the ledger\n'
+# No withdrawal at all here -- every request is present from the first tick, so `returned` is
+# false for all four and only the stamp can speak. This is the case the first half cannot see: a
+# request withdrawn and made again while the poller was down carries the key straight across.
+instance "2026-09-11T13:18:11+00:00"
+desk off
+done_entry gh-r-9801 "2026-10-13T00:00:00+00:00"
+done_entry gh-r-9802 "2026-10-13T00:00:00+00:00"
+done_entry gh-r-9803 "2026-10-13T00:00:00+00:00"
+done_entry gh-r-9804 "2026-10-13T00:00:00+00:00"
+rc=$(run "$disp" redispatch dated)
+ok "an event after the ledger's update is new"       "$(grep -c '"event": "review_request",.*9801' "$work/out" || true)" "1"
+ok "  and the event says the date it read"           "$(says '"new_request": "requested at 2026-10-14')" "yes"
+ok "an event before it is not"                       "$(grep -c '"event": "review_request",.*9802' "$work/out" || true)" "0"
+# A minute after the ledger write, which is the author pushing a fix and asking again. A guard
+# band on this comparison masked it, and at the shipped 300-second poll no tick lands in the gap
+# for the other test to see -- so the band reintroduced #9404 about seven times in eight.
+ok "an event a minute after the ledger IS new"       "$(grep -c '"event": "review_request",.*9805' "$work/out" || true)" "1"
+ok "a review requested of somebody else is not"      "$(grep -c '"event": "review_request",.*9803' "$work/out" || true)" "0"
+ok "a review requested of a team is not"             "$(grep -c '"event": "review_request",.*9804' "$work/out" || true)" "0"
+ok "only the new one is marked"                      "$(sed -n '/"phase": "dated"/p' "$work/out" | grep -c '"marks": \["gh-r-9801"\]' || true)" "1"
+# Two ticks, one dispatch. The stamp postdates the ledger on both of them, so this is the mark
+# doing the work -- `returned` is already false by the second tick.
+ok "and a second tick of the same request adds none" "$(sed -n '/"phase": "dated_1"/,$p' "$work/out" | grep -c '"event": "review_request",.*9801' || true)" "0"
+ok "and the run exits clean"                         "$rc" "0"
+
+# A `gh` that cannot answer must not re-dispatch. The expensive failure is a finished review
+# dispatched again; the cheap one is a new request seen on the next withdrawal instead.
+instance "2026-09-11T13:18:11+00:00"
+desk off
+done_entry gh-r-9801 "2026-10-13T00:00:00+00:00"
+rc=$(run "$disp" redispatch broken)
+ok "a gh that cannot be asked re-dispatches nothing" "$(grep -c '"event": "review_request",.*9801' "$work/out" || true)" "0"
+ok "  and gives up asking for the rest of the tick"  "$(says '"date_stopped": true')"      "yes"
+# ...and says so. A query that fails for a reason that PERSISTS -- a scope, an enterprise host, a
+# sustained rate limit -- means no request is ever recorded in Review Desk again, and the only
+# symptom would be the one this ticket was opened about.
+ok "  and says it could not read the date"           "$(grep -c '"event": "review_request_undated"' "$work/out" || true)" "1"
+ok "  naming what went wrong"                        "$(says '"detail": "RuntimeError')"    "yes"
+ok "  and the tick exits clean"                      "$rc" "0"
+
+printf '\n  and a withdrawal stops being evidence once it is stale\n'
+instance ""
+rc=$(run "$disp" stale_withdrawal)
+ok "a withdrawal recorded just now is evidence"      "$(says '"fresh": true')"             "yes"
+ok "  one from nine months ago is not"               "$(says '"old": false')"              "yes"
+ok "  an unreadable stamp is not"                    "$(says '"garbage": false')"          "yes"
+ok "  a missing one is not"                          "$(says '"missing": false')"          "yes"
+ok "  and neither is a record of the wrong shape"    "$(says '"not_a_dict": false')"       "yes"
+ok "and it exits clean"                              "$rc" "0"
+
+printf '\n  and the Review Desk source does not offer the same review again\n'
+# `done` is ALIVE, so `request_spoken_for`'s REDISPATCHABLE test cannot see a re-dispatched key.
+# The one tick a finished review is re-offered on is the tick it could be offered TWICE.
+instance ""
+rc=$(run "$disp" spoken_for)
+ok "a done key is not spoken for by default"         "$(says '"before": false')"           "yes"
+ok "a re-dispatched key is"                          "$(says '"after": true')"             "yes"
+ok "whichever case the two sources spell it in"      "$(says '"mixed": true')"             "yes"
+ok "and it exits clean"                              "$rc" "0"
+
+printf '\n  and what the Dispatcher is told about it\n'
+# The prose is the contract: the poller emits the event and SKILL.md is the only thing that says
+# what a Dispatcher does with it. A behaviour shipped without its line here reaches nobody.
+skill="$root/skills/dispatcher/SKILL.md"
+ok "SKILL.md says a done key can be asked again"     "$(grep -c 'even on a key your ledger says is .done.' "$skill")" "1"
+ok "  and that it is dispatched like any other"      "$(grep -c 'a second round on' "$skill")" "1"
+ok "  and names the field that says why"             "$(grep -c 'new_request. field' "$skill")" "1"
+ok "  and that a request that stayed is not new"     "$(grep -c 'never went away is not new' "$skill")" "1"
+ok "  and which statuses are left alone"             "$(grep -c 'this does not reopen' "$skill")" "1"
+ok "  that the request itself is recorded"           "$(grep -c 'review requested --repo R --pr N' "$skill")" "1"
+ok "  that a failure never stops a tick"             "$(grep -c 'A failure never stops a tick' "$skill")" "1"
+ok "  that a withdrawal is written on evidence"      "$(grep -c 'written on evidence, never on a row' "$skill")" "1"
+ok "  and that a merge is not one"                   "$(grep -c 'merged pull request is therefore not a withdrawal' "$skill")" "1"
+ok "  and names the event for an unreadable date"    "$(grep -c 'review_request_undated' "$skill")" "1"
+
+printf '\nDEV-996 -- Review Desk is told about the request itself\n'
+# The stamp the fixture gives GitHub's timeline, computed once: pinning it as a literal in the
+# assertions would put the fixture's date in two places.
+stamp=$(python3 -c 'import datetime as d; print(int(d.datetime(2026,10,14,tzinfo=d.timezone.utc).timestamp()))')
+
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+# A session is already working 9464, so "told about every open request whatever the ledger says"
+# is exercised rather than asserted in a comment. GitHub asking is a fact about GitHub.
+entry gh-r-9464 active s1
+rc=$(runrd "$disp" tell told)
+ok "a first sighting records the request"            "$(calls "review requested --repo o/r --pr 9481 --requested-at $stamp --json")" "1"
+ok "  in unix seconds, off GitHub's own clock"       "$(says '"dated_from_github": true')"  "yes"
+ok "  and so is one a session is already working"    "$(calls 'review requested --repo o/r --pr 9464')" "1"
+# Review Desk's first rule, and the one this file got wrong until review-desk#63 pinned the
+# field: the stamp is GitHub's or there is no row. Their store is last-write-wins on (repo, pr)
+# and a later timestamp resets `satisfied_by_review_id`, so a sighting time standing in for a
+# request made hours earlier would report a reviewed pull request as waiting again.
+ok "  while a request GitHub will not date is not"   "$(calls 'review requested --repo o/r --pr 9470')" "0"
+ok "  and is not recorded as told either"            "$(sed -n '/"phase": "first"/p' "$work/out" | grep -c 'gh-r-9470' || true)" "0"
+# ...and the asking for it is bounded: three ticks, one query. The bound must not touch a key
+# whose Review Desk call failed, which is what "asks once a tick, not once per request" below
+# pins from the other side.
+ok "  and GitHub is asked for its date once"         "$(sed -n '/"phase": "asked"/p' "$work/out" | grep -c '"asked_9470": 1' || true)" "1"
+ok "  while a dated one is asked once and recorded"  "$(sed -n '/"phase": "asked"/p' "$work/out" | grep -c '"asked_9481": 1' || true)" "1"
+# Two ticks, two requests, two calls: the second tick must not touch `last_activity_at` on a row
+# nothing has happened to, which is what every repeat call in this file is careful about.
+# Three ticks and two dated requests: one call each, and no call at all for the undated one or
+# for either request on the ticks after the first.
+ok "later ticks record nothing again"                "$(calls 'review requested')"          "2"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and told when GitHub stops asking\n'
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell withdrawn)
+ok "a withdrawn request is withdrawn in the record"  "$(calls "review requested --repo o/r --pr 9481 --requested-at $stamp --withdrawn --json")" "1"
+# GitHub goes on listing a merged pull request's review request, so nothing was withdrawn. The
+# finished state is `request_closed`'s and the harvest's.
+ok "a merged pull request is not a withdrawal"       "$(calls '--pr 9464 --requested-at [0-9]* --withdrawn')" "0"
+ok "  and the request's record is dropped"           "$(sed -n '/"phase": "withdrawn"/p' "$work/out" | grep -c '"requests": \[\]' || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  a withdrawal that could not be delivered is owed, not lost\n'
+# `prs_present` is overwritten every trusted tick, so the clearance sweep passes a key exactly
+# once: a Review Desk that was down for that single tick would leave the request drawn for ever.
+# `reemit_after_secs` of 0 is what lets one run of the driver contain the retry.
+instance "2026-09-11T13:18:11+00:00"
+desk auto 0
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell owed)
+ok "a failed withdrawal is remembered as owed"       "$(says '"withdraw": true')"           "yes"
+ok "  and the next tick collects it"                 "$(calls '--pr 9481 --requested-at [0-9]* --withdrawn')" "2"
+ok "  and the owed record is held until it is"       "$(sed -n '/"phase": "owed"/p' "$work/out" | grep -c 'gh-r-9481' || true)" "1"
+ok "  then dropped once it is delivered"             "$(sed -n '/"phase": "collected"/p' "$work/out" | grep -c 'gh-r-9481' || true)" "0"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and told again when a NEW request appears on a row that never left\n'
+# Review Desk's second rule, from the session building the verb: call it on first sight and when
+# a new request appears, never once a tick. A request made while the row stayed on the page is
+# that second case, and their store is last-write-wins -- so the new request has to arrive with
+# ITS own stamp or a round that predates it goes on satisfying it.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+# The ledger stamp sits BETWEEN the two request events, so tick 1 is an ordinary sighting and
+# tick 2 is a new request that never left GitHub's list.
+done_entry gh-r-9481 "2026-10-15T00:00:00+00:00"
+echo ok > "$work/rd.mode"
+t1=$(python3 -c 'import datetime as d; print(int(d.datetime(2026,10,14,tzinfo=d.timezone.utc).timestamp()))')
+t2=$(python3 -c 'import datetime as d; print(int(d.datetime(2026,10,16,tzinfo=d.timezone.utc).timestamp()))')
+rc=$(runrd "$disp" tell renew)
+ok "the first sighting carries the first stamp"      "$(calls "review requested --repo o/r --pr 9481 --requested-at $t1 --json")" "1"
+ok "  and dispatches nothing"                        "$(sed -n '1,/"phase": "renew_1"/p' "$work/out" | grep -c '"event": "review_request",.*9481' || true)" "0"
+ok "the new request is told with ITS own stamp"      "$(calls "review requested --repo o/r --pr 9481 --requested-at $t2 --json")" "1"
+ok "  and is dispatched, once"                       "$(sed -n '/"phase": "renew_1"/,$p' "$work/out" | grep -c '"event": "review_request",.*9481' || true)" "1"
+ok "  and the record carries the new stamp"          "$(sed -n '/"phase": "renew_2"/p' "$work/out" | grep -c "\"at_9481\": $t2" || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and one flaky `gh` does not cost the page a window\n'
+# The bound on asking GitHub for a date is for an UNDATABLE request, never for a call that
+# failed: `date_stopped` makes the answer None for every remaining key on the page, so marking
+# on that outcome took a whole page's first recording out for a full `reemit_after_secs` after
+# `gh` had recovered. Found by a red team of this branch, against the fix.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell date_flake)
+ok "a failed date read records nothing"              "$(sed -n '/"phase": "flaked"/p' "$work/out" | grep -c '"requests": \[\]' || true)" "1"
+ok "  and takes no undated bound with it"            "$(sed -n '/"phase": "flaked"/p' "$work/out" | grep -c '"undated": \[\]' || true)" "1"
+ok "  and says so once"                              "$(grep -c '"event": "review_request_undated"' "$work/out" || true)" "1"
+ok "the very next tick records them"                 "$(sed -n '/"phase": "recovered"/p' "$work/out" | grep -c 'gh-r-9481' || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and one broken store is one call, on the withdrawal path too\n'
+# `tell_requested` promises one attempt per tick for the whole page. The clearance sweep did not
+# honour it, so a page of clearances against a hung install was one 30-second timeout each -- and
+# each burned its own retry mark. Two keys clear here; the first asks, the second takes the debt.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell stopped_withdraw)
+ok "two clearances against a broken store ask once"  "$(calls '--withdrawn')" "1"
+ok "  and the other is owed, not dropped"            "$(sed -n '/"phase": "stopped"/p' "$work/out" | grep -c '"debts": \["gh-r-9464", "gh-r-9481"\]' || true)" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and a reason that could not be read is asked again, not thrown away\n'
+# The red team's finding 2: `prs_present` is overwritten every trusted tick, so the clearance
+# sweep passes a key exactly once. A `gh pr view` that failed on that single tick dropped the
+# record -- the only address a withdrawal could be sent to -- and three clean ticks later the
+# request was still drawn on the Reviews list.
+instance "2026-09-11T13:18:11+00:00"
+desk auto 0
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell unresolved)
+ok "an unreadable reason keeps the record"           "$(sed -n '/"phase": "unresolved"/p' "$work/out" | grep -c '"unresolved": true' || true)" "1"
+# One withdrawal across both ticks, not two: nothing was written on the strength of a call that
+# did not answer, and the settle delivered exactly one once it could.
+ok "  withdraws exactly once, on the later tick"     "$(calls '--pr 9481 --requested-at [0-9]* --withdrawn')" "1"
+ok "  and the record is gone afterwards"             "$(sed -n '/"phase": "settled"/p' "$work/out" | grep -c 'gh-r-9481' || true)" "0"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and a request that comes back is told again, not withdrawn\n'
+instance "2026-09-11T13:18:11+00:00"
+desk auto 0
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell owed_back)
+ok "the debt is taken when the store is broken"      "$(sed -n '/"phase": "owed"/p' "$work/out" | grep -c '"withdraw": true' || true)" "1"
+ok "  and the return clears it rather than paying"   "$(sed -n '/"phase": "back"/p' "$work/out" | grep -c '"withdraw"' || true)" "0"
+ok "  so no withdrawal is ever delivered"            "$(calls '--pr 9481 --requested-at [0-9]* --withdrawn')" "1"
+# And no second write for it: GitHub's stamp has not moved, so this is the same request Review
+# Desk already holds -- it is the DEBT that was wrong, not the row. A repeat write would move
+# `last_activity_at` on a row nothing happened to, which is what every call in this file avoids.
+ok "  and the unchanged request needs no new write"  "$(calls 'review requested --repo o/r --pr 9481 --requested-at [0-9]* --json')" "1"
+ok "and the run exits clean"                         "$rc" "0"
+
+printf '\n  and nothing it can answer stops the tick\n'
+# `review requested` does not exist yet: DEV-996 ships Review Desk first, and until it does THIS
+# is the ordinary answer on every install in the world.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo unknown > "$work/rd.mode"
+rc=$(runrd "$disp" tell told)
+ok "a build without the verb says so, once"          "$(grep -c '"call": "review requested"' "$work/out" || true)" "1"
+ok "  naming what is lost by it"                     "$(says 'stays invisible on the Reviews list')" "yes"
+ok "  and asks once a tick, not once per request"    "$(calls 'review requested')"          "3"
+ok "  and records nothing as told"                   "$(says '"requests": \[\]')"           "yes"
+ok "  and the tick exits 0, never 2"                 "$rc" "0"
+
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo refused > "$work/rd.mode"
+rc=$(runrd "$disp" tell told)
+ok "a refusal about one request is said once"        "$(grep -c '"state": "refused".*"call": "review requested"' "$work/out" || true)" "1"
+ok "  as one example, not the extent of it"          "$(grep -c '"example": true' "$work/out" || true)" "1"
+ok "  and the tick exits 0, never 2"                 "$rc" "0"
+
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo broken > "$work/rd.mode"
+rc=$(runrd "$disp" tell told)
+ok "an install exiting 2 is loud in every mode"      "$(grep -c '"event": "review_desk_unavailable".*"state": "broken"' "$work/out" || true)" "1"
+ok "  naming the call that met it"                   "$(grep -c '"call": "review requested"' "$work/out" || true)" "1"
+ok "  and asks once a tick for the whole page"       "$(calls 'review requested')"          "3"
+ok "  and the tick exits 0, never 2"                 "$rc" "0"
+
+# The timeout, which no stand-in can produce in under 30 seconds. Its DETECTION is
+# `review_desk_run`'s and is pinned where that lives; what is under test here is this file's
+# handling of the answer it hands back.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+rc=$(runrd "$disp" tell timeout)
+ok "a timeout is loud"                               "$(says 'did not answer in 30s')"      "yes"
+ok "  and the tick exits 0, never 2"                 "$rc" "0"
+
+# An ABSENT install is the one answer that is silent under `auto` -- an instance without Review
+# Desk is owed nothing extra -- and loud under `on`. That contract is this file's oldest, and
+# DEV-996's call joins it rather than reopening it. `run` is the narrowed PATH: no review-desk.
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+rc=$(run "$disp" tell told)
+ok "an absent install is silent under \`auto\`"        "$(grep -c '"event": "review_desk_unavailable"' "$work/out" || true)" "0"
+ok "  and still records nothing as told"             "$(says '"requests": \[\]')"           "yes"
+ok "  and the tick exits clean"                      "$rc" "0"
+instance "2026-09-11T13:18:11+00:00"
+desk on
+rc=$(run "$disp" tell told)
+ok "an absent install is loud under \`on\`"            "$(grep -c '"state": "absent".*"call": "review requested"' "$work/out" || true)" "1"
+ok "  and the tick exits clean"                      "$rc" "0"
+
 # ---- the negative control: reverse the fix, and require these tests to fail ------------------
 #
 # Without this, every assertion above could be passing for a reason unrelated to the bug. The
@@ -971,6 +1791,109 @@ instance "2026-09-11T13:18:11+00:00"
 rc=$(run "$work/noreview.py" pr_state_rows)
 ok "no carve-out: the never-reviewed row is lost"     "$(sed -n '/"phase": "opened"/p' "$work/out" | grep -c 'gh-r-9602' || true)" "0"
 ok "  and the event carries no review either"         "$(grep -c '"event": "review_request_closed".*9602.*"review_desk_id": null' "$work/out" || true)" "1"
+
+# DEV-996's four controls. Each one is the state of this file before a specific line of the
+# commit, and each must invert a specific assertion above -- not merely fail somewhere.
+
+# 1. No test for a new request at all, which is #9404 exactly: `done` is ALIVE, so a returned
+#    request falls into `review_rerequested` and is relayed to a session that no longer exists.
+python3 - "$disp" "$work/nonew.py" <<'PYNONEW'
+import sys
+src = open(sys.argv[1]).read()
+old = '            new = self.new_request(cfg, key, repo, pr["number"], entry)'
+new = '            new = None  # NEW REQUEST REVERSED'
+assert old in src, "new_request call anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYNONEW
+ok "the new-request reversal changed one line"       "$(grep -c 'NEW REQUEST REVERSED' "$work/nonew.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+desk off
+done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+rc=$(run "$work/nonew.py" redispatch returned)
+ok "no new-request test: the done entry is not dispatched" "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "0"
+ok "  and the re-request is relayed to a dead session"     "$(grep -c '"event": "review_rerequested".*9404' "$work/out" || true)" "1"
+
+# 2. The test, without the mark that makes it fire once. The fifth tick re-offers the same
+#    request, and nothing downstream can tell that from a second asking.
+python3 - "$disp" "$work/nomark.py" <<'PYNOMARK'
+import sys
+src = open(sys.argv[1]).read()
+old = '                self.state["redispatched"][key] = {"at": now_iso(), "why": new}'
+new = '                pass  # MARK REVERSED'
+assert old in src, "redispatch mark anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYNOMARK
+ok "the mark reversal changed one line"              "$(grep -c 'MARK REVERSED' "$work/nomark.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+desk off
+# Driven on the DATED half, because that is the one that can repeat: a stamp that postdates the
+# ledger goes on postdating it, where `returned` is false on the very next tick.
+done_entry gh-r-9801 "2026-10-13T00:00:00+00:00"
+rc=$(run "$work/nomark.py" redispatch dated)
+ok "no mark: the same request dispatches twice"      "$(grep -c '"event": "review_request",.*9801' "$work/out" || true)" "2"
+
+# 3. The withdrawal fired on the key leaving the list rather than on the live reason. A merged
+#    pull request's request is still listed by GitHub, so this writes a withdrawal that did not
+#    happen -- and `request_closed` and the harvest own that row.
+python3 - "$disp" "$work/anyclear.py" <<'PYANY'
+import sys
+src = open(sys.argv[1]).read()
+old = '''        if reason.startswith(WITHDRAWN_WHY):
+            self.withdraw_request(rd, key, where, every)
+            return'''
+new = '''        if True:  # WITHDRAWN REASON REVERSED
+            self.withdraw_request(rd, key, where, every)
+            return'''
+assert old in src, "withdrawal reason anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYANY
+ok "the reason reversal changed one line"            "$(grep -c 'WITHDRAWN REASON REVERSED' "$work/anyclear.py" || true)" "1"
+instance "2026-09-11T13:18:11+00:00"
+desk auto
+echo ok > "$work/rd.mode"
+rc=$(runrd "$work/anyclear.py" tell withdrawn)
+ok "any reason: the merged PR is withdrawn too"      "$(calls '--pr 9464 --requested-at [0-9]* --withdrawn')" "1"
+
+# 4. THE BLOCKER's control: the first test of "new" reading the row's absence rather than the
+#    recorded withdrawal, which is how this branch shipped to its first review. A draft toggle
+#    then dispatches a second session onto a finished review.
+# Reversed at the RECORDING rather than at the test, because that is the line the fix is: drop
+# the reason check and every row that leaves the page records a withdrawal, which is what
+# `returned` amounted to before it. The status condition stays, so only a `done` key is affected.
+python3 - "$disp" "$work/anyreturn.py" <<'PYANYRET'
+import sys
+src = open(sys.argv[1]).read()
+old = """                if reason.startswith(WITHDRAWN_WHY) \\
+                        and entry.get("status") in REDISPATCH_ON_REQUEST:"""
+new = """                if entry.get("status") in REDISPATCH_ON_REQUEST:  # REASON IGNORED"""
+assert old in src, "withdrawal record anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYANYRET
+ok "the withdrawal-record reversal changed one line" "$(grep -c '# REASON IGNORED' "$work/anyreturn.py" || true)" "1"
+for leaving in draft index reopen; do
+  instance "2026-09-11T13:18:11+00:00"
+  desk off
+  done_entry gh-r-9404 "2026-10-01T00:00:00+00:00"
+  rc=$(run "$work/anyreturn.py" redispatch "$leaving")
+  ok "no record: '$leaving' re-dispatches a finished review" "$(grep -c '"event": "review_request",.*9404' "$work/out" || true)" "1"
+done
+
+# 5. Without the fifth shape, the Review Desk source speaks for a key the GitHub pass has
+#    dispatched -- two events for one request, which is two sessions on one review.
+python3 - "$disp" "$work/noshape5.py" <<'PYNOSHAPE'
+import sys
+src = open(sys.argv[1]).read()
+old = """        if self.redispatched_mark(key):
+            return True"""
+new = """        if False:  # SHAPE 5 REVERSED
+            return True"""
+assert old in src, "shape 5 anchor missing"
+open(sys.argv[2], "w").write(src.replace(old, new, 1))
+PYNOSHAPE
+ok "the shape-5 reversal changed one line"           "$(grep -c 'SHAPE 5 REVERSED' "$work/noshape5.py" || true)" "1"
+instance ""
+rc=$(run "$work/noshape5.py" spoken_for)
+ok "no shape 5: the re-dispatched key is offered again" "$(says '"after": false')"          "yes"
 
 sed 's/^        self\.first_tick = True$/        self.first_tick = not self.state.get("started")/' \
     "$disp" > "$work/prefix.py"
