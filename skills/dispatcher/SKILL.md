@@ -293,6 +293,24 @@ Desk's work list for ever, so the poller marks it as one it recorded closed and 
 again however GitHub answers afterwards. `review_request_closed` carries the review id when one
 was written and `null` when none was, so you can say which it is without asking.
 
+**A review GitHub asks for again is a new round, even on a key your ledger says is `done`.**
+Your principal decided this on 15 October 2026, after #9404: GitHub requested a review again, the
+ledger said "done, round 2", and nothing was dispatched and nothing said. It now reaches you as an
+ordinary `review_request` carrying `"rerequested": true` and a `new_request` field saying which
+evidence it rests on, and you dispatch it exactly as you dispatch any other — a second round on
+the same pull request, with its own session and its own claim.
+
+What counts as *new* is the poller's to decide, and it is deliberately narrow: GitHub **stopped**
+asking — read live off the pull request's own requested-reviewer list at the moment the request
+left the poller's page — and is asking again; or the GitHub request event is dated after the
+ledger entry's last update. **A request that never went away is not new**, and a row merely
+leaving that page is not a withdrawal: a conversion to draft, a stale search index and a close
+followed by a reopen all do it with the request still live, and none of them re-dispatches
+anything. One request dispatches once, however many ticks see it. Only a `done` entry is
+re-dispatched this way: a key a session is working hears `review_rerequested` instead, a `stopped`
+one is waiting on a human and must not be given a second session, and `skipped`, `deferred` and
+`merged` are decisions this does not reopen.
+
 Nothing goes to GitHub from you. Ever.
 
 ## Review Desk, if it is installed
@@ -397,6 +415,37 @@ Four things that follow, and only the last asks anything of you:
   you hear about it. That is the only one of their decisions that reaches you as a reason not to
   act, and it reaches you once per request.
 
+**And the REQUEST is recorded, not only the round** (DEV-996). A pull request Review Desk has
+never been told about is invisible on the queue until a session opens a round on it, and that wait
+can be hours — or for ever, with the poller down. On 15 October 2026 the queue showed 7 pull
+requests against 9 review requests on GitHub, and the gap was exactly this. So the poller also
+calls `review requested --repo R --pr N --requested-at T` the first time it sees a request, and
+the same verb with `--withdrawn` when GitHub stops listing one. Three things follow, and none of
+them asks anything of you:
+
+- **The call is the poller's and is made once per request** — on first sight, and again when a
+  NEW request appears on a pull request whose row never left the list. Never once a tick: Review
+  Desk's store is last-write-wins on the pull request, so a repeated call would keep resetting
+  whether a round has satisfied the request. The row is written whatever the ledger says, because
+  GitHub asking is a fact about GitHub rather than about what this instance decided to do next.
+- **`--requested-at` is when GITHUB made the request**, read from the pull request's own
+  review-requested events, and never this machine's clock. A request the poller cannot date —
+  one made of a team, an instance with no `github.login`, a `gh` that is failing — is **not
+  recorded at all** rather than stamped with the time it was noticed. It is still queued, still
+  dispatched and still withdrawn; only the Reviews list goes without its row.
+- **A failure never stops a tick.** A broken, hung or too-old Review Desk is said once through
+  `review_desk_unavailable` with `call: "review requested"`, and the tick carries on; an absent
+  one is silent under `auto` and loud under `on`, exactly as it is for every other call. Until
+  Review Desk ships the verb, "too old" is the ordinary answer, and the only cost is the
+  request's row — nothing about dispatch, recording or posting changes.
+- **A withdrawal is written on evidence, never on a row's absence.** The one live read the
+  poller already makes when a request leaves its page now asks for the pull request's
+  requested-reviewer list, and the withdrawal goes only when the principal is no longer on it. A
+  merged pull request is therefore not a withdrawal — GitHub goes on listing the request after a
+  merge, and that row is `review_request_closed`'s, exactly as before — and neither is a draft or
+  a stale search page. A read that could not be made, or could not be attributed because the
+  request is a team's, leaves the record open and is asked again rather than guessed at.
+
 **Dismissing, restoring and deleting a review are your principal's, from the page, and there is
 no command line for any of them** — not for you, and not for a worker. The poller reads the
 dismissal and never writes one. A review that never started can also be deleted, which is the
@@ -455,6 +504,7 @@ a worker posts when Review Desk reports the draft approved, and not when anybody
 | `review_in_play` | **A pull request that was out of play is being asked about again** — ready, reopened or re-requested. One line; the `review_request` or `review_rerequested` on the same tick is what carries the work, so do not dispatch from this one. |
 | `review_cleared` | Report the reason and ask: "Discard `<session>`?" Discard only on a yes — **except on `reason: "PR merged"` or `"PR closed"`, where you discard without asking** and say so afterwards. **`out_of_play` says whether the record moved with it**: `draft` or `withdrawn` means Review Desk now holds this pull request out of play with that reason, keeping every round, draft and sign-off, and the review returns on the round it was on when the pull request does — say that in the same line, and still ASK before discarding, because both are reversible. `null` means the record did not move, which is every other reason. That is `## Never`'s one exception, and this event satisfies its second condition: the reason comes from a live read of the pull request, not from Review Desk. Check the third condition — that the session has stopped — before you do it. The worker is very likely saying the same thing in its own words at the same moment; relay whichever reached you, once, and discard once. Every other reason still asks: "you submitted a review" and "review request removed" both leave a pull request open. |
 | `review_request_closed` | **A review request was dropped because its pull request is merged or closed**, and `pr_state` says which — read live from GitHub, not from the search. Nothing was dispatched: there is nothing left to revise, approve or post. **`review_desk_id` says whether the request made it onto the Reviews list** — a number means this was a pull request Review Desk had never held a review of and it is now recorded as a first review (`review` links the page); `null` means a review already existed and was deliberately left alone, or the store could not be asked. Report it once, one line, naming the pull request, the state and which of those two it was, and **offer nobody for it** — GitHub goes on requesting the review after a merge, which is why you can still see the request. A `merged` one is over. A `closed` one can be reopened, and if it is, the request comes back round on its own as a `review_request`. One line per pull request per `reemit_after_secs`; a key a live session holds arrives as `review_cleared` instead, which names the session. |
+| `review_request_undated` | **The poller could not read from GitHub WHEN a review was requested**, so review requests are not being recorded in Review Desk — your principal's Reviews list will show fewer pull requests than GitHub does, which is the gap DEV-996 was opened about. Nothing about dispatching, reviewing or posting is affected. Report it once and name the pull request and the `detail`: the usual causes are a token without the scope the timeline needs, an enterprise host, or a sustained secondary rate limit. One line an hour while it lasts. |
 | `session_blocked` | **PushNotification**: "`<KEY>` worker is waiting on a prompt in allele." A blocked worker gets nowhere until a human acts. |
 | `session_suspended` | Report it. If it's still suspended an hour later, treat it as `session_lost`. |
 | `session_lost` | **First: `D ledger get <KEY>`. A `blocked` entry is never re-queued** — a coordinator already reached that conclusion, and re-triggering buys a second session that reaches it again. Leave the label, report it, and let your principal change the work. Same for any entry carrying a `parent` field: that is a coordinator's child, and the fan-out section above says why. Otherwise — Linear: count the prior `lost` notes in the ledger history. Under `limits.max_lost_retries`: `D label <KEY> <trigger>`, comment "Session lost — re-queued", `D ledger put <KEY> status=lost --note "attempt N"`. The poller re-emits it and the replacement reads what the lost one left. Otherwise: `D label <KEY> failed`, comment, `status=failed`, PushNotification. Review: `status=lost`, and it re-dispatches on the next `review_request`. |

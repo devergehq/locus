@@ -739,6 +739,49 @@ def in_play(argv):
     raise SystemExit(0)
 
 
+def requested(argv):
+    """`review requested`: a record of a REQUEST rather than of a round. DEV-996.
+
+    **Modelled here because the poller now calls it on every request it sees**, and a stand-in
+    that answered this call the way the fall-through does — `--review is required`, exit 1 —
+    makes the poller report a refused install on every tick of every scenario in this file. It
+    was 13 assertions about events nobody asked for before this function existed.
+
+    Keyed on (repo, pr), idempotent, and `--withdrawn` is the end of the request rather than a
+    row of its own; the fixture keeps the last call per key so a test can read back what the
+    poller asserted. `$RDWORK/rd.requested.mode` is this ONE command's health:
+
+      `norequested`  a build that has never heard of the verb — clap's own refusal, remapped to
+                     exit 1 with `code: usage`. **This is every Review Desk there is until the
+                     other half of DEV-996 ships**, so it is the ordinary answer and not an
+                     exotic one.
+      `broken`       could not run, exit 2.
+      `refused`      understood and refused, about this pull request rather than the install.
+    """
+    mode = (work / "rd.requested.mode").read_text().strip() \
+        if (work / "rd.requested.mode").exists() else "ok"
+    if mode == "norequested":
+        refuse("usage", "error: unrecognized subcommand 'requested'")
+    if mode == "broken":
+        refuse("cannot_open_database", "scripted broken review requested", 2)
+    if mode == "refused":
+        refuse("not_found", "no such repository")
+    repo, pr = (opt(argv, "--repo") or "").strip().lower(), opt(argv, "--pr")
+    at, withdrawn = opt(argv, "--requested-at"), "--withdrawn" in argv
+    if not repo or not pr or not at:
+        refuse("usage", "the following required arguments were not provided: "
+                        "--repo --pr --requested-at")
+    store = {}
+    path = work / "rd.requests.json"
+    if path.exists():
+        store = json.loads(path.read_text())
+    row = {"repo": repo, "pr": int(pr), "requested_at": int(at), "withdrawn": withdrawn}
+    store["%s#%s" % (repo, pr)] = row
+    path.write_text(json.dumps(store))
+    print(json.dumps({"request": row}))
+    raise SystemExit(0)
+
+
 def find_review(argv):
     """`review find`: a pull request's rounds, NEWEST FIRST, as review-desk 82c0a09 answers it.
 
@@ -836,6 +879,8 @@ if argv[:2] == ["review", "in-play"]:
     in_play(argv)
 if argv[:2] == ["review", "find"]:
     find_review(argv)
+if argv[:2] == ["review", "requested"]:
+    requested(argv)
 
 review = opt(argv, "--review")
 if review is None:
@@ -905,6 +950,19 @@ cat > "$work/bin/gh" <<'GHSTANDIN'
 #!/bin/sh
 printf '%s\n' "$*" >> "$RDWORK/gh.calls"
 case "$*" in
+  *timelineItems*)
+    # DEV-996's `REQUESTED_Q`: one pull request's review-requested events, which is where
+    # `--requested-at` comes from. One event, attributed to this instance's `github.login`, and
+    # dated well BEFORE any ledger stamp in this file -- so the request is datable (Review Desk
+    # is told about nothing it cannot date) while the second test of "a new request" stays
+    # silent, leaving every assertion here testing what it was written to test. The dated half
+    # is driven in test-dispatcher-poller.sh, where the page and the timeline are one fixture.
+    #
+    # Matched before the search arm because both patterns match an `api graphql` call and the
+    # first wins.
+    printf '{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[%s]}}}}}\n' \
+      '{"createdAt":"2026-09-01T00:00:00Z","requestedReviewer":{"login":"devdeveloper"}}'
+    exit 0 ;;
   *"api graphql"*)
     # A page of review requests, from a document when one has been written and an empty page
     # otherwise. Empty is the default on purpose: every assertion in this file that predates
@@ -940,14 +998,21 @@ case "$*" in
     # file does not send is a stand-in that confirms a bug.
     case "$*" in
       *"--json state") : ;;
-      *"--json state,isDraft,latestReviews") : ;;
+      # DEV-996 added `reviewRequests`, which is what turns `why_cleared`'s last branch from an
+      # inference out of a row's absence into a reading of the request itself. Refused if it
+      # goes missing, for the same reason `isDraft` is: a stand-in that answers a field list
+      # this file does not send is a stand-in that confirms a bug.
+      *"--json state,isDraft,latestReviews,reviewRequests") : ;;
       *) echo 'Unknown JSON field: "'"${*##*--json }"'"' >&2; exit 1 ;;
     esac
     n=$3
     case "$*" in
-      *latestReviews)
+      *reviewRequests)
+        # `reviewRequests: []` by default: the principal is no longer being asked, which is what
+        # every clearance in this file meant before DEV-996 and what its assertions were written
+        # against. `cleared_doc`'s sixth argument is how a scenario says otherwise.
         cat "$RDWORK/cleared.$n.json" 2>/dev/null \
-          || echo '{"state":"OPEN","isDraft":false,"latestReviews":[]}'
+          || echo '{"state":"OPEN","isDraft":false,"latestReviews":[],"reviewRequests":[]}'
         exit 0 ;;
     esac
     cat "$RDWORK/pr.$n.json" 2>/dev/null || echo '{"state":"OPEN"}'
@@ -1036,6 +1101,10 @@ PY
   # Leaking any of these between scenarios is a test passing on the previous one's setup.
   rm -f "$work/rd.contract" "$work/rd.oop.mode" "$work/rd.nostarted" "$work/rd.clock"
   rm -f "$work/files."*.json "$work/cleared."*.json
+  # DEV-996's: the requests the poller has recorded, and the health of the verb that records
+  # them. Leaking `norequested` forward would make every later scenario meet a build that
+  # cannot record a request, which is a test passing on the previous one's setup.
+  rm -f "$work/rd.requests.json" "$work/rd.requested.mode"
   unset NOMAP 2>/dev/null || true
   echo drafting > "$work/rd.draft.status"
 }
@@ -1208,16 +1277,23 @@ held = store.get("%s#%s" % (sys.argv[2], sys.argv[3])) or {}
 print("%s@%s" % (held.get("out_of_play"), held.get("out_of_play_at")))
 PY
 }
-# cleared_doc <pr> <state> <draft|ready> [reviewer]: what `gh pr view --json state,isDraft,
-# latestReviews` answers for `why_cleared`, the one live read out-of-play rests on.
+# cleared_doc <pr> <state> <draft|ready> [reviewer] [still-asked]: what `gh pr view --json
+# state,isDraft,latestReviews,reviewRequests` answers for `why_cleared`, the one live read
+# out-of-play rests on. The sixth argument is DEV-996's: a login still on the requested-reviewer
+# list, which is positive evidence that nothing was withdrawn.
 cleared_doc () {
   python3 - "$work/cleared.$1.json" "$@" <<'PY'
 import json, sys, pathlib
 dest = pathlib.Path(sys.argv[1])
 reviews = [{"author": {"login": sys.argv[5]}, "state": "CHANGES_REQUESTED"}] \
     if len(sys.argv) > 5 and sys.argv[5] else []
+# `team` builds a row `still_requested` cannot attribute: a team names no member, and
+# `review-requested:@me` matches a team the principal is in. Everything else is a login.
+asked = []
+if len(sys.argv) > 6 and sys.argv[6]:
+    asked = [{"slug": "reviewers"}] if sys.argv[6] == "team" else [{"login": sys.argv[6]}]
 dest.write_text(json.dumps({"state": sys.argv[3], "isDraft": sys.argv[4] == "draft",
-                            "latestReviews": reviews}))
+                            "latestReviews": reviews, "reviewRequests": asked}))
 PY
 }
 # store_round <repo> <pr>: how many rows the stand-in store holds, which round this pull
@@ -4112,6 +4188,30 @@ ok "  with the repository, pull request, head and ledger" "$(last_open)" \
 ok "  the ledger id is this instance's own key"        "$(grep -c '^gh-portal-412$' "$work/rd.open.argv")" 1
 ok "  and no ticket is invented for it"                "$(grep -c '^--ticket$' "$work/rd.open.argv")" 0
 
+printf '\n  DEV-996: the request is recorded as a request, and the two writes are independent\n'
+# A neutral repository slug in this block, so these lines add no client-looking name to a tracked
+# file. Nothing in the fixtures is keyed by the repository, so it reads the same as its
+# neighbours otherwise.
+instance '{"mode":"auto"}'
+search_doc o/r 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "the request is recorded as a request"              "$(grep -c '^review requested --repo o/r --pr 412 --requested-at [0-9]* --json$' "$work/rd.calls")" 1
+ok "  and the round is still recorded as a round"      "$(opens)" 1
+ok "  and the tick exits clean"                        "$rc" 0
+
+# The independence that matters most, and the reason `tell_requested` does not touch
+# `record_stopped`: until Review Desk ships the verb, EVERY build answers `review requested`
+# with clap's refusal -- and that must not stop the poller recording rounds, which is what every
+# instance already depends on.
+instance '{"mode":"auto"}'
+echo norequested > "$work/rd.requested.mode"
+search_doc o/r 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+ok "a build without the verb still records the round"  "$(opens)" 1
+ok "  and says what is missing, once"                  "$(count '"call": "review requested"')" 1
+ok "  and still offers the request for dispatch"       "$(count '"event": "review_request"')" 1
+ok "  and the tick exits clean"                        "$rc" 0
+
 instance '{"mode":"auto"}'
 search_doc acme/portal 412 sha412 "Retry failed webhook deliveries"
 rc=$(run "$disp" poll 1)
@@ -5004,6 +5104,9 @@ ok "  and the only commands it runs of Review Desk are these" \
 ok "  where \`facts\` is \`review open\` and nothing else"  "$(grep -c '"review", "open", "--repo"' "$disp")" 1
 ok "  and the only \`review\` it reads with is \`show\`"    "$(grep -c '"review", "show", "--review"' "$disp")" 1
 ok "  or \`find\`, which is also a read"                "$(grep -c '"review", "find", "--repo"' "$disp")" 1
+# DEV-996's verb, and the second thing this file writes. It records a REQUEST rather than a
+# round, which is why it is named here beside `review open` rather than folded into it.
+ok "  and \`requested\`, which records the request itself" "$(grep -c '"review", "requested"' "$disp")" 1
 
 # =============================================================================================
 printf '\nDEV-962 -- a round is a posted review\n'
@@ -5386,6 +5489,24 @@ rc=$(run "$disp" poll 1)
 ok "a review you submitted is not a withdrawal"        "$(oops)" 0
 ok "  and it is still reported as cleared"             "$(says 'you submitted a review')" yes
 
+# DEV-996's own consequence for THIS pass, and it is a fix rather than a side effect: the live
+# read now asks for `reviewRequests`, and a list it cannot attribute to the principal -- a team's
+# request -- is not a withdrawal. Before it, every such clearance reached `review out-of-play` as
+# `withdrawn` by elimination, and the principal's own review on a `done` key made it certain.
+# A neutral repository slug here, as in the DEV-996 block above, so these lines add no
+# client-looking name to a tracked file. Nothing in the fixtures is keyed by the repository.
+instance '{"mode":"auto"}'
+files_doc 412 "$DIFF_ONE"
+search_doc o/r 412 sha412 Retry
+rc=$(run "$disp" poll 1)
+cleared_doc 412 OPEN ready devdeveloper team
+put gh-r-412 mode=review status=active repo=o/r number=412 session_id=sess-t --by test
+search_doc o/r 999 shaother Retry
+rc=$(run "$disp" poll 1)
+ok "a team-held request is not taken out of play"      "$(oops)" 0
+ok "  and the reason says it could not tell"           "$(says 'could not tell whether it still is')" yes
+ok "  and the tick exits clean"                        "$rc" 0
+
 printf '\n  the reason is written once, and a change of reason cannot be seen\n'
 # **A stated limit rather than a hole, and the reason it is a limit is that there is no signal.**
 # A pull request that goes draft and then has its review request withdrawn leaves GitHub showing
@@ -5743,14 +5864,20 @@ ok "the stuck marks are dropped over the constant"     "$(grep -c 'for reason in
 # both times, so the count and the split are pinned here rather than trusted to prose.
 ok "the seven paths are enumerated in the comment"     "$(grep -c 'there are seven, in three' "$disp")" 1
 ok "  and the wrong first wording is named"            "$(grep -c '"Cleared on success" was the first wording and it is wrong' "$disp")" 1
-# And the two mark prefixes the prune sweeps, with the shape that does NOT match named. The
-# claim is checked against the file rather than asserted: these are the only two mark strings
-# whose third field is a ledger key.
+# And the mark prefixes the prune sweeps, with the shape that does NOT match named. The claim is
+# checked against the file rather than asserted: these are the only mark strings whose third
+# field is a ledger key.
 # One tuple, named, with the invariant beside it: field 3 is a ledger key. One character
 # separates `review_desk|in_play|` from `review_desk|in_play_refused|`, whose third field is a
 # repository slug, so a mark shaped `review_desk|in_play|<repo>` would be swept on every tick
-# with no symptom but a rate limit that never holds.
-ok "the prune sweeps one named tuple of prefixes"      "$(grep -c 'swept = ("review_desk|head_moved|", "review_desk|in_play|")' "$disp")" 1
+# with no symptom but a rate limit that never holds. **`review_desk|undated|` is DEV-996's and
+# joins them**; `review_desk|withdraw|` and `review_desk|settle|` deliberately do NOT, because a
+# key owing a withdrawal is by definition absent from `present` and sweeping them there would
+# clear their limit on every tick. `forget_request` pops those two instead.
+ok "the prune sweeps one named tuple of prefixes"      "$(grep -c 'swept = ("review_desk|head_moved|", "review_desk|in_play|", "review_desk|undated|")' "$disp")" 1
+# Two sites, and both are a record dying rather than a tick passing: `forget_request`, and the
+# branch where a stamp that has not moved clears a debt that was never the row's fault.
+ok "  and the one it must not sweep is popped"         "$(grep -c 'review_desk|withdraw|{key}", None' "$disp")" 2
 ok "  with the invariant named beside it"              "$(grep -c 'the invariant is that field 3 is a LEDGER KEY' "$disp")" 1
 ok "  and in_play_refused is keyed by repository"      "$(grep -c 'review_desk|in_play_refused|{repo}' "$disp")" 1
 
