@@ -14,8 +14,9 @@
 #   LOCUS_HOOKS=off    deliberate opt-out   -> silent, exit 0
 #   locus not on PATH  broken install       -> LOUD, exit 0
 #
-# The plugin ships the binary in bin/ and cannot function without it, so a
-# missing binary is not a supported configuration. Silently degrading would make
+# The plugin does not ship the binary (it is per-platform; install it from the
+# GitHub Releases) and cannot function without it, so a missing binary is not a
+# supported configuration. Silently degrading would make
 # "the Algorithm never ran" indistinguishable from "the Algorithm was never
 # needed" — the defect this project has now hit eight times.
 #
@@ -38,8 +39,8 @@ fi
 fix="The Locus plugin is installed but the \`locus\` binary is not on PATH, so \
 every Locus hook is inert: the Algorithm is not being enforced, the Stop gate is \
 not running, and the activation log is not being written. Install the binary \
-(\`cargo install --path .\` from the Locus repo, or a release build onto your \
-PATH) and restart Claude Code. Set LOCUS_HOOKS=off to silence this deliberately."
+(a release from github.com/devergehq/locus/releases onto your PATH, or \
+\`cargo install --path crates/locus-cli\` from the repo) and restart Claude Code. Set LOCUS_HOOKS=off to silence this deliberately."
 
 # Say it once per session, not once per turn. Keyed off CLAUDE_CODE_SESSION_ID
 # rather than the event's JSON, because parsing stdin would need the interpreter

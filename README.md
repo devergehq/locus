@@ -1,86 +1,93 @@
 # Locus
 
-> An agentic AI workflow execution framework that sits between you and your AI coding tool.
-> It provides structure, skills, and persistent memory — without locking you to any platform.
+> A structured workflow framework for AI coding tools. It sits between you and Claude Code
+> (or OpenCode) and gives the model a method, a set of skills, and a memory that persists.
 
-**Status:** Early. Core features work (init, platform adapters, skills, agents, delegation, hooks), but APIs and conventions may still shift. Built primarily for the maintainer and early adopters who want structured AI workflows.
+**Status:** Early. Core features work, but APIs and conventions may still shift.
 
 ---
 
 ## What it is
 
-Locus is a single Rust binary that installs a structured workflow framework into `~/.locus/`. It does not replace your AI coding tool — it augments it with:
+Locus is two things that work together:
 
-1. **The Algorithm** — A 7-phase decomposition (OBSERVE → THINK → PLAN → BUILD → EXECUTE → VERIFY → LEARN) that any AI agent can follow. The Algorithm spec lives in `~/.locus/algorithm/` and is embedded into your platform's system prompt.
-2. **Skills** — Composable, multi-mode capabilities (research, council, red-team, first-principles, etc.) defined in `SKILL.md` files. Skills are loaded on demand — nothing is injected into platform subdirectories.
-3. **Agents** — Trait-composed agent roles (not character-based personas). Compose an agent from expertise, stance, and approach traits on the fly.
-4. **Persistent memory** — Checkpoints, learnings, and project memory stored in `~/.locus/data/` and syncable via git.
-5. **Platform adapters** — Minimal, non-destructive integration with Claude Code and OpenCode. Backs up existing config, merges settings, and restores on removal.
+- **A Claude Code plugin** — the skills, agents and hooks. It injects a short dispatcher next
+  to every prompt, asks the model to classify the request, and checks at the end of the turn
+  that a non-trivial request actually ran the Algorithm.
+- **A `locus` binary** — a single Rust executable that every hook calls, plus the CLI for
+  setup, agent composition, delegation and upgrades.
+
+What you get from it:
+
+1. **The Algorithm** — a 7-phase decomposition (OBSERVE → THINK → PLAN → BUILD → EXECUTE →
+   VERIFY → LEARN) with verifiable criteria, loaded on demand as the `locus-algorithm` skill.
+2. **Skills** — research, council, red-team, first-principles, review-craft and more,
+   loaded on demand.
+3. **Agents** — trait-composed roles (expertise × stance × approach), not fixed personas.
+4. **Persistent memory** — PRDs, checkpoints and learnings in `~/.locus/data/`.
 
 ## What it isn't
 
-- **Not an AI coding tool.** It does not generate code or chat with you. It structures the workflow *around* your AI tool.
-- **Not a plugin or extension.** It lives outside your editor/IDE and communicates via platform hooks.
-- **Not platform-specific.** While adapters exist for Claude Code and OpenCode, the framework itself is platform-agnostic.
-- **Not commercial software.** MIT licensed, free forever.
+- **Not an AI coding tool.** It does not generate code. It structures the workflow *around*
+  your AI tool.
+- **Not tied to one platform.** Claude Code is the primary target; an OpenCode adapter exists.
+- **Not commercial software.** MIT licensed.
 
-## Who it's for
-
-People who:
-
-- Use Claude Code, OpenCode, or similar AI coding tools regularly.
-- Want consistent, structured execution from their AI (phased decomposition, verifiable criteria, explicit verification).
-- Run multi-agent workflows (debate, red-team, iterative depth) and need trait-based agent composition.
-- Want their AI workflow memory, skills, and configurations to persist across machines.
-
-If you just want to chat with an AI and don't care about structured workflows, Locus adds no value.
+If you just want to chat with an AI and don't care about structured workflows, Locus adds no
+value.
 
 ---
 
-## Quick start
+## Quick start (Claude Code)
+
+Five steps, about two minutes. No clone, no Rust toolchain.
 
 ```sh
-# 1. Install Locus
-cargo install --path crates/locus-cli
+# 1. Install the binary (macOS Apple Silicon shown — other platforms below)
+mkdir -p ~/.local/bin
+curl -L https://github.com/devergehq/locus/releases/latest/download/locus-aarch64-apple-darwin.tar.gz | tar -xz -C ~/.local/bin
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
-# 2. Initialise the framework
+# 2. Install the plugin
+claude plugin marketplace add devergehq/locus
+claude plugin install locus@locus
+
+# 3. Create ~/.locus (agent traits, statusline script, config, data directory)
 locus init
 
-# 3. Connect your AI platform
-locus platform add claude-code   # or: locus platform add opencode
+# 4. Give Claude Code the statusline and the ~/.locus permission rules
+locus platform add claude-code
 
-# 4. Validate everything
+# 5. Check everything
 locus doctor
 ```
 
-After `locus init`, your `~/.locus/` directory contains the Algorithm, skills, agents, protocols, and an empty data directory. After `locus platform add`, your platform's system prompt is updated to bootstrap Locus on every session.
+Then start (or restart) Claude Code. The first reply to any request opens with
+`**Classification: Trivial**` or `**Classification: Non-trivial**`. That line tells you
+Locus is running.
+
+**Why each step is there:**
+
+| Step | Without it |
+|---|---|
+| Binary | Every hook is inert. Locus tells you so loudly, once per session, and never blocks you. |
+| Plugin | Nothing loads. The plugin is what puts the skills, agents and hooks into Claude Code. |
+| `locus init` | `locus agent compose` and the statusline have nothing to read. |
+| `platform add` | You get a permission prompt each time the Algorithm writes a PRD or checkpoint, and no statusline. A plugin cannot grant permissions or set a statusline, so the binary writes those two `settings.json` fields. It writes nothing else. |
+
+The `claude` CLI is only needed for step 2. Inside a session, `/plugin` does the same job.
+
+`locus` must be on the `PATH` of whatever launches `claude` — your terminal, tmux, Herder,
+an IDE. If the hooks can't find it, the first message of every session says so.
 
 ---
 
 ## Installation
 
-### From source (recommended for now)
+### The binary
 
-Requires [Rust](https://rustup.rs/) (stable toolchain).
-
-```sh
-git clone https://github.com/devergehq/locus.git
-cd locus
-cargo install --path crates/locus-cli
-```
-
-This places the `locus` binary in `~/.cargo/bin/`. Ensure that directory is on your `PATH`:
-
-```sh
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-> **Important:** `locus` must be on your `PATH`. Platform adapters configure hooks that call `locus hook <event>` — if the binary isn't resolvable, hooks silently fail.
-
-### Prebuilt binaries
-
-Every tagged release publishes prebuilt `locus` binaries on the
-[Releases page](https://github.com/devergehq/locus/releases) for:
+Every tagged release publishes prebuilt binaries on the
+[Releases page](https://github.com/devergehq/locus/releases):
 
 | Platform | Architecture | Asset |
 |----------|--------------|-------|
@@ -90,78 +97,67 @@ Every tagged release publishes prebuilt `locus` binaries on the
 | Linux | ARM64 | `locus-aarch64-unknown-linux-gnu.tar.gz` |
 | Windows | x86_64 | `locus-x86_64-pc-windows-msvc.tar.gz` |
 
-Download the archive for your platform, extract the `locus` binary (each archive
-ships a matching `.sha256` to verify the download), and put it somewhere on your
-`PATH`:
+Each archive has a matching `.sha256`. Extract the binary to any directory on your `PATH`.
+On Windows, `tar -xzf` works in PowerShell; put `locus.exe` on your `PATH`.
+
+Use `curl` rather than a browser on macOS. A browser download is quarantined by Gatekeeper,
+and the binary is not notarised. If you did use a browser:
+`xattr -d com.apple.quarantine ~/.local/bin/locus`.
+
+**Staying up to date:**
 
 ```sh
-# macOS (Apple Silicon) example
-curl -LO https://github.com/devergehq/locus/releases/latest/download/locus-aarch64-apple-darwin.tar.gz
-tar -xzf locus-aarch64-apple-darwin.tar.gz
-mv locus ~/.local/bin/    # any directory on your PATH
-locus doctor
-```
-
-On Windows, `tar` is built into modern PowerShell/Command Prompt, so the same
-`tar -xzf` works; move `locus.exe` onto your `PATH`.
-
-### Staying up to date
-
-Once you have any `locus` binary installed, upgrade in place — no re-download needed:
-
-```sh
-locus upgrade          # fetch and install the latest release
+locus upgrade          # fetch and install the latest release in place
 locus upgrade --check  # just report whether a newer version exists
+claude plugin update locus@locus   # the plugin updates separately
 ```
 
-`locus upgrade` pulls the correct prebuilt asset for your platform from the
-GitHub Releases above and replaces the running binary.
+The binary and the plugin are released together under one version number, so update both.
+`locus doctor` warns when more than one `locus` is on your `PATH`, because the hooks only
+run the first one.
 
-### As a Claude Code plugin
+### The plugin
 
-Locus also ships as a Claude Code plugin. Two commands, no clone and no build:
+The plugin comes from Locus's own marketplace. The repository is the marketplace —
+`.claude-plugin/marketplace.json` — so it is not listed in Anthropic's plugin directory, and
+you don't need to wait for anything to be published there.
 
 ```sh
 claude plugin marketplace add devergehq/locus
 claude plugin install locus@locus
 ```
 
-That is the whole installation. It persists across sessions, and it comes back
-out again just as cleanly:
-
 ```sh
 claude plugin disable locus      # keep it installed, stop loading it
 claude plugin uninstall locus    # remove it entirely
 ```
 
-The plugin installs, disables and uninstalls like any other — it never edits
-`~/.claude/settings.json`, and sharing it with someone else does not involve
-talking them through hand-edits to their own `CLAUDE.md`.
+The plugin carries the skills, agents and hooks. It does **not** carry the binary, which is
+per-platform. Install the binary separately (above).
 
-The plugin carries the skills, agents and hooks. It does **not** carry the
-`locus` binary, which is per-platform and built rather than vendored — install
-that separately (see [Installation](#installation)) and the hooks will find it
-on `PATH`. Without it they stay silent about everything except the missing
-binary, which they report loudly and without ever blocking a session.
+### From source (contributors)
 
-The two install paths **coexist**. Nothing about the binary install changes;
-the plugin is additive, so you can load it alongside and compare.
+Requires [Rust](https://rustup.rs/).
+
+```sh
+git clone https://github.com/devergehq/locus.git
+cd locus
+cargo install --path crates/locus-cli   # -> ~/.cargo/bin/locus
+```
 
 <details>
-<summary>Loading it from a working tree instead (contributors)</summary>
+<summary>Loading the plugin from a working tree</summary>
 
-`--plugin-dir` is a per-invocation flag for developing the plugin, not a way to
-install it:
+`--plugin-dir` loads a plugin for one invocation, for development:
 
 ```sh
 ./scripts/build-plugin.sh            # assemble dist/plugin/
 claude --plugin-dir dist/plugin      # load it for one session
 ```
 
-To exercise the real marketplace path against uncommitted work, point
-`marketplace add` at the repo root — `.claude-plugin/marketplace.json` sources
-the plugin from `./`, so the same manifest serves a local path and a GitHub
-clone:
+To exercise the real marketplace path against uncommitted work, point `marketplace add` at
+the repo root. `.claude-plugin/marketplace.json` sources the plugin from `./`, so the same
+manifest serves a local path and a GitHub clone:
 
 ```sh
 claude plugin marketplace add /path/to/locus
@@ -170,75 +166,102 @@ claude plugin install locus@locus
 
 </details>
 
-What the plugin does differently:
+---
 
-| | Binary install | Plugin |
-|---|---|---|
-| Algorithm | ~32 KB always-on in `CLAUDE.md` | `locus-algorithm` skill, ~110 tok always-on |
-| Classification | asked for in prose | injected next to **every** prompt, then verified at turn end |
-| Hooks | merged into your `settings.json` | registered by the plugin, removed when you remove it |
+## Running without Allele
 
-Three hooks carry it:
+Locus was built alongside Allele, which runs each
+delegated task as a real, visible Claude Code session with its own workspace and branch.
+**Allele is optional.** A plain Claude Code session works fine — in a terminal, tmux,
+Herder or an IDE. The table shows what changes without it:
 
-- **`UserPromptSubmit`** injects `hooks/dispatcher.txt` (781 bytes) as
-  `additionalContext`. Compliance decay is a distance problem; injecting on
-  every turn resets the distance instead of loading the instruction once and
-  hoping it is still salient thirty thousand tokens later.
-- **`Stop`** checks that a turn which classified itself non-trivial actually
-  invoked the skill. If not it blocks **once** and says what was missed. It
-  deliberately does *not* block on a missing classification line — the line is
-  nearly free to emit and the skill invocation is the expensive behaviour, so
-  gating on either would teach the model to produce the cheap half. The line is
-  still recorded on every turn; it is a signal, never a gate.
-- **`SessionStart`** re-injects the dispatcher after a compaction
-  (`source: "compact"`), which is the one point where a turn can run without a
-  fresh `UserPromptSubmit`.
+| Feature | Claude Code only | + OpenCode | + Allele |
+|---|---|---|---|
+| Classification, Algorithm, Stop check | ✅ | ✅ | ✅ |
+| Skills (research, council, red-team, review-craft, …) | ✅ | ✅ | ✅ |
+| `locus agent compose` | ✅ | ✅ | ✅ |
+| Memory, PRDs, checkpoints | ✅ | ✅ | ✅ |
+| Delegating a task to another agent | native subagent | `locus delegate run`, read-only | real session |
+| `locus delegate run` | ❌ needs OpenCode | ✅ | ✅ |
+| The Dispatcher (Linear/GitHub watcher) | ❌ | ❌ | ✅ |
 
-All six are implemented in the `locus` binary and run through one wrapper. The
-wrapper exists for exactly one reason the binary cannot serve: noticing that the
-binary is missing.
+With Claude Code only, delegation falls through to Claude Code's own `Agent` tool. The hook
+allows it, and the model is told to say plainly that the work is running in a hidden
+subagent with no branch of its own. The session notice says this is a supported
+setup, and the model only mentions it when it actually delegates.
 
-- **`PreToolUse`** routes native agent delegation to the vehicle that is actually
-  reachable — see [Delegation vehicles](#delegation-vehicles) below.
-  It only denies while there is somewhere better to send you.
+`locus delegate run` has one backend, OpenCode. It needs both the `opencode` binary and its
+credentials. Without them it does not run.
+
+The Dispatcher's whole job is turning Linear tickets and review requests into Allele
+sessions. Without Allele it has nowhere to send them.
+
+### Registering Allele, if you use it
+
+Locus **detects** Allele; it does not bundle it. Register it once, at user scope:
+
+```sh
+claude mcp add allele --scope user -- /Applications/Allele.app/Contents/MacOS/Allele --mcp-serve
+```
+
+Point it at a **stable** path. A registration into `target/release/` works until the next
+`cargo clean`, and then delegation dies silently.
+
+---
+
+## How the plugin works
+
+| | Plugin |
+|---|---|
+| Algorithm | `locus-algorithm` skill, ~110 tokens always-on |
+| Classification | injected next to **every** prompt, verified at turn end |
+| Hooks | registered by the plugin, removed when you remove it |
+
+All six hooks are implemented in the `locus` binary and run through one wrapper,
+`hooks/via-locus-binary.sh`. The wrapper exists for one job the binary can't do itself:
+noticing that the binary is missing.
+
+- **`UserPromptSubmit`** injects the dispatcher (`crates/locus-cli/src/commands/dispatcher.txt`,
+  under 1 KB) as `additionalContext`. Compliance decays with distance, so injecting it on
+  every turn keeps the instruction close instead of relying on it staying salient thirty
+  thousand tokens later.
+- **`Stop`** checks that a turn which classified itself non-trivial actually invoked the
+  skill. If not, it blocks **once** and says what was missed. It deliberately does *not*
+  block on a missing classification line. The line is nearly free to emit and the skill
+  invocation is the expensive behaviour, so gating on the line would teach the model to
+  produce only the cheap half.
+- **`SessionStart`** states which delegation vehicles are available, and re-injects the
+  dispatcher after a compaction.
+- **`PreToolUse`** routes native agent delegation to the vehicle that is actually reachable
+  — see [Delegation vehicles](#delegation-vehicles). It only denies while there is
+  somewhere better to send you.
 - **`PostToolUse`** repairs PRD frontmatter after `sed`/`perl -i` edits.
 - **`PreCompact`** writes an emergency checkpoint so compaction cannot lose state.
 
-**If the binary is missing, Locus says so.** The plugin ships the binary and
-cannot function without it, so a missing binary is a broken install, not a
-supported configuration — `SessionStart` tells the model, which tells you, once
-per session. `LOCUS_HOOKS=off` stays completely silent, because that is a
-deliberate choice rather than an accident. Neither ever blocks: nothing exits 2
-on a missing binary, so a broken install costs you a warning, never a session.
+**If the binary is missing, Locus says so** — once per session, never blocking.
+`LOCUS_HOOKS=off` stays completely silent, because that is a deliberate choice rather than
+an accident.
 
-**Turning the verifier off.** Put `locus: skip` anywhere in your prompt to skip
-the check for that turn, or set `LOCUS_VERIFY=off` to disable it entirely. The
-phrase is only honoured in *your* prompt, never in the model's reply — otherwise
-a model could switch off its own check. The hook also blocks at most once per
-turn (it honours `stop_hook_active`), so a misclassification costs you one extra
-turn and can never wedge a session.
+**Turning the verifier off.** Put `locus: skip` anywhere in your prompt to skip the check
+for that turn, or set `LOCUS_VERIFY=off` to disable it entirely. The phrase is only honoured
+in *your* prompt, never in the model's reply, so a model can't switch off its own check. The
+hook blocks at most once per turn, so a misclassification costs one extra turn and can never
+wedge a session.
 
-**The activation log.** Every turn appends a `turn` record — prompt id,
-classification, whether the skill fired, whether the hook blocked. A turn that
-was blocked appends a second `recovery` record once the model continues, so
-"failed" and "failed then recovered" are distinguishable rather than both
-reading as failure:
+**The activation log.** Every turn appends a `turn` record — prompt id, classification,
+whether the skill fired, whether the hook blocked. If the hook blocked, a `recovery` record
+follows once the model continues, so "failed" and "failed then recovered" read differently:
 
 ```jsonl
 {"ts":"…","prompt_id":"c633b02f…","event":"turn","classification":"non-trivial","skill_fired":false,"blocked":true,"outcome":"blocked","reason":"…"}
 {"ts":"…","prompt_id":"c633b02f…","event":"recovery","classification":"non-trivial","skill_fired":true,"blocked":false,"outcome":"recovered","reason":null}
 ```
 
-`outcome` is one of `passed`, `escaped`, `blocked`, `recovered`, `unrecovered`.
-The two records join on `prompt_id`. The turn record is written immediately
-rather than held until the recovery, because the recovery Stop does not always
-arrive — an aborted turn would otherwise vanish from the log entirely.
-
-The block rate in that file *is* the activation-failure rate. It cannot tell you
-whether the Algorithm helps; it can tell you whether the Algorithm **runs when
-it should**, which previously could not be measured at all. It lands in your
-configured data directory, or the plugin's own data directory if you have not
-set one; `LOCUS_ACTIVATION_LOG_DIR` overrides both.
+`outcome` is one of `passed`, `escaped`, `blocked`, `recovered`, `unrecovered`. The two
+records join on `prompt_id`. The block rate in that file *is* the activation-failure rate:
+it can't tell you whether the Algorithm helps, but it can tell you whether it **runs when it
+should**. It lands in your configured data directory, or the plugin's own if none is set;
+`LOCUS_ACTIVATION_LOG_DIR` overrides both.
 
 ### Delegation vehicles
 
@@ -278,32 +301,15 @@ Degraded delegations append a line to `delegation-YYYY-MM.jsonl` next to the
 activation log, so "how often did this actually happen, and was Allele up at the
 time?" has an answer rather than an anecdote.
 
-### Allele is not bundled — register it yourself
-
-Locus **detects** Allele; it does not own it. Allele is a separate product with
-its own install and its own release cycle, and every Allele user already has a
-registration of their own — a second one shipped by this plugin would collide
-with it on every session. So the plugin declares no MCP server at all.
-
-If you use Allele, register it once, at user scope:
-
-```sh
-claude mcp add allele --scope user -- /Applications/Allele.app/Contents/MacOS/Allele --mcp-serve
-```
-
-Point it at a **stable** path. A registration into `target/release/` works right
-up until the next `cargo clean`, at which point delegation dies silently.
-
-Locus runs perfectly well with no Allele at all — it falls back to OpenCode, and
-`locus doctor` reports Allele as an optional integration rather than a problem.
-
 ---
 
 ## Platform adapters
 
 Locus connects to your AI coding tool via a **platform adapter**. Adapters are minimal and non-destructive:
 
-- **Claude Code** — writes to `~/.claude/CLAUDE.md` and merges `~/.claude/settings.json`
+- **Claude Code** — merges two fields into `~/.claude/settings.json`: `statusLine` and the
+  `~/.locus` permission rules. The plugin supplies everything else; no `CLAUDE.md` is
+  written and no hooks are registered here.
 - **OpenCode** — writes to `~/.config/opencode/AGENTS.md` and merges `~/.config/opencode/opencode.json`
 
 ### Adding an adapter
@@ -312,7 +318,7 @@ Locus connects to your AI coding tool via a **platform adapter**. Adapters are m
 locus platform add claude-code
 ```
 
-Pre-existing config files are backed up to `<filename>.pre-locus` before being modified. User settings and non-Locus hooks are preserved.
+Settings that Locus doesn't own are left alone, and re-running is safe.
 
 ### Removing an adapter
 
@@ -320,11 +326,10 @@ Pre-existing config files are backed up to `<filename>.pre-locus` before being m
 locus platform remove claude-code
 ```
 
-This removes Locus entries from the adapter's config. Restore a pre-Locus backup manually if needed:
-
-```sh
-mv ~/.claude/CLAUDE.md.pre-locus ~/.claude/CLAUDE.md
-```
+This removes the Locus entries from the adapter's config. For Claude Code it also clears
+what older Locus versions wrote: a generated `~/.claude/CLAUDE.md` and `locus hook` entries
+in `settings.json`. If you installed before the plugin existed, run this once and
+`locus doctor` will stop warning about duplicate hooks.
 
 ### Listing platforms
 
@@ -477,7 +482,7 @@ Key concepts:
 - **Phantom Capability Rule** — Every capability selected must be actually invoked via tool call. Text-only invocation is theatre.
 - **Effort levels** — Minimal (<1 min), Standard (<5 min), Extended (<15 min), Advanced (<30 min), Deep (<60 min), Comprehensive (<120 min). Each has a minimum ISC count.
 
-The Algorithm is embedded into your platform's system prompt so every AI session follows it automatically.
+In Claude Code the Algorithm is the `locus-algorithm` skill. The dispatcher asks for it on every non-trivial turn, and the Stop hook checks that it ran. In OpenCode it is loaded through `opencode.json` instructions.
 
 ---
 
@@ -487,7 +492,7 @@ After `locus init`:
 
 ```
 ~/.locus/
-├── algorithm/          # Algorithm specification (v1.1.md)
+├── algorithm/          # Algorithm specification (v2.0.md)
 ├── skills/             # Skill definitions (SKILL.md per skill)
 │   ├── council/
 │   ├── creative/
@@ -510,17 +515,19 @@ After `locus init`:
 └── locus.yaml          # Canonical configuration
 ```
 
+After `claude plugin install locus@locus`: skills, agents and hooks, loaded from the plugin
+cache and removed with the plugin.
+
 After `locus platform add claude-code`:
 
-- `~/.claude/CLAUDE.md` — Locus bootstrap with Algorithm embedded
-- `~/.claude/settings.json` — merged Locus hook entries
+- `~/.claude/settings.json` — `statusLine` and `permissions.allow` for `~/.locus`, nothing else
 
 After `locus platform add opencode`:
 
 - `~/.config/opencode/AGENTS.md` — Locus bootstrap with Algorithm embedded
 - `~/.config/opencode/opencode.json` — merged instructions
 
-**Nothing is written to platform subdirectories like `~/.claude/skills/` or `.opencode/`.** All Locus content stays in `~/.locus/`.
+**Nothing is written to platform subdirectories like `~/.claude/skills/` or `.opencode/`.**
 
 ### The Dispatcher
 
@@ -556,15 +563,11 @@ a PR by hand.
 Locus is non-destructive:
 
 ```sh
-locus platform remove claude-code   # Remove adapter
-locus platform remove opencode      # Remove adapter
-rm -rf ~/.locus                     # Delete all Locus data
-```
-
-Restore pre-Locus backups if needed:
-
-```sh
-mv ~/.claude/CLAUDE.md.pre-locus ~/.claude/CLAUDE.md
+claude plugin uninstall locus       # skills, agents, hooks
+locus platform remove claude-code   # statusline + permission rules
+locus platform remove opencode      # if you added it
+rm -rf ~/.locus                     # all Locus data — memory and learnings included
+rm ~/.local/bin/locus               # the binary
 ```
 
 ---

@@ -234,16 +234,23 @@ impl VehicleAvailability {
                  are not needed while OpenCode is available.",
                 describe_socket()
             ),
+            // No Allele, no OpenCode: plain Claude Code, which is a supported
+            // configuration rather than a fault. This arm used to open with
+            // "DEGRADED", and a Claude-only machine heard that at the top of
+            // every session and passed it on as though the install were broken.
+            // The cost of a native subagent is unchanged and still has to be
+            // stated, but at the point of delegating, which is when it is true.
             (false, false) => format!(
-                "Locus delegation is DEGRADED: neither sanctioned vehicle is available \
-                 on this machine — the Allele app is not reachable ({} is not accepting \
-                 connections) and OpenCode is not usable (binary or credential missing). \
-                 Native `Task`/`Agent` subagents are therefore PERMITTED as the \
-                 last-resort vehicle. Before you dispatch one, tell the user plainly \
-                 that delegation has degraded to a hidden subagent — no workspace, no \
-                 branch, no conversation, not interruptible. If the work needs a real \
-                 session, the right move is to stop and say delegation is unavailable, \
-                 not to quietly absorb it into this one.",
+                "Locus delegation: this machine runs Claude Code without Allele or \
+                 OpenCode, which is a supported setup — the Allele app is not reachable \
+                 ({}) and OpenCode is not usable (binary or credential missing). Native \
+                 `Task`/`Agent` subagents are therefore PERMITTED as the delegation \
+                 vehicle. Do not raise this at session start; it matters only when you \
+                 delegate. Before you dispatch a subagent, tell the user in one line \
+                 that it runs hidden — no workspace, no branch, no conversation, not \
+                 interruptible. If the work needs a real session, the right move is to \
+                 stop and say delegation is unavailable, not to quietly absorb it into \
+                 this one.",
                 describe_socket()
             ),
         }
@@ -608,6 +615,17 @@ mod tests {
         assert!(notice.contains("Task"));
         assert!(notice.contains("no branch"));
         assert!(notice.contains("stop and say delegation is unavailable"));
+    }
+
+    /// Claude Code alone is a supported setup. The notice says so, and defers
+    /// the subagent's cost to the moment of delegating rather than announcing
+    /// it to every session as a fault.
+    #[test]
+    fn the_no_vehicle_notice_does_not_call_a_supported_setup_degraded() {
+        let notice = VehicleAvailability::NONE.session_notice();
+        assert!(!notice.contains("DEGRADED"), "{notice}");
+        assert!(notice.contains("supported setup"));
+        assert!(notice.contains("Do not raise this at session start"));
     }
 
     #[test]
