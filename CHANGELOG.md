@@ -13,6 +13,17 @@ refuses to build when they disagree.
 
 ### Added
 
+- **The README installs Locus as a plugin, for someone who uses Claude Code and nothing else.**
+  The quick start is five steps — release binary, `claude plugin marketplace add` and
+  `install`, `locus init`, `locus platform add claude-code`, `locus doctor` — each with what
+  breaks without it. A new "Running without Allele" section says what works with Claude Code
+  alone, and stale claims are gone: `platform add` writing a `CLAUDE.md` and hooks, Locus
+  being "not a plugin", the plugin shipping the binary. The hook wrapper's missing-binary hint
+  now names a path that builds. (#106)
+- **A machine with no Allele and no OpenCode is no longer told delegation is DEGRADED every
+  session.** The `SessionStart` notice calls Claude Code alone a supported setup and asks the
+  model not to raise it at session start; the subagent's cost is still stated, in one line,
+  at the moment of delegating. (#106)
 - **A round is a posted review: new commits before a post update the review in place instead of
   opening round 2.** Patrick's queue showed one pull request twice, round 1 and round 2 "changes
   since your last review", though he had never posted round 1 — and the only new commits were
