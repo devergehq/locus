@@ -468,6 +468,7 @@ def allele_session_status(cfg: dict, session_id: str, timeout: float = 2.0) -> t
 
       `gone`         suspended, done, or Allele has no session with that id.
       `there`        any other state: running, awaiting_input, response_ready, idle. `said` is it.
+      `unknown`      Allele answered, with something this cannot read. Decide nothing (DEV-1056).
       `unreachable`  no socket, refused, or no answer in `timeout`. Decide nothing; ask again.
 
     Allele answers an unknown id with `bad_request` and "no session with id …" today, and a
@@ -492,7 +493,7 @@ def allele_session_status(cfg: dict, session_id: str, timeout: float = 2.0) -> t
     if code == "session_not_found" or (code == "bad_request"
                                        and message.startswith("no session with id")):
         return "gone", "no such session"
-    return "unreachable", f"Allele answered {code}: {message}"
+    return "unknown", f"Allele answered {code}: {message}"
 
 
 # ----------------------------------------------------------------------------- session groups
@@ -1086,6 +1087,42 @@ def review_desk_repos(cfg: dict, ledger: dict) -> list[str]:
     for entry in ledger.values():
         repos.add((entry.get("repo") or "").strip().lower())
     return sorted(r for r in repos if r and r != "owner/repo")
+
+
+def session_held(cfg: dict | None, live: dict, entry: dict) -> tuple[bool | None, str]:
+    """Is a session this instance dispatched still working this key — asked of Allele first.
+
+    DEV-1056: `review_desk_live` below decides from one witness, `~/.allele/state.json`, and that
+    file was caught behind reality by 173 s (a `session_lost` for a session that went on writing
+    for a day) and by about 13 minutes the other way. Every call site branches towards
+    dispatching, so a stale file put a second worker on one review.
+
+    So the world half of the question goes to Allele's control socket, and the file is only the
+    fallback for a machine where the socket cannot be reached — which is exactly today's
+    behaviour, so nothing changes there. Returns `(held, witness)`:
+
+      `(True|False, "allele_socket")`  Allele said, now.
+      `(None, "allele_socket")`        Allele answered with something unreadable. Unknown, and no
+                                       call site may read unknown as "dispatch".
+      `(True|False, "state_file")`     the socket could not be reached; the file decided, and a
+                                       handler should confirm before acting on False.
+
+    The bookkeeping half — a `session_id` on the entry and a status in `ALIVE` — is this
+    instance's own and is asked first, with no call: an entry that says nobody holds it is not a
+    question for Allele.
+    """
+    sid = entry.get("session_id")
+    if not sid or entry.get("status") not in ALIVE:
+        return False, "ledger"
+    if cfg is not None:
+        verdict, _ = allele_session_status(cfg, str(sid))
+        if verdict == "there":
+            return True, "allele_socket"
+        if verdict == "gone":
+            return False, "allele_socket"
+        if verdict == "unknown":
+            return None, "allele_socket"
+    return review_desk_live(live, entry), "state_file"
 
 
 def review_desk_live(live: dict, entry: dict) -> bool:
@@ -2868,7 +2905,7 @@ class Poller:
             # differently would be one more thing to reason about for one saved file read.
             if self.allele_live is None:
                 self.allele_live = allele_state(cfg)[0]
-            alive = review_desk_live(self.allele_live, entry)
+            alive, _ = session_held(cfg, self.allele_live, entry)
         except Exception:
             # Unknown, and said as unknown. Guessing `False` would offer a replacement for a
             # session that is sitting there — two workers on one review, which is the one thing
@@ -4661,9 +4698,17 @@ class Poller:
                           session_name=entry.get("session_name"), ledger_status=entry.get("status"))
             session = live.get(sid)
             if session is None:
+                # **The state file says absent; ask Allele before saying so** (DEV-1056). The
+                # #9676 `session_lost` was for a session the ledger shows writing for a day after
+                # it. There and unknown both say nothing: the next tick asks again, and a
+                # session that really went is reported then.
+                verdict, said = allele_session_status(cfg, str(sid))
+                if verdict in ("there", "unknown"):
+                    continue
+                witness = "allele_socket" if verdict == "gone" else "state_file"
                 kind = "session_archived" if sid in archived else "session_lost"
                 if self.once(f"{sid}|{kind}"):
-                    emit(kind, **common)
+                    emit(kind, witness=witness, **common)
                 continue
             status = session.get("last_known_status")
             if entry.get("status") in WORKING and status == "AwaitingInput":
@@ -4781,7 +4826,14 @@ class Poller:
         if kind == "fresh_session_requested":
             self.fresh_session(rd, item, key, entry, every)
             return
-        if review_desk_live(live, entry) and not self.cannot_be_told(kind, key, entry):
+        held, witness = session_held(getattr(self, "review_desk_cfg_seen", None), live, entry)
+        if held is None:
+            # Allele answered and could not be read. Unknown is never "dispatch" (DEV-1056).
+            if self.due(f"review_desk|unknown_liveness|{key}", every):
+                emit("review_desk_unavailable", state="unknown_liveness", key=key,
+                     review_desk_id=rid, detail="Allele's answer about the session was unreadable")
+            return
+        if held and not self.cannot_be_told(kind, key, entry):
             return
         # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
         # the ticks in between. The marker therefore means "this item was considered", not "this
@@ -4809,7 +4861,7 @@ class Poller:
                       entered_at=item.get("entered_at"), pr_state=state,
                       url=f"https://github.com/{repo}/pull/{number}",
                       ledger_status=entry.get("status"), session_id=entry.get("session_id"),
-                      review=review_desk_link(rd, rid))
+                      liveness_witness=witness, review=review_desk_link(rd, rid))
         if kind == "review_requested":
             emit("review_desk_requested", **common)
             return

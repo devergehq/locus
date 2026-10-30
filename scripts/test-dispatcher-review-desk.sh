@@ -2139,6 +2139,56 @@ ok "  and it says Allele could not be asked"           "$(says '"state": "allele
 ok "  and the poller keeps going"                      "$rc" 0
 
 # =============================================================================================
+printf '\nA state file that is behind is not believed (DEV-1056)\n'
+# The socket is asked before a session is called lost or a review is resumed over it. Without a
+# socket nothing changes -- every test above runs with none -- and these give it one.
+echo '{"result":"status","session":{"session_id":"s-9676","state":"running","state_age_secs":173}}' > "$work/allele.answer"
+allele_up
+instance '{"mode":"auto"}'
+put gh-portal-440 mode=review status=active repo=acme/portal number=440 session_id=s-9676 --by test
+no_sessions
+rc=$(run "$disp" poll 1)
+ok "absent from the state file, running in Allele: not lost" "$(count '"event": "session_lost"')" 0
+instance '{"mode":"auto"}'
+put gh-portal-440 mode=review status=active repo=acme/portal number=440 session_id=s-9676 --by test
+no_sessions
+work_doc draft_approved 12 acme/portal 440 1791520600 gh-portal-440
+rc=$(run "$disp" poll 1)
+ok "  and an approved draft is not resumed over it"     "$(count '"event": "review_desk_resume"')" 0
+
+echo '{"result":"error","code":"session_not_found","message":"no session with id s-9676"}' > "$work/allele.answer"
+instance '{"mode":"auto"}'
+put gh-portal-440 mode=review status=active repo=acme/portal number=440 session_id=s-9676 --by test
+no_sessions
+work_doc draft_approved 12 acme/portal 440 1791520600 gh-portal-440
+rc=$(run "$disp" poll 1)
+ok "gone in Allele: lost, and the event says who said so" "$(count '"witness": "allele_socket"')" 1
+ok "  and the approved draft is resumed"                "$(count '"event": "review_desk_resume"')" 1
+ok "  confirmed by the socket, so the handler need not ask" "$(says '"liveness_witness": "allele_socket"')" yes
+
+echo '{"result":"error","code":"internal","message":"it broke"}' > "$work/allele.answer"
+instance '{"mode":"auto"}'
+put gh-portal-440 mode=review status=active repo=acme/portal number=440 session_id=s-9676 --by test
+no_sessions
+work_doc draft_approved 12 acme/portal 440 1791520600 gh-portal-440
+rc=$(run "$disp" poll 1)
+ok "an unreadable answer is unknown: nothing is resumed" "$(count '"event": "review_desk_resume"')" 0
+ok "  nothing is called lost"                           "$(count '"event": "session_lost"')" 0
+ok "  and it says the liveness is unknown"              "$(says '"state": "unknown_liveness"')" yes
+allele_down
+
+instance '{"mode":"auto"}'
+put gh-portal-440 mode=review status=active repo=acme/portal number=440 session_id=s-9676 --by test
+no_sessions
+work_doc draft_approved 12 acme/portal 440 1791520600 gh-portal-440
+rc=$(run "$disp" poll 1)
+ok "no socket: the state file decides, as before"       "$(count '"event": "review_desk_resume"')" 1
+ok "  and says it was the state file, so the handler asks" "$(says '"liveness_witness": "state_file"')" yes
+
+ok "the handler confirms every resume before dispatching" "$(grep -c 'Confirm before you dispatch, on every kind' "$root/skills/dispatcher/SKILL.md")" 1
+ok "  and every session_lost before re-queueing"        "$(grep -c 'First, confirm it' "$root/skills/dispatcher/SKILL.md")" 1
+
+# =============================================================================================
 printf '\nThe fifth kind -- one ticket for the findings held back (DEV-934)\n'
 # `work list` answers with FIVE kinds and this file knew four, so the developer's "File as one
 # ticket for an agent" reached no session and said nothing about itself. Three things are under
@@ -6175,7 +6225,7 @@ printf '\nNegative controls -- reverse each guard and require these tests to fai
 # Each substitution is counted rather than assumed: a sed that matched nothing would turn a
 # control into a second copy of the test it is controlling.
 
-sed 's/^        if review_desk_live(live, entry) and not self\.cannot_be_told(kind, key, entry):$/        if False:  # LIVENESS REVERSED/' \
+sed 's/^        if held and not self\.cannot_be_told(kind, key, entry):$/        if False:  # LIVENESS REVERSED/' \
     "$disp" > "$work/nolive.py"
 ok "the liveness reversal changed one line"            "$(grep -c 'LIVENESS REVERSED' "$work/nolive.py")" 1
 instance '{"mode":"auto"}'
