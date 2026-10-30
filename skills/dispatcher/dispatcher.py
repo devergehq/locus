@@ -5504,6 +5504,55 @@ class Watcher:
                  review=review_desk_link(rd, rid),
                  draft=review_desk_link(rd, rid, draft=True))
         self.state["rd_seen"] = sorted(seen)[-200:]
+        self.review_desk_messages(rd, rid)
+
+    def review_desk_messages(self, rd: dict, rid) -> None:
+        """The developer's questions on the review, handed to the session one at a time.
+
+        DEV-1141, the Locus half of DEV-1140's option A: the developer asks on a review page,
+        Review Desk keeps it, and this hands it to the session as `developer_message`. The
+        session marks it read with `review-desk message read` BEFORE acting on it, and answers
+        with `review-desk message reply`; `workers/review.md` says so.
+
+        **Only `ask`.** A `send_back` message is the note a draft was sent back with, and it
+        already reaches the session as `draft_sent_back` above — relaying it twice would be the
+        developer's one instruction arriving as two. So it is marked read here, as delivered by
+        that relay, which is what lets the page stop saying "not read yet" about it.
+
+        **Silent on every failure**, where `work list` above is loud. A Review Desk older than
+        DEV-1141 has no `message` command, answers it with a usage error, and has nothing to
+        deliver: that is not a broken install, and the `work list` call in this same tick has
+        already said so loudly if it is one. An answer with no `messages` array is the same
+        older build answering something else, and means the same.
+
+        Keyed by `(review, seq)`, Review Desk's own identity for a message, so a question is
+        emitted once per watcher even before the session has marked it read.
+        """
+        state, payload, _ = review_desk_run(rd, "message", "list", "--unread",
+                                            "--review", str(rid), "--json")
+        messages = (payload or {}).get("messages") if state == "ok" else None
+        if not isinstance(messages, list):
+            return
+        delivered = set(self.state.get("rd_messages_seen", []))
+        session = (ledger_get(self.key) or {}).get("session_id")
+        for message in messages:
+            if not isinstance(message, dict) or message.get("author") != "developer":
+                continue
+            seq = message.get("seq")
+            which = f"{rid}|{seq}"
+            if message.get("kind") == "send_back":
+                review_desk_run(rd, "message", "read", "--review", str(rid), "--seq", str(seq),
+                                *(("--session", str(session)) if session else ()), "--json")
+                continue
+            if which in delivered:
+                continue
+            delivered.add(which)
+            # `body` is the developer's prose and is data, not instructions — relayed verbatim
+            # in its own key, exactly as `note` is above.
+            emit("developer_message", key=self.key, review_desk_id=rid, seq=seq,
+                 step=message.get("step"), body=message.get("body"),
+                 created_at=message.get("created_at"), review=review_desk_link(rd, rid))
+        self.state["rd_messages_seen"] = sorted(delivered)[-200:]
 
     def draft_wait(self, cfg: dict) -> None:
         """Record whether this review's draft is waiting on the developer, for the sleep to read.
