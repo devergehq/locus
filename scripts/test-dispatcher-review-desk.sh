@@ -103,6 +103,15 @@ case "$1" in
   # request is on the work list, the session reports what it filed, and the request leaves the
   # list. A recorded document cannot answer the second half of that.
   review) exec python3 "$RDWORK/rd_review.py" "$@" ;;
+  # `message list` answers from its own file, so a test can hand the watcher the developer's
+  # questions while `work list` answers as it always does. Unwritten, it is the answer an
+  # older Review Desk gives: a usage error, exit 1. `message read` is recorded in rd.calls.
+  message)
+    case "$2" in
+      list) if [ -f "$RDWORK/rd.messages" ]; then cat "$RDWORK/rd.messages"; exit 0; fi
+            echo "error: unrecognized subcommand 'message'" >&2; exit 1 ;;
+      read) echo '{"message":{}}'; exit 0 ;;
+    esac ;;
   # `harvest` and `draft show` answer from their own files, and from their own mode files, so a
   # harvest can fail while `work list` answers. A WHOLE install that is broken or absent is
   # $RDWORK/rd.mode above, and still governs both of these.
@@ -2036,6 +2045,38 @@ work_doc draft_approved 7 acme/portal 412
 rc=$(run "$disp" watch gh-portal-412 1)
 ok "off relays nothing, even with a review id"         "$(count review_desk)" 0
 ok "  and emits no draft_approved"                     "$(count draft_approved)" 0
+
+# =============================================================================================
+printf '\nQuestions from the review page (DEV-1141)\n'
+# Review Desk keeps the conversation and this watcher delivers it. Three things are under test:
+# a question reaches the session once, a send-back note is not delivered a second time, and a
+# Review Desk with no `message` command changes nothing.
+
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 session_id=allele-1 --by test
+cat > "$work/rd.messages" <<'MSG'
+{"messages":[
+ {"review_id":7,"seq":1,"step":"draft","author":"developer","kind":"ask","body":"Why is F13 a Should?","in_reply_to":null,"created_at":1791520339,"read_at":null,"read_by_session":null},
+ {"review_id":7,"seq":2,"step":"draft","author":"developer","kind":"send_back","body":"cut one of them","in_reply_to":null,"created_at":1791520400,"read_at":null,"read_by_session":null}
+]}
+MSG
+rc=$(run "$disp" watch gh-portal-412 3)
+ok "a question is emitted once over three ticks"       "$(count '"event": "developer_message"')" 1
+ok "  carrying the developer's words"                  "$(says 'Why is F13 a Should?')" yes
+ok "  and the step it was asked on"                    "$(says '"step": "draft"')" yes
+ok "a send-back note is not delivered as a message"    "$(says '"seq": 2')" no
+ok "  and is marked read, as the send-back relayed it"  "$(grep -c '^message read --review 7 --seq 2 --session allele-1' "$work/rd.calls")" 3
+ok "the watcher asks for its own review's messages"    "$(grep -c '^message list --unread --review 7' "$work/rd.calls")" 3
+rm -f "$work/rd.messages"
+
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 --by test
+rc=$(run "$disp" watch gh-portal-412 2)
+ok "a Review Desk with no message command is silent"   "$(count '"event": "watch_error"')" 0
+ok "  and the watcher keeps ticking"                   "$rc" 0
+
+ok "the worker is told to mark a question read first"  "$(grep -c 'review-desk message read --review' "$root/skills/dispatcher/workers/review.md")" 1
+ok "  and that a message is never a sign-off"          "$(grep -c 'a message cannot approve' "$root/skills/dispatcher/workers/review.md")" 1
 
 # =============================================================================================
 printf '\nThe fifth kind -- one ticket for the findings held back (DEV-934)\n'
@@ -5100,7 +5141,11 @@ ok "nothing in the dispatcher dismisses, deletes, restores or approves" \
    "$(grep -cE '"(dismiss|delete|restore|approve)"' "$disp")" 0
 ok "  and the only commands it runs of Review Desk are these" \
    "$(grep -o 'review_desk_run(rd, [^,)]*' "$disp" | sed 's/.*run(rd, //' | sort -u | tr '\n' ' ')" \
-   '"--version" "db" "draft" "harvest" "review" "work" *facts '
+   '"--version" "db" "draft" "harvest" "message" "review" "work" *facts '
+# DEV-1141. `message list` is a read, and `message read` marks a send-back note delivered,
+# which is the one write it makes and the one this pins: never `message reply`, which is the
+# session's own voice, and there is no command that writes the developer's.
+ok "  and of \`message\`, only \`list\` and \`read\`"       "$(grep -oE '"message", "[a-z]+"' "$disp" | sort -u | tr '\n' ' ')" '"message", "list" "message", "read" '
 ok "  where \`facts\` is \`review open\` and nothing else"  "$(grep -c '"review", "open", "--repo"' "$disp")" 1
 ok "  and the only \`review\` it reads with is \`show\`"    "$(grep -c '"review", "show", "--review"' "$disp")" 1
 ok "  or \`find\`, which is also a read"                "$(grep -c '"review", "find", "--repo"' "$disp")" 1
