@@ -442,6 +442,59 @@ def allele_state(cfg: dict) -> tuple[dict, set]:
     return live, archived
 
 
+def allele_socket(cfg: dict) -> Path:
+    """Allele's control socket: `allele.control_socket`, or `control.sock` beside the state file.
+
+    Beside the state file by default because that is where Allele puts both, and it means an
+    instance pointed at another Allele's state is pointed at that Allele's socket too.
+    """
+    allele = cfg.get("allele") or {}
+    if allele.get("control_socket"):
+        return Path(allele["control_socket"]).expanduser()
+    return Path(allele.get("state_file") or "~/.allele/state.json").expanduser().parent / \
+        "control.sock"
+
+
+def allele_session_status(cfg: dict, session_id: str, timeout: float = 2.0) -> tuple[str, str]:
+    """What Allele says of one session RIGHT NOW, asked over its control socket.
+
+    **Not the state file, and that is the whole point** (DEV-1056): the file was caught wrong
+    about whether a session was alive by 173 s and by about 13 minutes, and a replacement started
+    over a live session puts two sessions on one review. So the one decision that starts a
+    session over another — a fresh session the developer asked for — is made from Allele's own
+    answer to `sessions_status`.
+
+    Returns `(verdict, said)`, where verdict is:
+
+      `gone`         suspended, done, or Allele has no session with that id.
+      `there`        any other state: running, awaiting_input, response_ready, idle. `said` is it.
+      `unreachable`  no socket, refused, or no answer in `timeout`. Decide nothing; ask again.
+
+    Allele answers an unknown id with `bad_request` and "no session with id …" today, and a
+    `session_not_found` code is to come; both read as gone.
+    """
+    import socket as _socket
+    path = allele_socket(cfg)
+    try:
+        with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect(str(path))
+            conn.sendall((json.dumps({"op": "sessions_status", "session_id": session_id})
+                          + "\n").encode())
+            line = conn.makefile("r").readline()
+        answer = json.loads(line)
+    except (OSError, ValueError) as exc:
+        return "unreachable", f"Allele's socket at {path} did not answer: {exc}"
+    if answer.get("result") == "status":
+        state = str((answer.get("session") or {}).get("state") or "unknown")
+        return ("gone" if state in ("suspended", "done") else "there"), state
+    code, message = answer.get("code") or "", answer.get("message") or ""
+    if code == "session_not_found" or (code == "bad_request"
+                                       and message.startswith("no session with id")):
+        return "gone", "no such session"
+    return "unreachable", f"Allele answered {code}: {message}"
+
+
 # ----------------------------------------------------------------------------- session groups
 
 # Which named allele group each mode's sessions land in. On 12 October 2026 one live project
@@ -599,7 +652,10 @@ REVIEW_DESK_GATES = ("never", "always")
 # the findings they held back to be filed as one ticket; Review Desk files nothing and reports
 # the request here. Four names meant that request reached no session and said nothing about
 # itself, which is DEV-934.
+# `fresh_session_requested` (DEV-1142) is the sixth, handled by `Poller.fresh_session`, which
+# asks Allele's socket rather than the state file before it starts anything.
 REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "draft_approved",
+                     "fresh_session_requested",
                      "nits_to_ticket")
 
 # Kinds this file has read and deliberately does nothing with. **Empty, and load-bearing empty.**
@@ -610,7 +666,9 @@ REVIEW_DESK_KINDS = ("review_requested", "brief_settled", "draft_sent_back", "dr
 REVIEW_DESK_IGNORED_KINDS: tuple[str, ...] = ()
 
 # The four a WATCHER relays to the session already working the review. `review_requested` is
-# deliberately absent: a session reading its own review does not need telling to start.
+# deliberately absent: a session reading its own review does not need telling to start. So is
+# `fresh_session_requested`: it asks for a session to replace the one that is gone, and a
+# session with a watcher running is not gone.
 REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",
                            "nits_to_ticket")
 
@@ -4655,6 +4713,8 @@ class Poller:
             # dispatcher that has never heard of Review Desk silent about it.
             return
         every = cfg["limits"]["reemit_after_secs"]
+        # Kept for `fresh_session`, which asks Allele's socket rather than the state file.
+        self.review_desk_cfg_seen = cfg
         try:
             live, _ = allele_state(cfg)
         except Exception as exc:
@@ -4716,6 +4776,11 @@ class Poller:
         # about whether this request is this section's to offer at all. See `request_spoken_for`.
         if kind == "review_requested" and self.request_spoken_for(key, entry, item):
             return
+        # Before the liveness test, because that test reads the state file and this kind exists
+        # for exactly the case where the state file and the review page disagree. DEV-1142.
+        if kind == "fresh_session_requested":
+            self.fresh_session(rd, item, key, entry, every)
+            return
         if review_desk_live(live, entry) and not self.cannot_be_told(kind, key, entry):
             return
         # The rate limit is taken BEFORE the GitHub read, so a quiet item costs no API call on
@@ -4761,6 +4826,59 @@ class Poller:
         emit("review_desk_resume", kind=kind, note=item.get("note"),
              sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True),
              nit_ticket_status=item.get("nit_ticket_status"), **common)
+
+    def fresh_session(self, rd: dict, item: dict, key: str, entry: dict, every: int) -> None:
+        """The developer asked for a fresh session: start one if Allele says the old one is gone.
+
+        DEV-1142. The review page offers "Start a fresh session" only when the strip says the
+        session is gone, and Review Desk's server asks Allele before recording the request. This
+        asks a third time, here, because only this process starts sessions and a request can sit
+        in the work list for a while before it is read.
+
+          * **gone** — `review_desk_resume` with `kind: fresh_session_requested`, which the
+            Dispatcher answers as it answers every resume: a replacement review worker whose
+            brief tells it to read the record and continue. Its `review link --session` answers
+            the request in Review Desk.
+          * **there** — `review fresh-session --declined` with what Allele said, which the page
+            shows. Nothing starts.
+          * **unreachable** — nothing, and the next due tick asks again. Unknown means start
+            NOTHING, the recoverable direction, as it does for the state file above.
+
+        A merged or closed pull request is declined too: nothing is left to review.
+        """
+        rid, number, repo = item.get("review_id"), item.get("pr"), item.get("repo")
+        if not isinstance(rid, int) or not isinstance(number, int):
+            return
+        if not self.due(f"review_desk|fresh_session_requested|{rid}|{item.get('entered_at')}",
+                        every):
+            return
+        sid = item.get("session_id") or entry.get("session_id")
+        cfg = getattr(self, "review_desk_cfg_seen", None) or load_config()
+        if sid:
+            verdict, said = allele_session_status(cfg, str(sid))
+        else:
+            verdict, said = "gone", "no session recorded"
+        if verdict == "unreachable":
+            emit("review_desk_unavailable", state="allele_unreachable", key=key,
+                 review_desk_id=rid, detail=said)
+            return
+        state = self.pr_state(repo, number)
+        if verdict == "there" or state in PR_CLOSED:
+            reason = (f"Allele says {sid} is {said}, so nothing was started over it"
+                      if verdict == "there"
+                      else f"the pull request is {state}, so there is nothing left to review")
+            review_desk_run(rd, "review", "fresh-session", "--review", str(rid),
+                            "--declined", reason, "--json")
+            emit("review_desk_fresh_session_declined", key=key, review_desk_id=rid,
+                 session_id=sid, reason=reason, review=review_desk_link(rd, rid))
+            return
+        emit("review_desk_resume", kind="fresh_session_requested", note=None,
+             sign_off=item.get("sign_off"), draft=review_desk_link(rd, rid, draft=True),
+             nit_ticket_status=item.get("nit_ticket_status"), key=key, review_desk_id=rid,
+             repo=repo, number=number, head_sha=item.get("head_sha"), round=item.get("round"),
+             entered_at=item.get("entered_at"), pr_state=state,
+             url=f"https://github.com/{repo}/pull/{number}", ledger_status=entry.get("status"),
+             session_id=sid, allele_said=said, review=review_desk_link(rd, rid))
 
     def cannot_be_told(self, kind: str, key: str, entry: dict) -> bool:
         """Is this a ticket request whose live session has already stopped listening?

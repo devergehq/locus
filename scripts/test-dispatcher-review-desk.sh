@@ -2079,6 +2079,66 @@ ok "the worker is told to mark a question read first"  "$(grep -c 'review-desk m
 ok "  and that a message is never a sign-off"          "$(grep -c 'a message cannot approve' "$root/skills/dispatcher/workers/review.md")" 1
 
 # =============================================================================================
+printf '\nA fresh session the developer asked for (DEV-1142)\n'
+# The one decision that starts a session over another is made from Allele's SOCKET, never the
+# state file (DEV-1056). A stand-in socket sits where `allele_socket` looks -- beside the state
+# file -- and answers every connection with whatever $work/allele.answer holds.
+allele_up () {
+  python3 - "$work/control.sock" "$work/allele.answer" <<'PY' &
+import os, socket, sys
+path, answer = sys.argv[1], sys.argv[2]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(8)
+while True:
+    conn, _ = server.accept()
+    conn.makefile("r").readline()
+    conn.sendall((open(answer).read().strip() + "\n").encode())
+    conn.close()
+PY
+  allele_pid=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$work/control.sock" ] && break; sleep 0.1; done
+}
+allele_down () { kill "$allele_pid" 2>/dev/null || true; wait "$allele_pid" 2>/dev/null || true; rm -f "$work/control.sock"; }
+
+echo '{"result":"error","code":"bad_request","message":"no session with id old-1"}' > "$work/allele.answer"
+allele_up
+instance '{"mode":"auto"}'
+put gh-portal-430 mode=review status=active repo=acme/portal number=430 session_id=old-1 --by test
+# Live in the STATE FILE, which is exactly the disagreement this kind exists for.
+session old-1
+work_doc fresh_session_requested 11 acme/portal 430 1791520500 gh-portal-430
+rc=$(run "$disp" poll 1)
+ok "gone in Allele: a replacement is dispatched"       "$(count '"kind": "fresh_session_requested"')" 1
+ok "  as a review_desk_resume"                         "$(count '"event": "review_desk_resume"')" 1
+ok "  saying what Allele said"                         "$(says '"allele_said": "no such session"')" yes
+ok "  and nothing is declined"                         "$(grep -c '^review fresh-session' "$work/rd.calls")" 0
+no_sessions
+
+echo '{"result":"status","session":{"session_id":"old-1","state":"running","state_age_secs":12}}' > "$work/allele.answer"
+instance '{"mode":"auto"}'
+put gh-portal-430 mode=review status=active repo=acme/portal number=430 session_id=old-1 --by test
+work_doc fresh_session_requested 11 acme/portal 430 1791520500 gh-portal-430
+rc=$(run "$disp" poll 1)
+ok "still running in Allele: nothing is dispatched"    "$(count '"event": "review_desk_resume"')" 0
+ok "  and Review Desk is told why"                     "$(grep -c '^review fresh-session --review 11 --declined Allele says old-1 is running' "$work/rd.calls")" 1
+ok "  which is also emitted"                           "$(count '"event": "review_desk_fresh_session_declined"')" 1
+allele_down
+
+instance '{"mode":"auto"}'
+put gh-portal-430 mode=review status=active repo=acme/portal number=430 session_id=old-1 --by test
+work_doc fresh_session_requested 11 acme/portal 430 1791520500 gh-portal-430
+rc=$(run "$disp" poll 1)
+ok "no Allele socket: nothing is dispatched"           "$(count '"event": "review_desk_resume"')" 0
+ok "  nothing is declined"                             "$(grep -c '^review fresh-session' "$work/rd.calls")" 0
+ok "  and it says Allele could not be asked"           "$(says '"state": "allele_unreachable"')" yes
+ok "  and the poller keeps going"                      "$rc" 0
+
+# =============================================================================================
 printf '\nThe fifth kind -- one ticket for the findings held back (DEV-934)\n'
 # `work list` answers with FIVE kinds and this file knew four, so the developer's "File as one
 # ticket for an agent" reached no session and said nothing about itself. Three things are under
@@ -2972,14 +3032,15 @@ rc=$(run "$disp" poll 1)
 ok "an item with no kind at all says nothing"          "$(count review_desk)" 0
 ok "  and is not an error"                             "$rc" 0
 
-printf '\n  the contract and this file name the same five kinds\n'
+printf '\n  the contract and this file name the same six kinds\n'
 # Every `WorkKind` Review Desk 0.1.0 publishes, read off `crates/store/src/model.rs` at 2656e54
 # and agreeing with `crates/cli/src/commands/work.rs`'s own help. **When Review Desk adds a
 # sixth, add it to this line first.** The assertion then fails until `dispatcher.py` either
 # handles it in `REVIEW_DESK_KINDS` or names it in `REVIEW_DESK_IGNORED_KINDS` -- which is the
 # only way a kind gets left alone on purpose rather than by nobody noticing, and the gap this
 # whole section is about went five weeks with no line anywhere to grep for.
-CONTRACT_KINDS='["brief_settled", "draft_approved", "draft_sent_back", "nits_to_ticket", "review_requested"]'
+# The sixth, `fresh_session_requested`, from devergehq/review-desk DEV-1142.
+CONTRACT_KINDS='["brief_settled", "draft_approved", "draft_sent_back", "fresh_session_requested", "nits_to_ticket", "review_requested"]'
 # placed <expr> [source]: one question about the three tuples, as the source under test holds them.
 placed () { run "${2:-$disp}" kinds > /dev/null; python3 -c "
 import json
@@ -2992,7 +3053,7 @@ ok "  and nothing is handled the contract does not list" "$(placed "set(d['kinds
 # exactly what the comment above instructs, would fail this -- and the escape hatch would be
 # unusable without editing the test that exists to police it.
 ok "  the watcher relays only kinds this file places"  "$(placed "set(d['watch']) <= set(d['kinds'])")" True
-ok "  and relays all but the one it must not"          "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))")" '["review_requested"]'
+ok "  and relays all but the two it must not"          "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))")" '["fresh_session_requested", "review_requested"]'
 
 # =============================================================================================
 printf '\nA draft waiting on the developer is read every 20 seconds (DEV-931)\n'
@@ -6290,7 +6351,7 @@ sed 's/^                     "nits_to_ticket")$/                     )  # FIFTH 
 ok "the fifth-kind reversal changed one line"          "$(grep -c 'FIFTH KIND REMOVED' "$work/nofifth.py")" 1
 ok "a kind the contract lists and this file drops is caught" \
    "$(placed "json.dumps(sorted(d['kinds'] + d['ignored']))" "$work/nofifth.py")" \
-   '["brief_settled", "draft_approved", "draft_sent_back", "review_requested"]'
+   '["brief_settled", "draft_approved", "draft_sent_back", "fresh_session_requested", "review_requested"]'
 # And the half the crossing cannot see, which is what the relay tests are for: a kind in
 # REVIEW_DESK_KINDS and not in REVIEW_DESK_WATCH_KINDS is placed and reaches no session.
 sed 's/^REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",$/REVIEW_DESK_WATCH_KINDS = ("brief_settled", "draft_sent_back", "draft_approved",  # RELAY REVERSED/' \
@@ -6299,7 +6360,7 @@ sed -i.bak 's/^                           "nits_to_ticket")$/                   
 rm -f "$work/nowatch.py.bak"
 ok "the relay reversal changed one line"               "$(grep -c 'RELAY REVERSED' "$work/nowatch.py")" 1
 ok "  and dropped the fifth from the relay list"       "$(placed "json.dumps(sorted(set(d['kinds']) - set(d['watch'])))" "$work/nowatch.py")" \
-   '["nits_to_ticket", "review_requested"]'
+   '["fresh_session_requested", "nits_to_ticket", "review_requested"]'
 instance '{"mode":"auto"}'
 put gh-portal-412 mode=review status=active review_desk_id=7 --by test
 work_doc nits_to_ticket 7 acme/portal 412 1791520400
