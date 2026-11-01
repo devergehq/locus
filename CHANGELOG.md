@@ -13,6 +13,21 @@ refuses to build when they disagree.
 
 ### Added
 
+- **A developer's question on a Review Desk review reaches the session working it.** The review
+  watcher reads `review-desk message list --unread --review N` each tick and emits
+  `developer_message` once per question, with the step and the developer's words.
+  `workers/review.md` has the session mark it read first, do what it reasonably asks, and answer
+  with `review-desk message reply`. A message is never a sign-off. A send-back note is not relayed
+  twice: it already arrives as `draft_sent_back`, so it is marked read. Against a Review Desk with
+  no `message` command, nothing changes. (#108, DEV-1144)
+- **"Start a fresh session" on a Review Desk review starts one, but only once Allele says the old
+  session is gone.** The poller handles Review Desk's sixth work kind, `fresh_session_requested`,
+  by asking Allele's control socket (`sessions_status`), never the state file. Gone: a
+  `review_desk_resume` the Dispatcher answers with a replacement. Still there: `review-desk review
+  fresh-session --declined` with Allele's answer, shown on the review page. Unreachable: nothing,
+  asked again next tick. The socket is `allele.control_socket`, or `control.sock` beside the
+  state file. (#109, DEV-1142)
+
 - **The README installs Locus as a plugin, for someone who uses Claude Code and nothing else.**
   The quick start is five steps — release binary, `claude plugin marketplace add` and
   `install`, `locus init`, `locus platform add claude-code`, `locus doctor` — each with what
@@ -121,6 +136,13 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **A session is no longer called lost, or resumed over, on `~/.allele/state.json`'s word
+  alone.** On tc-portal#9676 the file put a `session_lost` on a session that went on working for
+  a day. The poller now asks Allele's socket first for `session_lost`, Review Desk resumes and
+  moved heads, and uses the file only when the socket cannot be reached. An unreadable answer is
+  "unknown" and dispatches nothing. Events carry `witness` / `liveness_witness`, and `SKILL.md`
+  confirms with `allele_sessions_status` before re-queueing or dispatching unless the socket
+  already did. (#110, DEV-1056)
 - **`doctor` reports a `config.json` it cannot read instead of dying on it.** `cmd_doctor`'s
   first statement was an unguarded `load_config()`, so an instance whose config would not parse
   killed the one command meant to diagnose a broken instance — a `JSONDecodeError` traceback
