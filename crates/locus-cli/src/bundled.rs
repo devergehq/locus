@@ -335,6 +335,13 @@ pub fn bundled_files() -> Vec<(String, &'static str)> {
             "skills/issue-craft/examples/synthetic-defect-ticket.md".into(),
             include_str!("../../../skills/issue-craft/examples/synthetic-defect-ticket.md"),
         ),
+        // Drafting Desk - how a design session is run before any code: the
+        // `drafting-desk` binary keeps the record, this skill runs the conversation.
+        // The binary and dashboard ship from devergehq/drafting-desk, not from here.
+        (
+            "skills/drafting-desk/SKILL.md".into(),
+            include_str!("../../../skills/drafting-desk/SKILL.md"),
+        ),
         // Agents — traits data + archetype files
         (
             "agents/traits.yaml".into(),

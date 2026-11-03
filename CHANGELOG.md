@@ -13,6 +13,16 @@ refuses to build when they disagree.
 
 ### Added
 
+- **Drafting Desk's session skill ships with the plugin, as `drafting-desk`.** It turns a Linear
+  ticket or an idea into a traced design package before any code — requirements, sheets on
+  demand, decisions with the options that lost — recorded through the `drafting-desk` CLI and
+  exported to `docs/desk/` for the PR, then reconciled against the diff before the PR opens. It
+  lived only in the drafting-desk repo with a copy-it-by-hand install, and was installed on no
+  machine. Three changes in the port: it checks `drafting-desk` is on PATH first and stops with
+  install steps if not; sheet agents are dispatched by the Algorithm's Dispatch section rather
+  than the skill's own wording, and discarded once their sheet is on the desk; its `## Install`
+  section is gone. Every command and flag is unchanged. The binary and dashboard still ship from
+  devergehq/drafting-desk. (DEV-1204)
 - **A developer's question on a Review Desk review reaches the session working it.** The review
   watcher reads `review-desk message list --unread --review N` each tick and emits
   `developer_message` once per question, with the step and the developer's words.

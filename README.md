@@ -21,8 +21,8 @@ What you get from it:
 
 1. **The Algorithm** — a 7-phase decomposition (OBSERVE → THINK → PLAN → BUILD → EXECUTE →
    VERIFY → LEARN) with verifiable criteria, loaded on demand as the `locus-algorithm` skill.
-2. **Skills** — research, council, red-team, first-principles, review-craft and more,
-   loaded on demand.
+2. **Skills** — research, council, red-team, first-principles, review-craft,
+   drafting-desk and more, loaded on demand.
 3. **Agents** — trait-composed roles (expertise × stance × approach), not fixed personas.
 4. **Persistent memory** — PRDs, checkpoints and learnings in `~/.locus/data/`.
 
@@ -179,6 +179,7 @@ Herder or an IDE. The table shows what changes without it:
 |---|---|---|---|
 | Classification, Algorithm, Stop check | ✅ | ✅ | ✅ |
 | Skills (research, council, red-team, review-craft, …) | ✅ | ✅ | ✅ |
+| Drafting Desk (needs the `drafting-desk` binary) | ✅ sheets drawn in a subagent | ✅ sheets drawn in a subagent | ✅ sheets drawn in a session |
 | `locus agent compose` | ✅ | ✅ | ✅ |
 | Memory, PRDs, checkpoints | ✅ | ✅ | ✅ |
 | Delegating a task to another agent | native subagent | `locus delegate run`, read-only | real session |
@@ -497,6 +498,7 @@ After `locus init`:
 │   ├── council/
 │   ├── creative/
 │   ├── dispatcher/     # + dispatcher.py, config.example.json, workers/
+│   ├── drafting-desk/  # design session before code; drives the drafting-desk CLI
 │   ├── first-principles/
 │   ├── iterative-depth/
 │   ├── red-team/
