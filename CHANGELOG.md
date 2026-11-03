@@ -22,7 +22,7 @@ refuses to build when they disagree.
   install steps if not; sheet agents are dispatched by the Algorithm's Dispatch section rather
   than the skill's own wording, and discarded once their sheet is on the desk; its `## Install`
   section is gone. Every command and flag is unchanged. The binary and dashboard still ship from
-  devergehq/drafting-desk. (DEV-1204)
+  devergehq/drafting-desk. (#113, DEV-1204)
 - **A developer's question on a Review Desk review reaches the session working it.** The review
   watcher reads `review-desk message list --unread --review N` each tick and emits
   `developer_message` once per question, with the step and the developer's words.
