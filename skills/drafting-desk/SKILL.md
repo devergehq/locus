@@ -173,17 +173,31 @@ with a reason, or tell the developer it is a known gap. Do not paper over a gap 
 
 ## 5. Hand the desk to the developer
 
-When the conversation has settled, ask the developer to review and confirm. They run, in
-**their own terminal** (not through you, so the sign-in link is not in this transcript):
+When the conversation has settled, start the dashboard for the developer. Run it **in the
+background** (it keeps running until stopped) so the conversation can carry on:
 
 ```sh
-drafting-desk serve
+drafting-desk serve --open
 ```
 
-It opens the dashboard signed in. The package view shows every sheet with its diagram
-drawn; the Trace view shows every requirement against what answers it; **Review and
-confirm** agrees to everything on one screen. Wait for them; do not poll the server for
-confirmations.
+It opens the developer's browser on the dashboard, signed in, and prints one line:
+`Drafting Desk at http://127.0.0.1:7341: opened in your browser, signed in.` The sign-in
+link goes to the browser only and is never printed. Do not go looking for it: not in
+process listings, not in the browser. It is how the developer confirms, not you.
+
+Tell the developer it is open and what to look at: the package view shows every sheet with
+its diagram drawn; the Trace view shows every requirement against what answers it;
+**Review and confirm** agrees to everything on one screen. Wait for them to say they are
+done; do not poll the server for confirmations.
+
+- **Port in use** (`cannot serve: … Address already in use`): a dashboard is already
+  running. Ask the developer to use that tab. If it says read-only, ask them to close it
+  and stop the other server, then start it again.
+- **`unexpected argument '--open'`**: the binary predates `--open`. Ask the developer to
+  run `drafting-desk serve` in their own terminal, and to update the binary afterwards.
+
+Stop the server after the export in step 6. It is a background task you started, so it is
+yours to stop.
 
 ## 6. Export
 
