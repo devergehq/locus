@@ -11,6 +11,15 @@ refuses to build when they disagree.
 
 ## [Unreleased]
 
+### Changed
+
+- **The `drafting-desk` skill starts the dashboard itself.** Step 5 asked the developer to run
+  `drafting-desk serve` in their own terminal: the one manual step in a session driven from
+  Claude in Allele. It now runs `drafting-desk serve --open` in the background, which opens
+  the developer's browser signed in and never prints the sign-in link, and stops it after
+  export. A binary without `--open` falls back to the old instruction. Needs drafting-desk
+  with `serve --open` (devergehq/drafting-desk#3).
+
 ### Added
 
 - **Drafting Desk's session skill ships with the plugin, as `drafting-desk`.** It turns a Linear
