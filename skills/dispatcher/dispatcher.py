@@ -5767,7 +5767,7 @@ class Watcher:
         **What the answer should look like travels with the question** (DEV-1368). Review Desk
         folds a prose reply away with no actions; one sent as `--answer` in the contract's
         shape is drawn in full. So the event carries `reply_with` (`answer` or `body`, from
-        `answer_contract_held`), `contract` (where to read the tables, only when `reply_with`
+        `answer_contract`), `contract` (where to read the tables, only when `reply_with`
         is `answer`), and the message's place on the page: `tab`, and `about` already in the
         contract's own form, so the session can copy it into its answer unchanged.
         """
