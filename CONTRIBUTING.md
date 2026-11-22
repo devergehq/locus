@@ -67,7 +67,7 @@ A ready pull request runs `.github/workflows/ci.yml`:
 | --- | --- |
 | `rustfmt` | ubuntu-latest |
 | `clippy` | ubuntu-latest |
-| `test` | ubuntu-latest + macos-14 |
+| `test` | ubuntu-latest + macos-15 |
 
 All three must pass. `clippy` runs with `-D warnings`, so a new warning fails
 the build rather than scrolling past — the tree is at zero warnings and the
