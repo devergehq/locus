@@ -1271,12 +1271,20 @@ and records it rather than posting a second review.
           | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' handover.json
 
    review-desk draft show --review "$REVIEW" --json   # step 1, again, immediately before
-   review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
-     ${GO_AHEAD_FILE:+--go-ahead-file "$GO_AHEAD_FILE"} --json > post.json
+   if [ -n "${GO_AHEAD_FILE:-}" ]; then   # your principal typed a line
+     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
+       --go-ahead-file "$GO_AHEAD_FILE" --json > post.json
+   else                                   # they signed off on the dashboard
+     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
+       --json > post.json
+   fi
    ```
 
-   `GO_AHEAD_FILE` is set only when your principal typed a line; unset, the flag is not passed
-   at all, because `post` refuses a `--go-ahead-file` that names no file.
+   **Two calls, not one with an optional flag.** `post` refuses a `--go-ahead-file` that names no
+   file, so the flag must be absent when nothing was typed. A `${VAR:+--flag "$VAR"}` expansion
+   looks like that, but zsh, which is what the Bash tool runs here, passes it as **one** word —
+   measured, `[--go-ahead-file /tmp/x.txt]` against bash's two — and every typed go-ahead would
+   be refused as an unknown flag.
 
    The listing compares each `line_sha` with `review.head_sha` on the **shorter of the two**,
    which is what Review Desk itself does: a head is stored full or abbreviated and a finding's
@@ -1297,8 +1305,9 @@ and records it rather than posting a second review.
    **What it answers.** Success is exit 0 with `posted.status` reading `posted` and
    `posted.github_review_id` holding GitHub's id; `"reconciled": true` beside it means an earlier
    attempt was already up, and `post` recorded that one and sent nothing. Either way **the post is
-   recorded, so run no `draft posted`**, and step 5 works from that id — **unless it is an id you
-   recovered in step 6.** Then the review recorded is the one from before the send-back, and the
+   recorded, so run no `draft posted`**, and step 5 works from that id — **unless it is an id
+   recovered in step 6**, by you or by a session before you: step 6 writes it into a ledger note,
+   so read `D ledger get <KEY>`'s history for it before you trust a reconcile. Then the review recorded is the one from before the send-back, and the
    revision your principal approved since was never sent: step 6's last bullet says what to do.
 
    **What it refuses.** Read `error.code`. The first three rows are refused before any call is
@@ -1312,7 +1321,7 @@ and records it rather than posting a second review.
    | `post_in_flight` | an attempt under two minutes old may still land | Wait two minutes, then run the same command again |
    | `thread_off_head` | a thread's line was measured on another commit | Post nothing; name the finding and both commits, and ask your principal to send the draft back |
    | `gh_missing`, `gh_not_authenticated` | `gh` could not be run, so nothing was sent | Report it verbatim; once it is fixed, run the same command again |
-   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it |
+   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it. **The same refusal twice is not in flight: stop and report it as refused**, quoting `error.message`, which names the HTTP status |
    | `draft_status` | as step 3's table — unless `draft show` now reads `sent_back` | step 3's rows, or step 6 if it is `sent_back` |
 
    **Running the same command again is always safe**, and that is the property the raw recipe

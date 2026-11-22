@@ -519,7 +519,7 @@ ok "  nor the one nobody recorded"                   "$(run_selector | grep -c '
 # worker move it -- so what is checked now is that no builder is left to run.
 ok "the brief builds no review call of its own"      "$(ask "d['line_sha_builder']")" False
 ok "  nor a file of edits to feed one"               "$(grep -c 'edits.json' "$brief")" 0
-ok "  and the call is review-desk post"              "$(grep -c '^   review-desk post "$REVIEW" --session' "$brief")" 1
+ok "  and the call is review-desk post"              "$(grep -c '^     review-desk post "$REVIEW" --session' "$brief")" 2
 
 printf '\n  the draft, in parts\n'
 ok "the draft is written with --sections"            "$(grep -c 'draft put --review <id> --sections draft.json' "$brief")" 1

@@ -2552,7 +2552,7 @@ in_posting () { grep -c -- "$1" "$posting_md" || true; }
 ok "the posting section was found"                     "$([ -s "$posting_md" ] && echo yes)" yes
 ok "it states the rule in one sentence"                "$(in_posting 'Post with .review-desk post., never with raw .gh.')" 1
 ok "  and the hard rule at the top agrees"             "$(grep -c 'through .review-desk post. — never raw .gh.' "$worker_md")" 1
-ok "step 4 calls review-desk post"                     "$(in_posting '^   review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at')" 1
+ok "step 4 calls review-desk post, in both branches"   "$(in_posting '^     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at')" 2
 ok "  and probes for the command first"                "$(in_posting 'review-desk post --help')" 1
 # Any spelling of the reviews endpoint -- `$PR`, `<n>`, `N` -- not only the one the old recipe used.
 # A literal number is a measurement being quoted (DEV-865's `pulls/19/reviews`), not a call.
@@ -2566,9 +2566,15 @@ ok "post_in_flight has its row"                        "$(in_posting '^   | .pos
 ok "thread_off_head has its row"                       "$(in_posting '^   | .thread_off_head. |')" 1
 ok "a gh that could not run has its row"               "$(in_posting '^   | .gh_missing., .gh_not_authenticated. |')" 1
 ok "  and a call that may have landed has its own"     "$(in_posting '^   | .gh_failed., .github_response_unreadable., or any other code |')" 1
-ok "a reconcile onto the recovered id is caught"       "$(in_posting 'unless it is an id you')" 1
+ok "a reconcile onto the recovered id is caught"       "$(in_posting 'recovered in step 6\*\*, by you or by a session')" 1
 ok "  and the worker stops rather than re-posting"     "$(in_posting 'the revision is not on the pull request: post nothing else')" 1
-ok "the go-ahead file is passed only when there is one" "$(in_posting 'GO_AHEAD_FILE:+--go-ahead-file')" 1
+# Two calls, because zsh passes `${VAR:+--flag "$VAR"}` as ONE word: round 2 of the self-review
+# measured it, and the earlier version of this check pinned that broken form in place.
+ok "the go-ahead file is passed only when there is one" "$(in_posting '^   if \[ -n "${GO_AHEAD_FILE:-}" \]; then')" 1
+ok "  never through a :+ expansion"                    "$(in_posting ':+--go-ahead-file')" 0
+ok "  and the flag and its path are two words"         "$(in_posting '^       --go-ahead-file "$GO_AHEAD_FILE" --json')" 1
+ok "a repeated refusal stops the re-runs"              "$(in_posting 'The same refusal twice is not in flight')" 1
+ok "a replacement reads the recovered id off the ledger" "$(in_posting 'by you or by a session before you')" 1
 ok "a refusal is never followed by a raw gh post"      "$(in_posting 'never follow one with a raw .gh. post')" 1
 ok "no post command: a section of its own"             "$(grep -c '^### A Review Desk with no .post.$' "$worker_md")" 1
 ok "  which posts nothing and stops"                   "$(in_posting 'you post nothing, and you stop')" 1
