@@ -2574,6 +2574,7 @@ ok "the go-ahead file is passed only when there is one" "$(in_posting '^   if \[
 ok "  never through a :+ expansion"                    "$(in_posting ':+--go-ahead-file')" 0
 ok "  and the flag and its path are two words"         "$(in_posting '^       --go-ahead-file "$GO_AHEAD_FILE" --json')" 1
 ok "a repeated refusal stops the re-runs"              "$(in_posting 'The same refusal twice is not in flight')" 1
+ok "  and a repeated 5xx is reported as may be up"     "$(in_posting 'a 5xx or a timeout as \*\*may be up\*\*')" 1
 ok "a replacement reads the recovered id off the ledger" "$(in_posting 'by you or by a session before you')" 1
 ok "a refusal is never followed by a raw gh post"      "$(in_posting 'never follow one with a raw .gh. post')" 1
 ok "no post command: a section of its own"             "$(grep -c '^### A Review Desk with no .post.$' "$worker_md")" 1

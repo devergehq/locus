@@ -1307,8 +1307,9 @@ and records it rather than posting a second review.
    attempt was already up, and `post` recorded that one and sent nothing. Either way **the post is
    recorded, so run no `draft posted`**, and step 5 works from that id — **unless it is an id
    recovered in step 6**, by you or by a session before you: step 6 writes it into a ledger note,
-   so read `D ledger get <KEY>`'s history for it before you trust a reconcile. Then the review recorded is the one from before the send-back, and the
-   revision your principal approved since was never sent: step 6's last bullet says what to do.
+   so read `D ledger get <KEY>`'s history for it before you trust a reconcile. Then the review
+   recorded is the one from before the send-back, and the revision your principal approved since
+   was never sent: step 6's last bullet says what to do.
 
    **What it refuses.** Read `error.code`. The first three rows are refused before any call is
    made, so **nothing new is on the pull request**; the rest come from the call or after it, and
@@ -1321,7 +1322,7 @@ and records it rather than posting a second review.
    | `post_in_flight` | an attempt under two minutes old may still land | Wait two minutes, then run the same command again |
    | `thread_off_head` | a thread's line was measured on another commit | Post nothing; name the finding and both commits, and ask your principal to send the draft back |
    | `gh_missing`, `gh_not_authenticated` | `gh` could not be run, so nothing was sent | Report it verbatim; once it is fixed, run the same command again |
-   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it. **The same refusal twice is not in flight: stop and report it as refused**, quoting `error.message`, which names the HTTP status |
+   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it. **The same refusal twice is not in flight: stop**, and report what `error.message`'s HTTP status says — a 4xx as refused, a 5xx or a timeout as **may be up**, because each run made an attempt of its own |
    | `draft_status` | as step 3's table — unless `draft show` now reads `sent_back` | step 3's rows, or step 6 if it is `sent_back` |
 
    **Running the same command again is always safe**, and that is the property the raw recipe
