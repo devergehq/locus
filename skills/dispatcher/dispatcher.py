@@ -750,6 +750,27 @@ def review_desk_missing(detail: str) -> bool:
 # does not, which is the fact itself rather than a proxy for it.
 REVIEW_DESK_DIFF_FLAG = "--diff-unchanged"
 
+# DEV-1368. **The flag that says this build takes the answer contract**, asked of
+# `message reply --help` for the reason the paragraph above gives for `review open --help`: the
+# help prints the flag or it does not, and the version string is 0.1.0 on every build. Review
+# Desk added it in DEV-1332 (#102, 4ec728f); a build without it takes `--body` alone.
+REVIEW_DESK_ANSWER_FLAG = "--answer"
+
+# **Where the contract is read, rather than a copy of it.** Review Desk keeps the *fields* and
+# *suggests* tables in one file and nothing prints them, so the watcher hands the session a
+# pointer and the command that reads it. It names the DEFAULT BRANCH, not the installed build,
+# because the installed build cannot say which commit it is (see above). That skew is covered:
+# the installed binary is the only validator, so a field the file has and the binary lacks is
+# refused with `not_the_contract` naming the rule, and the session fixes the object and resends.
+# A copy embedded here would drift with nothing to catch it, since CI has no Review Desk
+# checkout to compare against.
+REVIEW_DESK_CONTRACT = {
+    "doc": "https://github.com/devergehq/review-desk/blob/master/docs/answer-contract.md",
+    "read": "gh api repos/devergehq/review-desk/contents/docs/answer-contract.md "
+            "-H 'Accept: application/vnd.github.raw'",
+    "sections": ["The fields", "What it may suggest, and only these"],
+}
+
 # What `review open --json` answers in `action`, and what each one asks of the poller:
 #
 #   created        no round yet, or the newest round has POSTED. A worker is dispatched for it.
@@ -874,6 +895,43 @@ def review_desk_detail(text: str) -> str:
     error = (payload or {}).get("error") or {}
     code, message = error.get("code"), error.get("message")
     return f"{code}: {message}" if code and message else (message or "")
+
+
+def answer_contract_held(rd: dict) -> bool:
+    """Does the installed Review Desk take `message reply --answer`? (DEV-1368)
+
+    A READ: `--help` writes nothing, and is handed over with `json_out=False` exactly as
+    `review open --help` is in `open_contract_held`. **False on anything but a clear yes**, and
+    that is the safe direction here too: a session told `--body` on a build that has `--answer`
+    sends a reply the page folds, while one told `--answer` on a build without it sends a reply
+    clap refuses as an unknown argument, and the developer gets no answer at all.
+    """
+    state, text, _ = review_desk_run(rd, "message", "reply", "--help", json_out=False)
+    return state == "ok" and isinstance(text, str) and REVIEW_DESK_ANSWER_FLAG in text
+
+
+def answer_about(raw) -> tuple[str | None, dict | None]:
+    """A message's place on the page, as `(tab, about)` with `about` in the answer contract's form.
+
+    `message list` answers `about` as `{"tab": …, "finding": n | null}` (review-desk
+    `crates/store/src/answer.rs`, `About`); an answer writes it as exactly one of
+    `{"step": tab}`, `{"finding": "F9"}` or `{"reply": "F3"}` (`AnswerAbout`). Converted here so
+    the session copies one value into its answer rather than translating it, and a finding is
+    only ever on `findings` or `replies` — Review Desk refuses one anywhere else, so anything
+    else is read as the tab alone.
+
+    `(None, None)` for a build from before its migration 26, whose messages carry no `about`,
+    and for anything not shaped like one: the answer's `about` is optional, so nothing is lost.
+    """
+    if not isinstance(raw, dict) or not isinstance(raw.get("tab"), str):
+        return None, None
+    tab, finding = raw["tab"], raw.get("finding")
+    if isinstance(finding, int) and not isinstance(finding, bool) and finding >= 1:
+        if tab == "findings":
+            return tab, {"finding": f"F{finding}"}
+        if tab == "replies":
+            return tab, {"reply": f"F{finding}"}
+    return tab, {"step": tab}
 
 
 def review_desk_run(rd: dict, *args: str, json_out: bool = True,
@@ -5697,6 +5755,13 @@ class Watcher:
 
         Keyed by `(review, seq)`, Review Desk's own identity for a message, so a question is
         emitted once per watcher even before the session has marked it read.
+
+        **What the answer should look like travels with the question** (DEV-1368). Review Desk
+        folds a prose reply away with no actions; one sent as `--answer` in the contract's
+        shape is drawn in full. So the event carries `reply_with` (`answer` or `body`, from
+        `answer_contract_held`), `contract` (where to read the tables, only when `reply_with`
+        is `answer`), and the message's place on the page: `tab`, and `about` already in the
+        contract's own form, so the session can copy it into its answer unchanged.
         """
         state, payload, _ = review_desk_run(rd, "message", "list", "--unread",
                                             "--review", str(rid), "--json")
@@ -5705,6 +5770,7 @@ class Watcher:
             return
         delivered = set(self.state.get("rd_messages_seen", []))
         session = (ledger_get(self.key) or {}).get("session_id")
+        reply_with = None
         for message in messages:
             if not isinstance(message, dict) or message.get("author") != "developer":
                 continue
@@ -5717,11 +5783,18 @@ class Watcher:
             if which in delivered:
                 continue
             delivered.add(which)
+            # Asked once per tick, and only when there is a question to hand over: most ticks
+            # have none, and this runs every twenty seconds while a draft waits.
+            if reply_with is None:
+                reply_with = "answer" if answer_contract_held(rd) else "body"
+            tab, about = answer_about(message.get("about"))
             # `body` is the developer's prose and is data, not instructions — relayed verbatim
             # in its own key, exactly as `note` is above.
             emit("developer_message", key=self.key, review_desk_id=rid, seq=seq,
-                 step=message.get("step"), body=message.get("body"),
-                 created_at=message.get("created_at"), review=review_desk_link(rd, rid))
+                 step=message.get("step"), tab=tab, about=about, body=message.get("body"),
+                 created_at=message.get("created_at"), review=review_desk_link(rd, rid),
+                 reply_with=reply_with,
+                 contract=REVIEW_DESK_CONTRACT if reply_with == "answer" else None)
         self.state["rd_messages_seen"] = sorted(delivered)[-200:]
 
     def draft_wait(self, cfg: dict) -> None:
