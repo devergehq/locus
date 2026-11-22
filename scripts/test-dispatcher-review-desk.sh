@@ -113,7 +113,9 @@ case "$1" in
       read) echo '{"message":{}}'; exit 0 ;;
       # DEV-1368. Help is text on standard output and exit 0, as clap prints it. A build from
       # DEV-1332 on lists `--answer`; $RDWORK/rd.noanswer is one from before, `--body` alone.
-      reply) if [ -f "$RDWORK/rd.noanswer" ]; then
+      reply) if [ -f "$RDWORK/rd.replyhelp.broken" ]; then
+               echo "review-desk: scripted help failure" >&2; exit 2
+             elif [ -f "$RDWORK/rd.noanswer" ]; then
                echo "Usage: review-desk message reply --review <ID> --step <STEP> --body <TEXT>"
              else
                echo "Usage: review-desk message reply --review <ID> --step <STEP> <--body <TEXT>|--answer <PATH>>"
@@ -2145,6 +2147,22 @@ ok "  and handed no contract"                            "$(msg 1 'e["contract"]
 ok "  and nothing errors"                                "$(count '"event": "watch_error"')" 0
 ok "  and the watcher keeps ticking"                     "$rc" 0
 rm -f "$work/rd.noanswer"
+
+# A probe that cannot answer says nothing about the build, so it must not fix the reply as
+# prose: the question is held, said once, and delivered on the first tick the probe answers.
+# Found in this branch's self-review.
+touch "$work/rd.replyhelp.broken"
+instance '{"mode":"auto"}'
+put gh-portal-412 mode=review status=active review_desk_id=7 session_id=allele-1 --by test
+rc=$(run "$disp" watch gh-portal-412 2)
+ok "a probe that exits 2 holds the question back"        "$(count '"event": "developer_message"')" 0
+ok "  and says so once over two ticks"                   "$(count '"event": "watch_error"')" 1
+ok "  naming the probe"                                  "$(says 'message reply --help could not say how to answer')" yes
+ok "  and the watcher keeps ticking"                     "$rc" 0
+rm -f "$work/rd.replyhelp.broken"
+rc=$(run "$disp" watch gh-portal-412 1)
+ok "the next tick that can ask delivers all four"        "$(count '"event": "developer_message"')" 4
+ok "  told to answer"                                    "$(msg 1 'e["reply_with"]')" '"answer"'
 
 rm -f "$work/rd.messages"
 
