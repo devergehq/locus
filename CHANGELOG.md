@@ -146,6 +146,11 @@ refuses to build when they disagree.
 
 ### Fixed
 
+- **CI and release run on `macos-15`, because GitHub retired `macos-14` on 2 Nov 2026.** Jobs on
+  it were cancelled before they started, so the required `test (macos-14)` check never reported
+  and no pull request could merge. The required check is now `test (macos-15)`. Both darwin
+  release targets stay: `x86_64-apple-darwin` is still cross-compiled from the arm64 runner.
+  Nothing pinned an Xcode version or `DEVELOPER_DIR`. (DEV-1233)
 - **A session is no longer called lost, or resumed over, on `~/.allele/state.json`'s word
   alone.** On tc-portal#9676 the file put a `session_lost` on a session that went on working for
   a day. The poller now asks Allele's socket first for `session_lost`, Review Desk resumes and
