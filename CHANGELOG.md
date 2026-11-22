@@ -627,6 +627,13 @@ refuses to build when they disagree.
 
 ### Changed
 
+- **A review session posts with `review-desk post`, never with raw `gh`.** `workers/review.md`'s
+  posting section calls the command Review Desk gained in DEV-1347, which refuses a draft that
+  changed since it was approved, records the post in the same transaction, and settles an
+  uncertain earlier attempt by its tag. The `jq` + `gh api …/reviews` recipe, the
+  `D review-posted` check and the `draft posted` that followed are gone from the path. A Review
+  Desk with no `post` command posts nothing and the worker says so in one line, by Patrick's
+  decision on the ticket. (DEV-1369)
 - **CI runs once a pull request is ready, not on every push to every draft.** Both check
   workflows now trigger on `pull_request: [opened, reopened, synchronize, ready_for_review]`
   plus `workflow_dispatch`, and every job is gated on

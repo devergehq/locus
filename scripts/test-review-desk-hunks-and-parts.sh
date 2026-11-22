@@ -138,17 +138,13 @@ reread_call = re.search(
 # file: a recipe that contradicts the prose beneath it is the defect this reads it for.
 # The PROGRAM between the quotes, not the command line around it: what is run below has to be
 # the brief's own jq and not a copy of it, and a program is what `jq -f` takes.
-selector = re.search(r"# 1\. The anchors that are NOT addresses[^\n]*\n\s*jq -r '(.*?)'",
-                     doc, re.S)
-# The second one as well, for the threads nobody recorded a commit for. Both are read out of
-# the brief and RUN, because a harness that typed its own copy of either would report PASS
-# about a command the brief no longer carries -- which is what the first version of this did.
-unrecorded = re.search(r"# 2\. The ones whose commit nobody recorded[^\n]*\n\s*jq -r '(.*?)'",
-                       doc, re.S)
-# And the call itself, which must REFUSE while a thread is owed an answer.
-builder = re.search(r"# 4\. The call\.[^\n]*\n(?:\s*#[^\n]*\n)*"
-                    r"\s*jq --slurpfile e edits\.json --rawfile todo reread\.txt '(.*?)'"
-                    r" handover\.json", doc, re.S)
+# The comment above it may run to several lines, so every comment line before the `jq` is
+# skipped rather than exactly one.
+selector = re.search(r"# The anchors that are NOT addresses[^\n]*\n(?:\s*#[^\n]*\n)*"
+                     r"\s*jq -r '(.*?)'", doc, re.S)
+# DEV-1369: the brief no longer builds the review call -- `review-desk post` does, and refuses
+# an off-head thread itself. Still looked for, so that a builder creeping back is a FAIL.
+builder = re.search(r"jq --slurpfile e edits\.json", doc)
 
 print(json.dumps({
     "context": int(context.group(1)) if context else None,
@@ -178,8 +174,7 @@ print(json.dumps({
     "line_sha_reread_recorded": reread_column is not None,
     "line_sha_reread_call": list(reread_call.groups()) if reread_call else None,
     "line_sha_selector": selector.group(1) if selector else None,
-    "line_sha_unrecorded": unrecorded.group(1) if unrecorded else None,
-    "line_sha_builder": builder.group(1) if builder else None,
+    "line_sha_builder": builder is not None,
 }, sort_keys=True))
 SPEC
 
@@ -472,13 +467,12 @@ printf '\n  the commit a comment is posted at\n'
 # commit to put a thread's own `line_sha` in, so the brief has to say what the field is for at
 # that step instead of implying the call can carry it.
 ok "the hand-over's threads carry the commit"       "$(grep -c '| .threads\[\].line_sha. | the commit that thread' "$brief")" 1
-ok "the review posts at one commit, not per thread" "$(grep -c 'GitHub takes \*\*one\*\* .commit_id. for the whole review' "$brief")" 1
-ok "  measured against the documented parameters"   "$(grep -c 'start_line. and .start_side. and \*\*no commit of its own\*\*' "$brief")" 1
-ok "  and an older commit is not the way round it"  "$(grep -c 'may\*\* render a comment outdated' "$brief")" 1
-ok "  quoting the condition GitHub puts on it"      "$(grep -c 'if a subsequent commit modifies the line you' "$brief")" 1
-ok "a thread measured elsewhere is re-read first"   "$(grep -c 're-read that file at the head first' "$brief")" 1
-ok "  moving the line and not the body"             "$(grep -c 'Re-reading moves the .line. and nothing else' "$brief")" 1
-ok "  and one that cannot be placed is left out"    "$(grep -c 'leave that comment out of .comments\[\]' "$brief")" 1
+# DEV-1369: `review-desk post` pins the review to the head and refuses a thread measured
+# anywhere else, so the worker no longer moves or drops a line before the call -- and the
+# brief has to say that there is nothing for it to move with.
+ok "a thread measured elsewhere is refused by post" "$(grep -c '| .thread_off_head. | a thread.s line was measured on another commit |' "$brief")" 1
+ok "  and the worker has no fix of its own"         "$(grep -c 'has no fix on your side' "$brief")" 1
+ok "  so it never moves or drops a line itself"     "$(grep -c 'leave that comment out of .comments\[\]' "$brief")" 0
 ok "a thread with no commit is said once"           "$(grep -c 'say once that the commit was not recorded' "$brief")" 1
 ok "  compared on the shorter of the two"           "$(grep -c 'on the \*\*shorter of the two\*\*' "$brief")" 1
 
@@ -507,14 +501,12 @@ cat > "$work/handover.json" <<'HANDOVER'
    "line_sha": "c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0", "body": "the head in full"}]}
 HANDOVER
 ask "d['line_sha_selector']" > "$work/selector.txt"
-ask "d['line_sha_unrecorded']" > "$work/unrecorded.txt"
 # Occurrences and not matching LINES, which is `grep -c`: the brief wraps the condition over
 # two lines today and reflowing it onto one would fail a check that is about the comparison,
 # not about the wrap -- the same fault the `badselector` control below is flattened to avoid.
 ok "the brief's selector came out of the brief"      "$(grep -o 'startswith' "$work/selector.txt" \
     | wc -l | tr -d ' ')" 2
 run_selector () { jq -r -f "$work/selector.txt" "$work/handover.json"; }
-run_unrecorded () { jq -r -f "$work/unrecorded.txt" "$work/handover.json"; }
 ok "it names the thread counted somewhere else"      "$(run_selector | wc -l | tr -d ' ')" 1
 ok "  which one, and the commit it was counted on"   "$(run_selector)" "F2 jobs/Backoff.php:26 measured at a1b2c3d"
 # The two that must NOT be named, and they are the two an equality would get wrong: a head
@@ -522,43 +514,12 @@ ok "  which one, and the commit it was counted on"   "$(run_selector)" "F2 jobs/
 ok "  never the one abbreviated from the head"       "$(run_selector | grep -c 'F1' || true)" 0
 ok "  nor the one carrying the head in full"         "$(run_selector | grep -c 'F4' || true)" 0
 ok "  nor the one nobody recorded"                   "$(run_selector | grep -c 'F3' || true)" 0
-# The second command, run the same way: typing a copy of it here would say nothing about the
-# brief, and deleting it from the brief would still have passed.
-ok "the brief's second command names that one"       "$(run_unrecorded)" F3
-ok "  and it, too, came out of the brief"            "$(grep -c 'line_sha' "$work/unrecorded.txt")" 1
-
-# The call the brief builds, RUN, because the fault this replaced was a runnable block that
-# did not do what the paragraph under it said. Three states: nothing answered, the thread
-# moved, the thread dropped.
-ask "d['line_sha_builder']" > "$work/builder.jq"
-ok "the call came out of the brief as well"          "$(grep -c 'error("re-read or drop' \
-    "$work/builder.jq")" 1
-build_call () {
-  printf '%s\n' "$1" > "$work/edits.json"
-  set +e
-  jq --slurpfile e "$work/edits.json" --rawfile todo "$work/reread.txt" -f "$work/builder.jq" \
-     "$work/handover.json" > "$work/review.json" 2>"$work/builderr"
-  c=$?
-  set -e
-  echo $c
-}
-run_selector > "$work/reread.txt"
-ok "it refuses while a thread is owed an answer"     "$(build_call '{"moved":{},"dropped":[]}')" 5
-ok "  naming the finding it is waiting on"           "$(grep -c 're-read or drop these findings first: \[2\]' "$work/builderr")" 1
-ok "  and writes no call to post"                    "$(test -s "$work/review.json" && echo some || echo none)" none
-ok "a moved thread posts on the line it moved to"    "$(build_call '{"moved":{"2":41},"dropped":[]}')" 0
-ok "  which is the only line that changed"           "$(jq -c '[.comments[].line]' "$work/review.json")" "[16,41,10,4]"
-ok "  with the body it was handed, byte for byte"    "$(jq -r '.comments[1].body' "$work/review.json")" "counted somewhere else"
-jq -r .body "$work/review.json" > "$work/posted-body.md"
-jq -r .body "$work/handover.json" > "$work/handed-body.md"
-ok "  and the approved body untouched"               "$(cmp -s "$work/posted-body.md" \
-    "$work/handed-body.md" && echo same || echo differs)" same
-ok "  posting at the head, which is the one commit"  "$(jq -r .commit_id "$work/review.json")" c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0
-ok "a dropped thread is not in the call at all"      "$(build_call '{"moved":{},"dropped":[2]}')" 0
-ok "  leaving the other three"                       "$(jq -c '[.comments[].path]' "$work/review.json")" '["jobs/DeliverWebhook.php","docs/webhooks.md","jobs/Queue.php"]'
-# The brief's claim about `edits.json`, which is what makes the body un-editable by
-# construction rather than by instruction.
-ok "edits.json holds numbers, and the brief says so" "$(grep -c 'never a .path., never a .body.' "$brief")" 1
+# DEV-1369: the call is no longer built from the brief. `review-desk post` builds it from the
+# same hand-over, pinned to the head, and refuses an off-head thread rather than letting the
+# worker move it -- so what is checked now is that no builder is left to run.
+ok "the brief builds no review call of its own"      "$(ask "d['line_sha_builder']")" False
+ok "  nor a file of edits to feed one"               "$(grep -c 'edits.json' "$brief")" 0
+ok "  and the call is review-desk post"              "$(grep -c '^   review-desk post "$REVIEW" --session' "$brief")" 1
 
 printf '\n  the draft, in parts\n'
 ok "the draft is written with --sections"            "$(grep -c 'draft put --review <id> --sections draft.json' "$brief")" 1

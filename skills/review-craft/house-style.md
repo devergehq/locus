@@ -423,6 +423,9 @@ Posting is two steps, because a link to a thread needs the thread to exist:
    Keep each returned `html_url`.
 2. **Replace the body** with the index, each table row linking to its thread's `html_url`:
    `gh api -X PUT repos/OWNER/REPO/pulls/N/reviews/<review_id> --input body.json`.
+   **This edits a review that is already posted; it is not a way to post one.** A review
+   session posts with `review-desk post`, never with raw `gh` — see `workers/review.md`,
+   **Posting exactly once**.
    A submitted review body is updated with **PUT**, not PATCH. Inline comments are
    `PATCH repos/OWNER/REPO/pulls/comments/<comment_id>`.
    **Check the rendered HTML, not the markdown you sent.** `gh api -H "Accept: application/vnd.github.html+json"`
