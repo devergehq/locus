@@ -571,7 +571,9 @@ ok "  so the status is read just before posting" "$(grep -c 'immediately before 
 ok "  and a retry cannot fix a taken-back one"   "$(grep -c 'retrying never works' "$brief")" 1
 ok "  the id goes in the record, not just a report" "$(grep -c 'review link --review <id> --github-review' "$brief")" 1
 ok "  and is said out loud as well, being perishable" "$(grep -c 'the field is not durable' "$brief")" 1
-ok "  and the second review is declared, not hidden" "$(grep -c 'should hear that there will be' "$brief")" 1
+# DEV-1369: "there will be two" stopped being true -- the next `post` may reconcile onto the
+# first review and never send the revision -- so what is declared is the first review AND that.
+ok "  and the second review is declared, not hidden" "$(grep -c 'Say that the pull request already carries a review\*\*, and that the next .post. may not' "$brief")" 1
 ok "the agent marker goes after Review Desk's"   "$(grep -c 'the .agent:. marker goes after Review Desk' "$brief")" 1
 ok "  because marker_last reads the last line"   "$(grep -c 'threads.marker_last. off the body.s last physical line' "$brief")" 1
 ok "the marker is the join, with the title after" "$(grep -c 'the join is carried by the thing' "$brief")" 1

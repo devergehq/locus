@@ -2532,6 +2532,7 @@ ok "  it forbids advancing the review, not writing"    "$(grep -c 'Write nothing
 # merge is the links -- and never a second `post`, which could post afresh on a merged PR.
 ok "  and still requires the threads to be linked"    "$(grep -c '| .finding link. for each thread you posted |' "$worker_md")" 1
 ok "  but never runs post again after the merge"      "$(grep -c 'not .review-desk post. again' "$worker_md")" 1
+ok "  and settles a pending attempt by its tag instead" "$(grep -c 'A .pending. attempt is one it did \*\*not\*\* see land' "$worker_md")" 1
 ok "  merged writes the terminal ledger status"        "$(grep -c 'status=merged --by worker' "$worker_md")" 1
 ok "  a close does NOT, being reversible"              "$(grep -c 'the reason is that a close is reversible' "$worker_md")" 1
 ok "  end means stop working, not self-discard"        "$(grep -c 'which means stop working, not remove yourself' "$worker_md")" 1
@@ -2553,7 +2554,9 @@ ok "it states the rule in one sentence"                "$(in_posting 'Post with 
 ok "  and the hard rule at the top agrees"             "$(grep -c 'through .review-desk post. — never raw .gh.' "$worker_md")" 1
 ok "step 4 calls review-desk post"                     "$(in_posting '^   review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at')" 1
 ok "  and probes for the command first"                "$(in_posting 'review-desk post --help')" 1
-ok "no gh api reviews POST is left on the path"        "$(in_posting 'pulls/$PR/reviews')" 0
+# Any spelling of the reviews endpoint -- `$PR`, `<n>`, `N` -- not only the one the old recipe used.
+# A literal number is a measurement being quoted (DEV-865's `pulls/19/reviews`), not a call.
+ok "no gh api reviews POST is left on the path"        "$(grep -cE 'pulls/[^ /0-9][^ /]*/reviews' "$posting_md" || true)" 0
 ok "  nor the jq that built one"                       "$(in_posting 'review.json')" 0
 ok "  nor the GitHub-side already-posted check"        "$(in_posting 'review-posted')" 0
 ok "no draft posted is run after post"                 "$(in_posting 'review-desk draft posted')" 0
@@ -2561,7 +2564,11 @@ ok "  and the worker is told so"                       "$(in_posting 'run no .dr
 ok "changed_since_shown has its row"                   "$(in_posting '^   | .changed_since_shown. |')" 1
 ok "post_in_flight has its row"                        "$(in_posting '^   | .post_in_flight. |')" 1
 ok "thread_off_head has its row"                       "$(in_posting '^   | .thread_off_head. |')" 1
-ok "a certain GitHub refusal has its row"              "$(in_posting '^   | .gh_missing., .gh_not_authenticated., or a 4xx |')" 1
+ok "a gh that could not run has its row"               "$(in_posting '^   | .gh_missing., .gh_not_authenticated. |')" 1
+ok "  and a call that may have landed has its own"     "$(in_posting '^   | .gh_failed., .github_response_unreadable., or any other code |')" 1
+ok "a reconcile onto the recovered id is caught"       "$(in_posting 'unless it is an id you')" 1
+ok "  and the worker stops rather than re-posting"     "$(in_posting 'the revision is not on the pull request: post nothing else')" 1
+ok "the go-ahead file is passed only when there is one" "$(in_posting 'GO_AHEAD_FILE:+--go-ahead-file')" 1
 ok "a refusal is never followed by a raw gh post"      "$(in_posting 'never follow one with a raw .gh. post')" 1
 ok "no post command: a section of its own"             "$(grep -c '^### A Review Desk with no .post.$' "$worker_md")" 1
 ok "  which posts nothing and stops"                   "$(in_posting 'you post nothing, and you stop')" 1

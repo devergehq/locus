@@ -1272,8 +1272,11 @@ and records it rather than posting a second review.
 
    review-desk draft show --review "$REVIEW" --json   # step 1, again, immediately before
    review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
-     --go-ahead-file go-ahead.txt --json > post.json
+     ${GO_AHEAD_FILE:+--go-ahead-file "$GO_AHEAD_FILE"} --json > post.json
    ```
+
+   `GO_AHEAD_FILE` is set only when your principal typed a line; unset, the flag is not passed
+   at all, because `post` refuses a `--go-ahead-file` that names no file.
 
    The listing compares each `line_sha` with `review.head_sha` on the **shorter of the two**,
    which is what Review Desk itself does: a head is stored full or abbreviated and a finding's
@@ -1294,18 +1297,22 @@ and records it rather than posting a second review.
    **What it answers.** Success is exit 0 with `posted.status` reading `posted` and
    `posted.github_review_id` holding GitHub's id; `"reconciled": true` beside it means an earlier
    attempt was already up, and `post` recorded that one and sent nothing. Either way **the post is
-   recorded, so run no `draft posted`**, and step 5 works from that id.
+   recorded, so run no `draft posted`**, and step 5 works from that id — **unless it is an id you
+   recovered in step 6.** Then the review recorded is the one from before the send-back, and the
+   revision your principal approved since was never sent: step 6's last bullet says what to do.
 
-   **What it refuses.** Read `error.code`. On every refusal **nothing new is on the pull
-   request**, so never follow one with a raw `gh` post: that is the path without the
-   changed-draft refusal, which is the reason this command exists.
+   **What it refuses.** Read `error.code`. The first three rows are refused before any call is
+   made, so **nothing new is on the pull request**; the rest come from the call or after it, and
+   some of those may have landed. Whichever it is, never follow one with a raw `gh` post: that is
+   the path without the changed-draft refusal, which is the reason this command exists.
 
    | `error.code` | What it means | What you do |
    |---|---|---|
    | `changed_since_shown` | the draft moved after the developer approved it | Post nothing and say so; the developer approves again on the draft page, and `draft_approved` brings you back |
    | `post_in_flight` | an attempt under two minutes old may still land | Wait two minutes, then run the same command again |
    | `thread_off_head` | a thread's line was measured on another commit | Post nothing; name the finding and both commits, and ask your principal to send the draft back |
-   | `gh_missing`, `gh_not_authenticated`, or a 4xx | GitHub certainly refused, and nothing is half-posted | Report it verbatim; once it is fixed, run the same command again |
+   | `gh_missing`, `gh_not_authenticated` | `gh` could not be run, so nothing was sent | Report it verbatim; once it is fixed, run the same command again |
+   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it |
    | `draft_status` | as step 3's table — unless `draft show` now reads `sent_back` | step 3's rows, or step 6 if it is `sent_back` |
 
    **Running the same command again is always safe**, and that is the property the raw recipe
@@ -1393,14 +1400,22 @@ and records it rather than posting a second review.
      failure** — because the field is not durable. A later `--github-review` overwrites a
      different id silently and exits 0, and the next successful post on this same review does
      exactly that — `post` records through the same write `draft posted` did, and measured,
-     the recovered id was replaced by the second review's the moment that one was reported. So the record holds the number until this round posts
-     again, and what you said out loud is what holds it after.
+     the recovered id was replaced by the second review's the moment that one was reported. So
+     the record holds the number until this round posts again, and what you said out loud is
+     what holds it after.
    - **Then treat the send-back as any other**, from the event table: revise the blocks and
      `draft put --sections` again.
-   - **Say that the pull request already carries a review.** The next sign-off is a different
-     approval, so `post` will not take the first review for its own attempt and will post,
-     correctly: it is a new review. Your principal should hear that there will be
-     two, because they are the one who can decide what to do about the first.
+   - **Say that the pull request already carries a review**, and that the next `post` may not
+     send the revision. The attempt that put the first review up is still `pending` in Review
+     Desk — the refused record rolled back with it — so after the re-approval `post` looks for
+     **that** attempt's tag, finds the first review and records it: `"reconciled": true`, nothing
+     sent, under the id you recovered here. Traced through review-desk `13f2da3`
+     (`post.rs`'s reconcile block, `record_posted` in `draft.rs`), not run. **If that is what it
+     answers, the revision is not on the pull request: post nothing else, and say so** to your
+     principal and the Dispatcher, naming both the recovered id and the revision. Re-running
+     `post` will not send it either, and a raw `gh` post is the path this section retired. The
+     hole is Review Desk's: its reconcile should compare the pending attempt with the current
+     approval.
 
    This is not a session getting posting wrong. "Posting exactly once" holds for everything a
    session controls; this is the one way the count can move that no session can prevent, which
@@ -1503,11 +1518,14 @@ So, in this order and nothing else:
    | Still write it | Because |
    |---|---|
    | `finding link` for each thread you posted | you posted. The review exists under your principal's name, and without the links its threads are invisible to the harvest |
-   | `review link --github-review <id>` | the post landed but `post` could not record it — **Posting exactly once** step 6 |
+   | `review link --github-review <id>` | the post landed but `post` could not record it — **Posting exactly once** step 6, or an attempt it left `pending` (below) |
    | `review nit-ticket`, in the form **Filing the held-back findings** gives | you filed the ticket. See the exception at the end of this section |
 
    Nothing else — and **not `review-desk post` again**, even for an attempt it left `pending`:
-   it recorded every post it saw land, and run after a merge it could post afresh. If a merge
+   run after a merge it could post afresh. A `pending` attempt is one it did **not** see land —
+   a 5xx, a timeout — so settle it by hand instead: look on the pull request for its review the
+   way step 6 does, by the `<!-- review-desk:posted` tag, and if one is there record it with
+   `review link --github-review <id>` and say so; if none is, nothing went up. If a merge
    lands between your `post` and your `finding link`s, finish the linking and then come back
    here: the posting was not a mistake, and a record that cannot say the review exists is worse
    than one that says it late.
