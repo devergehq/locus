@@ -11,7 +11,7 @@ name: CI
 #     macOS because it links cocoa/objc/core-text; Locus has no such
 #     dependency, and release.yml already builds five targets. Linux runners
 #     are faster and cheaper for platform-independent checks.
-#   * `test` runs on both ubuntu-latest and macos-14. macOS is the primary
+#   * `test` runs on both ubuntu-latest and macos-15. macOS is the primary
 #     user platform and the hook/adapter code touches real filesystem paths,
 #     so a Linux-only test run would miss the failures that matter most.
 #
@@ -137,7 +137,7 @@ name: CI
 #     rustfmt
 #     clippy
 #     test (ubuntu-latest)
-#     test (macos-14)
+#     test (macos-15)
 
 on:
   pull_request:
@@ -211,7 +211,7 @@ jobs:
     # unexpanded `test (${{ matrix.os }})`. The matrix is never expanded,
     # because expansion happens on the way to allocating runners and this job
     # never gets there. So on a draft the contexts `test (ubuntu-latest)` and
-    # `test (macos-14)` are ABSENT rather than skipped -- see the required-check
+    # `test (macos-15)` are ABSENT rather than skipped -- see the required-check
     # paragraph in the header, which is where that distinction bites.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ${{ matrix.os }}
@@ -221,7 +221,7 @@ jobs:
       # diagnosis; fail-fast would hide it.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-15]
     steps:
       - name: Checkout
         uses: actions/checkout@v5
