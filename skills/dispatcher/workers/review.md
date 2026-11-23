@@ -12,7 +12,8 @@ the ledger, and the reporting.
 
 **Post nothing to GitHub** — no review, no comment, no reaction — until your principal says, in
 this session, to post. Then post exactly what they approved, as a single review with the event
-they name (COMMENT / REQUEST_CHANGES / APPROVE) through `gh api`. It is their review. No agent
+they name (COMMENT / REQUEST_CHANGES / APPROVE) through `review-desk post` — never raw `gh`;
+**Posting exactly once** is how. It is their review. No agent
 signature unless they ask for one.
 
 ## The hashes in this file are where a claim was measured
@@ -1155,9 +1156,20 @@ Then tell the Dispatcher the id, what it covers, and that the draft is still wai
 
 ### Posting exactly once
 
+**Post with `review-desk post`, never with raw `gh`.** It is the one command that writes your
+principal's review to GitHub, and it does three things no recipe in this file can do as well:
+it **refuses a draft that changed since the developer approved it**, it **records the post and
+its GitHub review id in the same transaction** as the call, and it **settles an earlier attempt
+whose outcome is unknown** — by the tag it put at the end of that attempt's body — before it
+sends anything. Decided by your principal on DEV-1369, 22 November 2026: **there is no
+fallback.** A Review Desk without the command posts nothing; **A Review Desk with no `post`**,
+below, is the whole of what you do then.
+
 `draft_approved` stays on Review Desk's list until something reports the draft posted, and
 Review Desk has no lease — so a session that posts and then dies is followed by one that would
-post again, on somebody's pull request, under your principal's name.
+post again, on somebody's pull request, under your principal's name. `review-desk post` is what
+makes that follower safe: its own run looks for its predecessor's attempt on the pull request
+and records it rather than posting a second review.
 
 1. `review-desk draft show --review <id> --json` is your only authority **on whether you may
    post at all**. `status` must read `approved`; `event` is the GitHub review event the
@@ -1184,13 +1196,19 @@ post again, on somebody's pull request, under your principal's name.
 
    Then follow **When the pull request merges or closes** and end. A review posted on a merged
    pull request is a review of a decision already taken, under your principal's name, on a
-   thread nobody is reading — and `draft posted` would then record it as the answer to that
-   round for ever. The draft stays approved and unposted in the record, which is the true
+   thread nobody is reading — and `post` would then record it as the answer to that round for
+   ever. The draft stays approved and unposted in the record, which is the true
    account of what happened; DEV-957 is what makes Review Desk show that review as finished,
    and it is not your write to make.
-2. **`review-desk draft handover --review <id> --json` is what you post.** One read — write it
-   out to a file, because steps 3, 4 and 5 all work from it — and it is the only thing you post
-   from:
+2. **Check that this Review Desk can post: `review-desk post --help`.** A help that names
+   `--session` and `--go-ahead-at` is the command. `unrecognized subcommand 'post'`, or a
+   `review-desk` that is not on PATH at all, means **stop here** and follow **A Review Desk with
+   no `post`**. Read the help, not `--version` — two builds of Review Desk have printed the
+   same version either side of a new command before.
+3. **`review-desk draft handover --review <id> --json` is what `post` will send.** It is a read:
+   write it out to a file, because step 4 reports from it and step 5 joins on it. `post` builds
+   its call from this same hand-over, in the same transaction as its approval check, so what you
+   read here is what goes up.
 
    | What it hands you | What it is |
    |---|---|
@@ -1213,12 +1231,11 @@ post again, on somebody's pull request, under your principal's name.
    |---|---|---|
    | `draft_status`, and step 1 read a status **other than** `approved` | the draft is not signed off | **do not post.** Go back to waiting, and say what it said |
    | `draft_status`, and step 1 read `approved` | the stored body is **not what its blocks compose to** — it was approved in the older shape, before the composition changed | **do not post, and do not wait.** Say it has to be sent back and written again |
-   | `usage` — "unrecognized subcommand 'handover'" | this Review Desk is older than the hand-over | **the fallback below** |
+   | `usage` — "unrecognized subcommand 'handover'" | this Review Desk is older than the hand-over, and so older than `post` | **stop:** **A Review Desk with no `post`** |
 
    Telling them apart by the code and never by the bare fact that the command failed is the
-   whole of this step. A `draft_status` refusal read as an old Review Desk would post a body
-   nobody signed off, under your principal's name — the one outcome this arrangement exists to
-   prevent.
+   whole of this step. A `draft_status` refusal read as an old Review Desk would leave a review
+   that needed one sentence to a person stuck on an install that was never the problem.
 
    **Two different refusals carry `draft_status`, and the status separates them.** Measured on
    review-desk master `41bbc10`: an unapproved draft refuses with "the draft of review N is
@@ -1264,148 +1281,103 @@ post again, on somebody's pull request, under your principal's name.
    no exit. Raised from this brief's side and fixed in Review Desk rather than worked around
    here, which is why the refusal above now names a transition that exists.)
 
-   **A `posted` draft hands over too**, and that is deliberate rather than a hole: posting is
-   the step after this one, and a session that posted and then died before reporting it needs
-   this same payload to ask GitHub about its own review. It is not a second licence to post:
-   step 1 is the only thing that grants that, and step 3 says whether it has already happened.
-
-3. **Ask GitHub whether it is already up**:
-   `D review-posted <KEY> --approved-at <approved_at> --body-file body.md --json`. It is
-   read-only. `"posted": true` means **do not post** — record the `review_id` it hands back with
-   step 5 and stop.
-
-   **`body.md` is the hand-over's `body`, written out — never a draft file of your own.** The
-   approved body is the one the blocks composed to, and a decision the developer made has
-   already rewritten a block of it. Your own copy is a body from before they decided, and both
-   this check and the post below would then be about text they never approved.
-4. Post exactly the hand-over's `body` with the approved event, as **one** review, through
-   `gh api repos/OWNER/REPO/pulls/<n>/reviews`, with `threads[]` in `comments` on that same
-   call. It is your principal's review: no agent signature unless they asked for one.
+   **A `posted` draft hands over too.** It is not a second licence to post: step 1 is the only
+   thing that grants that. Nor is it how a replacement session learns whether the session before
+   it posted — `review-desk post` answers that itself, in step 4.
+4. **Post: `review-desk post`.** It is your principal's review: no agent signature unless they
+   asked for one.
 
    ```sh
-   review-desk draft handover --review "$REVIEW" --json > handover.json   # step 2
-   jq -r .body handover.json > body.md                                    # step 3's body.md
+   review-desk draft handover --review "$REVIEW" --json > handover.json   # step 3
 
-   # 1. The anchors that are NOT addresses at the commit you are about to post at.
+   # The anchors that are NOT addresses at the commit `post` pins the review to. `post`
+   # refuses the first of them as `thread_off_head`; this lists all of them, for the report.
    jq -r '(.review.head_sha | ascii_downcase) as $h | .threads[]
           | ((.line_sha // "") | ascii_downcase) as $s
           | select($s != "" and ($h | startswith($s)) == false
                              and ($s | startswith($h)) == false)
-          | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' \
-     handover.json > reread.txt && cat reread.txt
+          | "F\(.finding_seq) \(.path):\(.line) measured at \(.line_sha)"' handover.json
 
-   # 2. The ones whose commit nobody recorded. Say this once, for the review.
-   jq -r '[.threads[] | select((.line_sha // "") == "") | "F\(.finding_seq)"] | join(", ")' \
-     handover.json
-
-   # 3. Re-read each file in reread.txt at the head, then answer for every line of it:
-   #    a thread you placed goes in `moved` under its finding's number, one you could not
-   #    goes in `dropped`. Nothing else about a thread is yours to change.
-   echo '{"moved": {}, "dropped": []}' > edits.json      # e.g. {"moved":{"3":41},"dropped":[7]}
-
-   # 4. The call. It REFUSES to build while a line of reread.txt is neither moved nor
-   #    dropped, so this block cannot be run straight through.
-   jq --slurpfile e edits.json --rawfile todo reread.txt '
-     ($e[0].moved // {}) as $moved | ($e[0].dropped // []) as $dropped
-     | [$todo | split("\n")[] | select(startswith("F")) | ltrimstr("F") | split(" ")[0]
-        | tonumber] as $owed
-     | [$owed[] | . as $n
-        | select(($moved | has($n | tostring)) == false and ($dropped | index($n)) == null)]
-       as $unanswered
-     | if ($unanswered | length) > 0
-       then error("re-read or drop these findings first: \($unanswered)")
-       else {commit_id: .review.head_sha, event: (.draft.event | ascii_upcase), body: .body,
-             comments: [.threads[] | . as $t
-               | select($dropped | index($t.finding_seq) | not)
-               | {path, line: ($moved[$t.finding_seq | tostring] // .line), side, body}]}
-       end' handover.json > review.json
-   gh api "repos/$REPO/pulls/$PR/reviews" --input review.json
+   review-desk draft show --review "$REVIEW" --json   # step 1, again, immediately before
+   if [ -n "${GO_AHEAD_FILE:-}" ]; then   # your principal typed a line
+     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
+       --go-ahead-file "$GO_AHEAD_FILE" --json > post.json
+   else                                   # they signed off on the dashboard
+     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at "$GO_AHEAD_AT" \
+       --json > post.json
+   fi
    ```
 
-   **`edits.json` is the only file you write, and it holds numbers.** A line and a list of
-   findings to leave out — never a `path`, never a `body`. The call composes the comments from
-   the hand-over itself, so every body goes up byte for byte and the marker `finding link`
-   joins on survives whatever you decided about the anchor. The earlier version of this recipe
-   read `.threads[]` straight into `comments`, which posted an earlier commit's line numbers
-   against the head: the exact harm this step exists to prevent, run by a worker doing as it
-   was told.
+   **Two calls, not one with an optional flag.** `post` refuses a `--go-ahead-file` that names no
+   file, so the flag must be absent when nothing was typed. A `${VAR:+--flag "$VAR"}` expansion
+   looks like that, but zsh, which is what the Bash tool runs here, passes it as **one** word —
+   measured, `[--go-ahead-file /tmp/x.txt]` against bash's two — and every typed go-ahead would
+   be refused as an unknown flag.
 
-   **A re-read here is not a `finding became`**, and that is the one place the rule above does
-   not reach. The draft is approved by now, and `finding became` on an approved draft is
-   refused `draft_status` — measured. So the corrected line goes to GitHub and not to the
-   record, which keeps the line it was given; say which threads you moved and from what, and
-   the next round's read is what puts it right.
+   The listing compares each `line_sha` with `review.head_sha` on the **shorter of the two**,
+   which is what Review Desk itself does: a head is stored full or abbreviated and a finding's
+   commit is 7 to 40 characters, so `=` would report a move that never happened. A thread whose
+   commit nobody recorded is let through by `post`, as the hand-over lets it through:
+   say once that the commit was not recorded, for the review rather than per thread.
 
-   **The commit you post at is `review.head_sha`, and a thread's own commit is a check rather
-   than a second answer.** GitHub takes **one** `commit_id` for the whole review: read off its
-   REST documentation for `POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews` on 14
-   October 2026, where a `comments[]` entry takes `path`, `position`, `body`, `line`, `side`,
-   `start_line` and `start_side` and **no commit of its own**. So "post this comment at the
-   commit its line was counted on" is not a thing the call can say. Nor is posting the whole
-   review at an older commit the way round it: GitHub's own wording for an older `commit_id` is
-   that it **may** render a comment outdated, *"if a subsequent commit modifies the line you
-   specify as the position"* — so the review would land with some threads current and some
-   collapsed, chosen by what the author happened to touch, and you would not know which until
-   it was posted.
+   | Flag | What you pass |
+   |---|---|
+   | `--session` | your own allele session id — the one `review link --session` recorded. Any other id still posts, and the tag then reads as unchecked |
+   | `--go-ahead-at` | Unix seconds when your principal said to post: the moment they typed it in this session, or else the draft's `approved_at` |
+   | `--go-ahead-file` | a file holding **the line they typed**, verbatim. **Leave the flag off when they typed none.** Never write one for them: the tag carries a hash of that line as theirs |
 
-   What `threads[].line_sha` is for here is the one question that matters before the call:
-   **is this anchor still an address at the commit I am about to post at?** Compare each one
-   with `review.head_sha` on the **shorter of the two**, which is what Review Desk itself
-   does — a head is stored full or abbreviated and a finding's commit is 7 to 40 characters,
-   so `=` would report a move that never happened.
+   Without a typed line the tag reads `basis=desk` — "nobody checked who said go ahead" — and
+   that is the true label for a sign-off made on the dashboard. Do not reach for a line to earn
+   the stronger one.
 
-   | The thread's `line_sha` | What it says | What you do |
+   **What it answers.** Success is exit 0 with `posted.status` reading `posted` and
+   `posted.github_review_id` holding GitHub's id; `"reconciled": true` beside it means an earlier
+   attempt was already up, and `post` recorded that one and sent nothing. Either way **the post is
+   recorded, so run no `draft posted`**, and step 5 works from that id — **unless it is an id
+   recovered in step 6**, by you or by a session before you: step 6 writes it into a ledger note,
+   so read `D ledger get <KEY>`'s history for it before you trust a reconcile. Then the review
+   recorded is the one from before the send-back, and the revision your principal approved since
+   was never sent: step 6's last bullet says what to do.
+
+   **What it refuses.** Read `error.code`. The first three rows are refused before any call is
+   made, so **nothing new is on the pull request**; the rest come from the call or after it, and
+   some of those may have landed. Whichever it is, never follow one with a raw `gh` post: that is
+   the path without the changed-draft refusal, which is the reason this command exists.
+
+   | `error.code` | What it means | What you do |
    |---|---|---|
-   | the head, or a prefix of it | the line was counted where you are posting | post it as handed |
-   | a different commit | the line was counted somewhere else, and that number may be a different line at the head | **re-read that file at the head first** |
-   | absent | the record does not say where it was counted | post it as handed, and say once that the commit was not recorded |
+   | `changed_since_shown` | the draft moved after the developer approved it | Post nothing and say so; the developer approves again on the draft page, and `draft_approved` brings you back |
+   | `post_in_flight` | an attempt under two minutes old may still land | Wait two minutes, then run the same command again |
+   | `thread_off_head` | a thread's line was measured on another commit | Post nothing; name the finding and both commits, and ask your principal to send the draft back |
+   | `gh_missing`, `gh_not_authenticated` | `gh` could not be run, so nothing was sent | Report it verbatim; once it is fixed, run the same command again |
+   | `gh_failed`, `github_response_unreadable`, or any other code | a 4xx sent nothing, but a 5xx, a timeout or an unreadable answer **may be up** — and the code does not say which | Report it as possibly posted; wait two minutes, then run the same command again, and `post` settles it. **The same refusal twice is not in flight: stop**, and report what `error.message`'s HTTP status says — a 4xx as refused, a 5xx or a timeout as **may be up**, because each run made an attempt of its own |
+   | `draft_status` | as step 3's table — unless `draft show` now reads `sent_back` | step 3's rows, or step 6 if it is `sent_back` |
 
-   **Re-reading moves the `line` and nothing else.** The body is the text the developer
-   decided on and the marker in it is what `finding link` joins on, so it goes up byte for
-   byte; what changes is the number the comment hangs on. Say which threads you moved and from
-   what. **If you cannot place one at the head, leave that comment out of `comments[]` and say
-   so loudly, naming the finding** — a comment on the wrong line is on the record under your
-   principal's name and nothing in the thread says it is misplaced, which is worse than a
-   comment that is missing.
+   **Running the same command again is always safe**, and that is the property the raw recipe
+   could not give you. A 5xx, a timeout or a process that died mid-call leaves the attempt
+   `pending`; the next `post` waits out its two minutes, looks on the pull request for that
+   attempt's tag, records it if it is there, and only then posts afresh.
 
-   **Say it twice, because nothing else will.** The approved body still carries that finding's
-   row in the index, so the review reads as having a thread that is not there; `review_lint`'s
-   `threads.exist` passes on any one thread and will not name it; and a finding with no
-   `github_comment_id` is skipped by the harvester for replies and resolution, this round and
-   every later one. So name the finding to your principal **and** in your report, and carry it
-   into the next round's draft rather than treating it as posted.
+   **`thread_off_head` has no fix on your side, and the reason is the shape of the field.**
+   `line_sha` is written once, by `finding add`, and nothing re-anchors it — **The commit a line
+   was read on** says so and why. A carried finding keeps the commit an earlier round counted it
+   on, so after a push the approved draft is refused for as long as that thread is in it, and
+   any change you could make to the draft would be refused as `changed_since_shown` anyway. So
+   re-read the line at the head, say where it sits now, and let your principal decide how that
+   finding is carried once the draft is back. Name the finding in your report; it is on nobody's
+   pull request yet.
 
-   A Review Desk older than DEV-978 hands over no `line_sha` at all and every thread reads as
-   the third row: say it once for the review rather than once per thread, which is what the
-   hand-over's own plain output does.
-
-   **The threads are no longer yours to write.** They were, for as long as the draft held no
-   thread text. Review Desk now composes each one from the same block the developer decided on,
-   in the alert its live severity picks, so writing your own beside them would put text on the
-   pull request that nobody approved and hang two threads on one finding. Post what you were
-   handed.
-
-   **Adding a thread afterwards creates a second review, and that is measured rather than
-   feared.** `POST /pulls/<n>/comments` makes a standalone review comment, and GitHub wraps it in
-   an implicit review to hold it. On DEV-865's acceptance run, the review posted with its thread
-   in `comments` left `pulls/19/reviews` at **1**; the one whose thread was added afterwards left
-   `pulls/20/reviews` at **2**, the second being a container with a **0-character body**. Posting
-   once is the rule this section is named after, so the thread goes in the call or it waits for
-   the next round.
-
-   (The `review-posted` check survives that, and it is worth knowing why: it matches on login,
-   time **and body**, so the empty container does not match and the check still answered
-   `posted: true` against the real review. A guard that had counted reviews instead would have
-   been confused by GitHub's own bookkeeping.)
-
-   Two sessions read an earlier version of this paragraph and reached opposite conclusions — one
-   posted a thread, one posted none and left `review_lint`'s `threads.exist` failing with nothing
-   it could have linked — which is why it is spelled out rather than implied.
-5. **Link each comment GitHub made back to its finding.** Read the comments back rather than
-   looking for them in the answer to the `reviews` call:
+   **The threads are no longer yours to write.** Review Desk composes each one from the same
+   block the developer decided on, in the alert its live severity picks, and `post` sends them
+   in the same call as the body. A thread added afterwards would be text nobody approved — and
+   **it would create a second review**, measured on DEV-865's acceptance run: a review posted
+   with its thread in the call left `pulls/19/reviews` at **1**; one whose thread was added
+   afterwards left `pulls/20/reviews` at **2**, the second a container with a **0-character
+   body**. Posting once is the rule this section is named after.
+5. **Link each comment GitHub made back to its finding.** Read the comments back:
    `gh api "repos/$REPO/pulls/$PR/comments" --paginate`, keeping the ones whose
-   `pull_request_review_id` is the review you just created. That is the same route
-   `review_lint.py` takes to find a review's threads.
+   `pull_request_review_id` is `post.json`'s `posted.github_review_id`. That is a read, and the
+   same route `review_lint.py` takes to find a review's threads.
 
    **Join on the marker in the comment's own body, not on where it sits.** Every composed
    thread ends with `<!-- review-desk:F<seq> -->`, and `threads[].finding_key` carries the same
@@ -1442,19 +1414,19 @@ post again, on somebody's pull request, under your principal's name.
    rather than to the join.
 
    Then `review-desk finding link --review <id> --finding <finding_seq> --github-comment <id>`
-   for each pair, and `review-desk draft posted --review <id> --github-review <the review id>`.
-6. **If the post succeeds and `draft posted` fails, say so loudly** — to the Dispatcher and in
-   the ledger. The record will say the draft is approved and unposted while GitHub says
-   otherwise, and the check in step 3 is what makes the retry safe rather than duplicative.
+   for each pair. **That is the whole of the reporting.** `post` marked the draft posted when it
+   recorded the GitHub id; `draft posted` is how the raw-`gh` path reported a post, and this file
+   no longer has that path.
+6. **If `post` refuses with `draft_status` and `draft show` now reads `sent_back`**, your
+   principal took the sign-off back while the call was in flight — the one window `post` cannot
+   close. Review Desk marks a post only on an approved draft, so the review GitHub created may be
+   up with **no `github_review_id`** in the record. Look on the pull request: a review by your
+   principal at this round's head whose body ends in a `<!-- review-desk:posted` tag is that
+   review. **Running `post` again here, retrying never works**: even when it finds its own
+   attempt by the tag, it records it only on an approved draft, and this one is not.
 
-   **Unless it failed with `draft_status` reading `sent_back`, and then retrying never works.**
-   That is your principal taking the sign-off back in the window between your post and your
-   report. Measured on review-desk master `41bbc10`: `draft posted` refuses with "the draft of
-   review N is sent_back, and only an approved draft can be marked posted", and the review is
-   left with
-   **no `github_review_id`** — so nothing in the record says the review you just posted exists.
-
-   Four things follow, in this order:
+   **If there is none, nothing went up**: treat it as any other send-back. If there is one,
+   four things follow, in this order:
 
    - **Put the id in the record first: `review-desk review link --review <id> --github-review
      <the GitHub review id>`.** It writes `reviews.github_review_id` on its own, and that is the
@@ -1464,16 +1436,24 @@ post again, on somebody's pull request, under your principal's name.
      posted, and both facts stay true.
    - **Then name the id to the Dispatcher and in the ledger anyway, in the same breath as the
      failure** — because the field is not durable. A later `--github-review` overwrites a
-     different id silently and exits 0, and the next successful `draft posted` on this same
-     review does exactly that: measured, the recovered id was replaced by the second review's
-     the moment that one was reported. So the record holds the number until this round posts
-     again, and what you said out loud is what holds it after.
+     different id silently and exits 0, and the next successful post on this same review does
+     exactly that — `post` records through the same write `draft posted` did, and measured,
+     the recovered id was replaced by the second review's the moment that one was reported. So
+     the record holds the number until this round posts again, and what you said out loud is
+     what holds it after.
    - **Then treat the send-back as any other**, from the event table: revise the blocks and
      `draft put --sections` again.
-   - **Say that the pull request already carries a review.** The next sign-off is a different
-     body, so step 3's check — which matches on the body — will not find the first one and will
-     let you post, correctly: it is a new review. Your principal should hear that there will be
-     two, because they are the one who can decide what to do about the first.
+   - **Say that the pull request already carries a review**, and that the next `post` may not
+     send the revision. The attempt that put the first review up is still `pending` in Review
+     Desk — the refused record rolled back with it — so after the re-approval `post` looks for
+     **that** attempt's tag, finds the first review and records it: `"reconciled": true`, nothing
+     sent, under the id you recovered here. Traced through review-desk `13f2da3`
+     (`post.rs`'s reconcile block, `record_posted` in `draft.rs`), not run. **If that is what it
+     answers, the revision is not on the pull request: post nothing else, and say so** to your
+     principal and the Dispatcher, naming both the recovered id and the revision. Re-running
+     `post` will not send it either, and a raw `gh` post is the path this section retired. The
+     hole is Review Desk's: its reconcile should compare the pending attempt with the current
+     approval.
 
    This is not a session getting posting wrong. "Posting exactly once" holds for everything a
    session controls; this is the one way the count can move that no session can prevent, which
@@ -1499,29 +1479,28 @@ post again, on somebody's pull request, under your principal's name.
    thread under its prose budget — because after approval the only person who can fix the body is
    the one who approved it.
 
-### An older Review Desk, with no hand-over
+### A Review Desk with no `post`
 
-**If `draft handover` is not there** — `error.code` is `usage` and the message reads
-`unrecognized subcommand 'handover'`, measured on Review Desk 0.1.0, or `review-desk draft
---help` does not list it — **you post `draft show`'s `body` and no threads at all**, and step
-3's `body.md` is that same body. That is what every session did before the hand-over existed,
-and it is still a review: the body is the approved body, step 1 established that, and nothing
-about the sign-off changes. What is lost is the shape. An older Review Desk composes no thread
-text and stores a body that is the blocks joined end to end, so the pull request gets one long
-body, no index, and no finding on the line it concerns.
+**If step 2 finds no `post` command, you post nothing, and you stop.** Decided by your principal
+on DEV-1369, 22 November 2026, against keeping the raw `gh api` recipe this section used to
+carry: two posting paths would stay alive, and the old one is the one without the
+changed-draft refusal. A Review Desk too old to post is one `cargo install` away from current.
 
-**Say so, loudly, in three places**: to the Dispatcher, in the ledger, and in what you report
-when you are done. Name it as the install it is — *"posted the body with no inline threads:
-this Review Desk has no `draft handover`"* — and name the version if `review-desk --version`
-answers. The reason this has to be said rather than noticed is that the degraded result looks
-exactly like a careless session: a reader seeing a 300-line body with no threads cannot tell
-an old binary from a worker that ignored the house style, and the only thing that
-distinguishes them is you saying which it was. A silent fallback spends your principal's
-credibility to hide a version number.
+Say it **once, in one line**, to the Dispatcher and in the ledger note — a review has no Linear
+ticket of its own, so the ledger is its record:
 
-**Loud is never blocking, and nothing here exits 2.** You post, you report, you carry on. The
-lint will read a body of sections and no threads — which is what that shape was — so report
-what it names and do not edit the body to suit it; step 7 governs this too.
+`gh-acme-portal-9585 review: approved draft not posted — Review Desk has no post command and has to be updated first.`
+
+Name the version too if `review-desk --version` answers. Then go back to waiting: the draft
+stays approved and unposted in the record, which is the true account, and once Review Desk is
+updated the next `draft_approved` resume — or your principal telling you to try again — starts
+**Posting exactly once** from step 1. **Do not post the body some other way in the meantime**,
+not with `gh`, not without threads, not "just this once": every one of those is the path this
+decision retired.
+
+**Loud is never blocking, and nothing here exits 2.** Stopping the post is not stopping the
+session: answer messages, harvest, file a held-back ticket — everything that is not a write to
+GitHub carries on.
 
 ## After that
 
@@ -1569,21 +1548,25 @@ So, in this order and nothing else:
    wait for that and you do not depend on it.** Your watcher read the pull request from GitHub,
    which is the only source either of you should trust about whether it merged.
 
-   **The line is advancing the review, not writing at all**, and the difference decides four
+   **The line is advancing the review, not writing at all**, and the difference decides three
    commands you may still owe. A write that **records an outward act you have already
    performed** is finishing a sentence you started, and leaving it unsaid makes the record lie
    about what is on GitHub:
 
    | Still write it | Because |
    |---|---|
-   | `draft posted --github-review <id>` | you posted. The review exists under your principal's name, and without this the record says approved-and-unposted while GitHub shows it |
-   | `finding link` for each thread you posted | same posting, same sentence |
-   | `review link --github-review <id>` | the fallback when `draft posted` refuses — **Posting exactly once** step 6 |
+   | `finding link` for each thread you posted | you posted. The review exists under your principal's name, and without the links its threads are invisible to the harvest |
+   | `review link --github-review <id>` | the post landed but `post` could not record it — **Posting exactly once** step 6, or an attempt it left `pending` (below) |
    | `review nit-ticket`, in the form **Filing the held-back findings** gives | you filed the ticket. See the exception at the end of this section |
 
-   Nothing else. If a merge lands between your `gh api …/reviews` and your `draft posted`,
-   finish the reporting and then come back here: the posting was not a mistake, and a record
-   that cannot say the review exists is worse than one that says it late.
+   Nothing else — and **not `review-desk post` again**, even for an attempt it left `pending`:
+   run after a merge it could post afresh. A `pending` attempt is one it did **not** see land —
+   a 5xx, a timeout — so settle it by hand instead: look on the pull request for its review the
+   way step 6 does, by the `<!-- review-desk:posted` tag, and if one is there record it with
+   `review link --github-review <id>` and say so; if none is, nothing went up. If a merge
+   lands between your `post` and your `finding link`s, finish the linking and then come back
+   here: the posting was not a mistake, and a record that cannot say the review exists is worse
+   than one that says it late.
 2. **Write your status, so nothing is waiting on you.** A session that ends with its entry still
    in a working state holds a slot against `limits.max_workers` and shows as working on
    `D status` for ever, and the Dispatcher cannot tell it from a worker that died:
@@ -1643,8 +1626,8 @@ How you learn it:
 Then, in this order and nothing else:
 
 1. **Write nothing more that would advance the review.** The same line as the merge section
-   draws, and the same four exceptions: a post you have already made is still reported
-   (`draft posted`, `finding link`, `review link --github-review`), and a nit ticket you have
+   draws, and the same three exceptions: a post you have already made is still reported
+   (`finding link`, `review link --github-review`), and a nit ticket you have
    already filed is still recorded. **The poller writes the out-of-play itself** — it is the one
    that can see the conversion and the withdrawal — so there is no `review out-of-play` for you
    to run, and there is no command on your side that could bring it back either.

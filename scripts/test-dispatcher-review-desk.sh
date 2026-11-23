@@ -2623,7 +2623,11 @@ ok "  it names the round in the line it asks for"       "$(grep -c 'the round yo
 ok "  and whether the draft was posted"                "$(grep -c 'whether your draft was posted' "$worker_md")" 2
 ok "  it gives a worked example of that line"          "$(grep -c 'PR merged — round 2 draft was waiting' "$worker_md")" 1
 ok "  it forbids advancing the review, not writing"    "$(grep -c 'Write nothing more to Review Desk that would advance' "$worker_md")" 1
-ok "  and still requires the posting to be recorded"   "$(grep -c 'draft posted --github-review <id>' "$worker_md")" 1
+# Since DEV-1369 `review-desk post` records the post itself, so what is still owed after a
+# merge is the links -- and never a second `post`, which could post afresh on a merged PR.
+ok "  and still requires the threads to be linked"    "$(grep -c '| .finding link. for each thread you posted |' "$worker_md")" 1
+ok "  but never runs post again after the merge"      "$(grep -c 'not .review-desk post. again' "$worker_md")" 1
+ok "  and settles a pending attempt by its tag instead" "$(grep -c 'A .pending. attempt is one it did \*\*not\*\* see land' "$worker_md")" 1
 ok "  merged writes the terminal ledger status"        "$(grep -c 'status=merged --by worker' "$worker_md")" 1
 ok "  a close does NOT, being reversible"              "$(grep -c 'the reason is that a close is reversible' "$worker_md")" 1
 ok "  end means stop working, not self-discard"        "$(grep -c 'which means stop working, not remove yourself' "$worker_md")" 1
@@ -2633,6 +2637,46 @@ ok "  and the nits ticket still wins over ending"      "$(grep -c '\*\*The ticke
 ok "  and is filed before the terminal status"         "$(grep -c 'before you write .merged.' "$worker_md")" 1
 ok "the posting step refuses a merged pull request"    "$(grep -c 'an approved draft on a merged or closed pull request is not posted' "$worker_md")" 1
 ok "  and says which of the two orderings it was"      "$(grep -c 'approved after the merge, not posted' "$worker_md")" 1
+
+printf '\n  DEV-1369: a review posts with review-desk post, never with raw gh\n'
+# The posting section, and only it: `gh api` is still right elsewhere in review.md for reads
+# (the comments read-back) and is right in house-style.md for editing a posted review.
+posting_md="$work/posting.md"
+awk '/^### Posting exactly once$/{on=1} /^## After that$/{on=0} on' "$worker_md" > "$posting_md"
+in_posting () { grep -c -- "$1" "$posting_md" || true; }
+ok "the posting section was found"                     "$([ -s "$posting_md" ] && echo yes)" yes
+ok "it states the rule in one sentence"                "$(in_posting 'Post with .review-desk post., never with raw .gh.')" 1
+ok "  and the hard rule at the top agrees"             "$(grep -c 'through .review-desk post. — never raw .gh.' "$worker_md")" 1
+ok "step 4 calls review-desk post, in both branches"   "$(in_posting '^     review-desk post "$REVIEW" --session "$SESSION_ID" --go-ahead-at')" 2
+ok "  and probes for the command first"                "$(in_posting 'review-desk post --help')" 1
+# Any spelling of the reviews endpoint -- `$PR`, `<n>`, `N` -- not only the one the old recipe used.
+# A literal number is a measurement being quoted (DEV-865's `pulls/19/reviews`), not a call.
+ok "no gh api reviews POST is left on the path"        "$(grep -cE 'pulls/[^ /0-9][^ /]*/reviews' "$posting_md" || true)" 0
+ok "  nor the jq that built one"                       "$(in_posting 'review.json')" 0
+ok "  nor the GitHub-side already-posted check"        "$(in_posting 'review-posted')" 0
+ok "no draft posted is run after post"                 "$(in_posting 'review-desk draft posted')" 0
+ok "  and the worker is told so"                       "$(in_posting 'run no .draft posted.')" 1
+ok "changed_since_shown has its row"                   "$(in_posting '^   | .changed_since_shown. |')" 1
+ok "post_in_flight has its row"                        "$(in_posting '^   | .post_in_flight. |')" 1
+ok "thread_off_head has its row"                       "$(in_posting '^   | .thread_off_head. |')" 1
+ok "a gh that could not run has its row"               "$(in_posting '^   | .gh_missing., .gh_not_authenticated. |')" 1
+ok "  and a call that may have landed has its own"     "$(in_posting '^   | .gh_failed., .github_response_unreadable., or any other code |')" 1
+ok "a reconcile onto the recovered id is caught"       "$(in_posting 'recovered in step 6\*\*, by you or by a session')" 1
+ok "  and the worker stops rather than re-posting"     "$(in_posting 'the revision is not on the pull request: post nothing else')" 1
+# Two calls, because zsh passes `${VAR:+--flag "$VAR"}` as ONE word: round 2 of the self-review
+# measured it, and the earlier version of this check pinned that broken form in place.
+ok "the go-ahead file is passed only when there is one" "$(in_posting '^   if \[ -n "${GO_AHEAD_FILE:-}" \]; then')" 1
+ok "  never through a :+ expansion"                    "$(in_posting ':+--go-ahead-file')" 0
+ok "  and the flag and its path are two words"         "$(in_posting '^       --go-ahead-file "$GO_AHEAD_FILE" --json')" 1
+ok "a repeated refusal stops the re-runs"              "$(in_posting 'The same refusal twice is not in flight')" 1
+ok "  and a repeated 5xx is reported as may be up"     "$(in_posting 'a 5xx or a timeout as \*\*may be up\*\*')" 1
+ok "a replacement reads the recovered id off the ledger" "$(in_posting 'by you or by a session before you')" 1
+ok "a refusal is never followed by a raw gh post"      "$(in_posting 'never follow one with a raw .gh. post')" 1
+ok "no post command: a section of its own"             "$(grep -c '^### A Review Desk with no .post.$' "$worker_md")" 1
+ok "  which posts nothing and stops"                   "$(in_posting 'you post nothing, and you stop')" 1
+ok "  and says so in one line"                         "$(in_posting 'Review Desk has no post command and has to be updated first')" 1
+ok "  and the old no-hand-over fallback is gone"       "$(grep -c 'An older Review Desk, with no hand-over' "$worker_md")" 0
+ok "house-style's PUT recipe says it is not a post"    "$(grep -c 'This edits a review that is already posted; it is not a way to post one' "$root/skills/review-craft/house-style.md")" 1
 ok "_common.md routes the pull_request stop reason"    "$(grep -c '\*\*.pull_request. means the pull request merged or closed\*\*' "$common_md")" 1
 ok "  and no longer calls a merge nothing to do"       "$(grep -c 'expected after .discarded., .failed. or a merged PR' "$common_md")" 0
 ok "  its pr_state row separates review from the rest" "$(grep -c 'On a review, your work is over' "$common_md")" 1

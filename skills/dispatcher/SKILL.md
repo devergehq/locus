@@ -475,8 +475,8 @@ Five things to know about it, and none of them asks anything of you:
   same tick found is emitted as usual.
 - **`mode: off` runs none**, and an absent binary is silent under `auto` and loud under `on`,
   like everything else here.
-- **It does not move layer 7's row.** In Review Desk 0.1.0 only `draft posted` writes that
-  layer, so the dashboard goes on saying "posted, waiting for the harvest" however many
+- **It does not move layer 7's row.** Only a recorded post writes that layer — `review-desk
+  post`, or `draft posted` on an install from before it — so the dashboard goes on saying "posted, waiting for the harvest" however many
   harvests have run. What a harvest changes is the record behind it. Do not tell your principal
   that a layer has turned over; tell them what was recorded, which is what the event carries.
 
